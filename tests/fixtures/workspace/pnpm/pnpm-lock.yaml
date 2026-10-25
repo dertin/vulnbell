@@ -1,0 +1,4 @@
+lockfileVersion: '9.0'
+packages:
+  '@scope/package@1.2.3': {}
+  'lodash@4.17.20': {}

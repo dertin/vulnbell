@@ -1,0 +1,152 @@
+{
+  "$defs": {
+    "Assessment": {
+      "enum": [
+        "review",
+        "informational",
+        "ignore"
+      ],
+      "type": "string"
+    },
+    "EventKind": {
+      "enum": [
+        "issue",
+        "pull_request",
+        "merge_request",
+        "merge_proposal",
+        "comment",
+        "review",
+        "news"
+      ],
+      "type": "string"
+    },
+    "ResearchEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "assessment": {
+          "$ref": "#/$defs/Assessment"
+        },
+        "excerpt": {
+          "type": "string"
+        },
+        "external_id": {
+          "type": "string"
+        },
+        "instance_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/$defs/EventKind"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "updated_at": {
+          "description": "Original RFC3339 timestamp or YYYY-MM-DD when the source provides only a date.\nEmpty means unknown. Unknown/day precision keeps coverage partial and never advances checkpoints.",
+          "type": "string"
+        },
+        "upstream": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "upstream",
+        "instance_ids",
+        "provider",
+        "external_id",
+        "kind",
+        "url",
+        "title",
+        "excerpt",
+        "updated_at",
+        "assessment",
+        "rationale"
+      ],
+      "type": "object"
+    },
+    "ReviewCoverage": {
+      "enum": [
+        "complete",
+        "partial",
+        "unavailable"
+      ],
+      "type": "string"
+    },
+    "SourceReview": {
+      "additionalProperties": false,
+      "properties": {
+        "coverage": {
+          "$ref": "#/$defs/ReviewCoverage"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "from": {
+          "type": "string"
+        },
+        "until": {
+          "type": "string"
+        },
+        "upstream": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "upstream",
+        "from",
+        "until",
+        "coverage",
+        "detail"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "events": {
+      "items": {
+        "$ref": "#/$defs/ResearchEvent"
+      },
+      "type": "array"
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "schema_version": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "snapshot_id": {
+      "type": "string"
+    },
+    "sources": {
+      "items": {
+        "$ref": "#/$defs/SourceReview"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "project_id",
+    "snapshot_id",
+    "sources",
+    "events"
+  ],
+  "title": "ResearchBatch",
+  "type": "object"
+}

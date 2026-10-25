@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "project_id": "11111111-1111-4111-8111-111111111111",
+  "agent": "codex",
+  "agent_executable": "/absolute/path/to/codex",
+  "timezone": "America/Montevideo",
+  "at": "08:00",
+  "window_minutes": 180,
+  "frequency": "daily",
+  "report_dir": "/absolute/authorized/path/to/daily-reports"
+}

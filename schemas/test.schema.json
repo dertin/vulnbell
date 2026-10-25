@@ -1,0 +1,173 @@
+{
+  "$defs": {
+    "ControlSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_version": {
+          "type": "string"
+        },
+        "expected_exit": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "inputs": {
+          "items": {
+            "$ref": "#/$defs/TestInput"
+          },
+          "type": "array"
+        },
+        "stdout_contains": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifact_version",
+        "inputs",
+        "stdout_contains",
+        "expected_exit"
+      ],
+      "type": "object"
+    },
+    "Oracle": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_exit": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "purpose": {
+          "$ref": "#/$defs/OraclePurpose",
+          "default": "reproduction"
+        },
+        "stdout_contains": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "stdout_contains",
+        "expected_exit"
+      ],
+      "type": "object"
+    },
+    "OraclePurpose": {
+      "enum": [
+        "reproduction",
+        "positive_non_applicability"
+      ],
+      "type": "string"
+    },
+    "TestContext": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/TestMode"
+        }
+      },
+      "required": [
+        "mode",
+        "description"
+      ],
+      "type": "object"
+    },
+    "TestInput": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "name",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "TestMode": {
+      "enum": [
+        "workspace_copy",
+        "artifact_reproducer"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "artifact_version": {
+      "type": "string"
+    },
+    "context": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TestContext"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "control": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ControlSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "inputs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/TestInput"
+      },
+      "type": "array"
+    },
+    "instance_id": {
+      "type": "string"
+    },
+    "memory_mib": {
+      "default": 256,
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "oracle": {
+      "$ref": "#/$defs/Oracle"
+    },
+    "schema_version": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "script": {
+      "type": "string"
+    },
+    "timeout_seconds": {
+      "default": 30,
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "instance_id",
+    "artifact_version",
+    "script",
+    "oracle"
+  ],
+  "title": "TestSpec",
+  "type": "object"
+}

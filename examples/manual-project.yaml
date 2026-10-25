@@ -1,0 +1,23 @@
+schema: 1
+project_id: "11111111-1111-4111-8111-111111111111"
+name: critical-platform
+components:
+  - ref: keycloak
+    version: "26.8.1"
+  - ref: wordpress
+    version: latest
+  - ref: php
+    version: latest
+  - ref: pkg:cargo/serde
+    version: "1.0.228"
+  - ref: pkg:npm/%40nestjs/core
+    version: "10.4.8"
+  - ref: pkg:composer/monolog/monolog
+    version: "3.9.0"
+  - ref: gitlab-runner
+    version: "18.4.0"
+    upstream: https://gitlab.com/gitlab-org/gitlab-runner
+research:
+  web: agent
+  topics: ["security fix", "backport", "auth bypass"]
+schedule: daily

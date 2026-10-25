@@ -1,0 +1,258 @@
+{
+  "$defs": {
+    "ProjectScheduleStatus": {
+      "properties": {
+        "configuration_valid": {
+          "type": "boolean"
+        },
+        "configured": {
+          "type": "boolean"
+        },
+        "healthy": {
+          "type": "boolean"
+        },
+        "installed": {
+          "type": "boolean"
+        },
+        "last_job_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_job_outcome": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_skipped_job": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SkippedJob"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_trigger": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "next_run": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requested": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Schedule"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scheduler_failure": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timer_active": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "timer_state": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "configured",
+        "configuration_valid",
+        "installed",
+        "healthy"
+      ],
+      "type": "object"
+    },
+    "ProjectStatus": {
+      "properties": {
+        "errors": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "last_agent_failure": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_agent_review": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_agent_success": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_report": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "profile_available": {
+          "type": "boolean"
+        },
+        "project_id": {
+          "type": "string"
+        },
+        "scan": {
+          "$ref": "#/$defs/ScanStatus"
+        },
+        "schedule": {
+          "$ref": "#/$defs/ProjectScheduleStatus"
+        }
+      },
+      "required": [
+        "project_id",
+        "profile_available",
+        "scan",
+        "schedule",
+        "errors"
+      ],
+      "type": "object"
+    },
+    "ScanStatus": {
+      "properties": {
+        "last_completed_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_failure": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_started_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_successful_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "outcome": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Schedule": {
+      "enum": [
+        "daily",
+        "weekdays",
+        "weekly"
+      ],
+      "type": "string"
+    },
+    "SkippedJob": {
+      "additionalProperties": false,
+      "properties": {
+        "expires_at": {
+          "type": "string"
+        },
+        "next_iteration": {
+          "type": "string"
+        },
+        "schema_version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "slot": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "state",
+        "slot",
+        "expires_at",
+        "next_iteration"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "data_directory": {
+      "type": "string"
+    },
+    "projects": {
+      "items": {
+        "$ref": "#/$defs/ProjectStatus"
+      },
+      "type": "array"
+    },
+    "projects_found": {
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "schema_version": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "data_directory",
+    "projects_found",
+    "projects"
+  ],
+  "title": "StatusReport",
+  "type": "object"
+}

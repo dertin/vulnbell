@@ -1,0 +1,1 @@
+{"bomFormat":"CycloneDX","specVersion":"1.6","components":[{"purl":"pkg:cargo/serde@1.0.228","components":[{"purl":"pkg:npm/lodash@4.17.20"}]}]}

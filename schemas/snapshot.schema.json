@@ -1,0 +1,480 @@
+{
+  "$defs": {
+    "Applicability": {
+      "enum": [
+        "affected",
+        "not_affected",
+        "possible",
+        "unknown",
+        "conflict"
+      ],
+      "type": "string"
+    },
+    "Case": {
+      "properties": {
+        "applicability": {
+          "$ref": "#/$defs/Applicability"
+        },
+        "case_id": {
+          "type": "string"
+        },
+        "claims": {
+          "items": {
+            "$ref": "#/$defs/Claim"
+          },
+          "type": "array"
+        },
+        "coverage": {
+          "items": {
+            "$ref": "#/$defs/Coverage"
+          },
+          "type": "array"
+        },
+        "decision": {
+          "$ref": "#/$defs/Decision"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "type": "array"
+        },
+        "facts_sha256": {
+          "type": "string"
+        },
+        "instances": {
+          "items": {
+            "$ref": "#/$defs/Instance"
+          },
+          "type": "array"
+        },
+        "open_questions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "project_id": {
+          "type": "string"
+        },
+        "sandbox": {
+          "$ref": "#/$defs/SandboxAvailability"
+        },
+        "schema_version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "snapshot_id": {
+          "type": "string"
+        },
+        "suggested_search_queries": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "updated_at": {
+          "type": "string"
+        },
+        "upstream_events": {
+          "items": {
+            "$ref": "#/$defs/UpstreamEvent"
+          },
+          "type": "array"
+        },
+        "verification": {
+          "$ref": "#/$defs/Verification"
+        }
+      },
+      "required": [
+        "schema_version",
+        "case_id",
+        "project_id",
+        "snapshot_id",
+        "instances",
+        "claims",
+        "upstream_events",
+        "evidence",
+        "coverage",
+        "applicability",
+        "verification",
+        "decision",
+        "facts_sha256",
+        "open_questions",
+        "suggested_search_queries",
+        "sandbox",
+        "updated_at"
+      ],
+      "type": "object"
+    },
+    "Claim": {
+      "properties": {
+        "aliases": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "applicability": {
+          "$ref": "#/$defs/Applicability"
+        },
+        "evidence": {
+          "$ref": "#/$defs/Evidence"
+        },
+        "id": {
+          "type": "string"
+        },
+        "instance_id": {
+          "type": "string"
+        },
+        "known_exploited": {
+          "type": "boolean"
+        },
+        "source": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "source",
+        "aliases",
+        "instance_id",
+        "summary",
+        "applicability",
+        "evidence",
+        "known_exploited"
+      ],
+      "type": "object"
+    },
+    "Coverage": {
+      "properties": {
+        "detail": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/CoverageState"
+        }
+      },
+      "required": [
+        "source",
+        "scope",
+        "state",
+        "detail"
+      ],
+      "type": "object"
+    },
+    "CoverageState": {
+      "enum": [
+        "checked",
+        "partial",
+        "unsupported",
+        "unavailable",
+        "unresolved",
+        "disabled"
+      ],
+      "type": "string"
+    },
+    "Decision": {
+      "enum": [
+        "actionable",
+        "review",
+        "informational",
+        "dismissed"
+      ],
+      "type": "string"
+    },
+    "Evidence": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/EvidenceKind"
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "sha256",
+        "source",
+        "observed_at",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "EvidenceKind": {
+      "enum": [
+        "identity",
+        "advisory",
+        "context",
+        "attestation",
+        "non_applicability"
+      ],
+      "type": "string"
+    },
+    "Instance": {
+      "properties": {
+        "cpe_product": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "identity_evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "type": "array"
+        },
+        "origin": {
+          "$ref": "#/$defs/Origin"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "purl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ref": {
+          "type": "string"
+        },
+        "requested_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resolved_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "upstream": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "ref",
+        "origin",
+        "provenance",
+        "identity_evidence"
+      ],
+      "type": "object"
+    },
+    "Origin": {
+      "enum": [
+        "declared",
+        "locked",
+        "observed_artifact",
+        "deployed"
+      ],
+      "type": "string"
+    },
+    "Provenance": {
+      "properties": {
+        "artifact_integrity": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "direct": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resolution": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "workspace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "sha256",
+        "observed_at"
+      ],
+      "type": "object"
+    },
+    "SandboxAvailability": {
+      "properties": {
+        "available": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "available",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "UpstreamEvent": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "kind",
+        "id",
+        "url",
+        "title",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "Verification": {
+      "enum": [
+        "source_confirmed",
+        "lab_reproduced",
+        "not_reproduced",
+        "inconclusive",
+        "disproven"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "alert_status": {
+      "type": "string"
+    },
+    "cases": {
+      "items": {
+        "$ref": "#/$defs/Case"
+      },
+      "type": "array"
+    },
+    "coverage": {
+      "items": {
+        "$ref": "#/$defs/Coverage"
+      },
+      "type": "array"
+    },
+    "finished_at": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "instances": {
+      "items": {
+        "$ref": "#/$defs/Instance"
+      },
+      "type": "array"
+    },
+    "partial": {
+      "type": "boolean"
+    },
+    "profile_sha256": {
+      "type": "string"
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "schema_version": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "started_at": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "id",
+    "project_id",
+    "profile_sha256",
+    "started_at",
+    "finished_at",
+    "instances",
+    "coverage",
+    "cases",
+    "partial",
+    "alert_status"
+  ],
+  "title": "Snapshot",
+  "type": "object"
+}

@@ -1,0 +1,59 @@
+[package]
+name = "vulnbell"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+description = "Security monitoring and evidence-backed reports for your software"
+license = "MIT"
+repository = "https://github.com/dertin/vulnbell"
+homepage = "https://github.com/dertin/vulnbell"
+authors = ["Guillermo Céspedes Tabárez <dev.dertin@gmail.com>"]
+keywords = ["security", "dependencies", "monitoring", "vulnerability"]
+categories = ["command-line-utilities", "development-tools"]
+readme = "README.md"
+include = ["src/**", "skills/**", "schemas/**", "examples/**", "tests/**", "docs/**", "CHANGELOG.md", "CONTRIBUTING.md", "SECURITY.md", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE"]
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }-v{ version }{ archive-suffix }"
+bin-dir = "{ name }-{ target }-v{ version }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+disabled-strategies = ["quick-install"]
+
+[package.metadata.binstall.overrides.'cfg(windows)']
+pkg-fmt = "zip"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde-saphyr = { version = "2", default-features = false, features = ["serialize", "deserialize"] }
+schemars = { version = "1", features = ["uuid1"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls-native-roots"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+base64 = "0.22"
+httpdate = "1"
+url = "2"
+packageurl = "0.5"
+semver = "1"
+toml = "0.9"
+ignore = "0.4"
+tempfile = "3"
+fs2 = "0.4"
+chrono-tz = "0.10"
+chrono = { version = "0.4", features = ["serde"] }
+tar = { version = "0.4.46", default-features = false }
+
+[dev-dependencies]
+assert_cmd = "2"
+
+[profile.release]
+lto = "thin"
+strip = true
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.30", features = ["signal", "process"] }

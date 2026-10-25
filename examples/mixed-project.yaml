@@ -1,0 +1,10 @@
+schema: 1
+project_id: "22222222-2222-4222-8222-222222222222"
+name: engineering-security
+workspaces: ["../workspace", "../experiments"]
+components:
+  - ref: keycloak
+    version: "26.8.1"
+  - ref: pkg:npm/lodash
+    version: latest
+schedule: daily

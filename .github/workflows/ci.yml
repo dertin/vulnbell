@@ -1,0 +1,142 @@
+name: VulnBell CI
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+concurrency:
+  group: vulnbell-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  workflow-lint:
+    name: Workflow syntax
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+  dependencies:
+    name: Dependency advisories
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: cargo install cargo-audit --version 0.22.0 --locked
+      - run: cargo audit --deny warnings
+
+  test:
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --all-targets --locked
+      - run: cargo package --locked --allow-dirty
+      - name: Install from Git and verify the embedded Skill
+        if: runner.os == 'Linux'
+        run: |
+          cargo install --git "file://$GITHUB_WORKSPACE" --rev "$GITHUB_SHA" --locked --root "$RUNNER_TEMP/vulnbell-install" vulnbell
+          "$RUNNER_TEMP/vulnbell-install/bin/vulnbell" skills install --directory "$RUNNER_TEMP/vulnbell-skill"
+          test -f "$RUNNER_TEMP/vulnbell-skill/references/safety.md"
+  msrv:
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: 1.90.0
+      - run: cargo check --all-targets --locked
+  sandbox:
+    name: Real Microsandbox isolation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Isolate synthetic test state
+        run: echo "VULNBELL_DATA_DIR=$RUNNER_TEMP/vulnbell-sandbox" >> "$GITHUB_ENV"
+      - name: Install runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends util-linux e2fsprogs
+          if [ ! -c /dev/kvm ]; then
+            echo '::error::This runner has no /dev/kvm. Real sandbox acceptance cannot run; no backend fallback or silent skip is permitted.'
+            exit 1
+          fi
+          sudo chmod a+rw /dev/kvm
+          mkdir -p "$RUNNER_TEMP/microsandbox"
+          curl --fail --location --proto '=https' --tlsv1.2 https://github.com/superradcompany/microsandbox/releases/download/v0.7.11/microsandbox-linux-x86_64.tar.gz --output "$RUNNER_TEMP/microsandbox/runtime.tar.gz"
+          echo "5fc2206fbe35b471743bd5af15e3931cd2439a0c8b8e6ef08a493ddabcdc1b4c  $RUNNER_TEMP/microsandbox/runtime.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/microsandbox/runtime.tar.gz" -C "$RUNNER_TEMP/microsandbox" msb libkrunfw.so.5.6.1
+          echo "VULNBELL_MSB_EXECUTABLE=$RUNNER_TEMP/microsandbox/msb" >> "$GITHUB_ENV"
+      - name: Build CLI and prepare verified guest
+        run: |
+          mkdir -p verification
+          cargo build --locked
+          target/debug/vulnbell sandbox prepare > verification/sandbox-prepare.json 2> verification/sandbox-prepare.log
+      - name: Run isolation, controls and failure tests
+        run: |
+          set -o pipefail
+          cargo test --test sandbox_live --locked -- --ignored --nocapture 2>&1 | tee verification/sandbox-live.log
+      - name: Retain sandbox evidence on success or failure
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sandbox-evidence
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            verification/sandbox-*.json
+            verification/sandbox-*.log
+            ${{ runner.temp }}/vulnbell-sandbox/*/evidence/**
+            ${{ runner.temp }}/vulnbell-sandbox/*/state.sqlite*
+            ${{ runner.temp }}/vulnbell-sandbox/sandbox/msb/last-error.stderr
+
+  ci:
+    name: VulnBell required checks
+    if: always()
+    needs: [workflow-lint, dependencies, test, msrv, sandbox]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require every gate to pass
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          jobs = json.loads(os.environ["JOB_RESULTS"])
+          failed = [name for name, value in jobs.items() if value["result"] != "success"]
+          if failed:
+              raise SystemExit("Required checks did not pass: " + ", ".join(failed))
+          PY

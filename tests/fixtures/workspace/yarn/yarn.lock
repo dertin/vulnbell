@@ -1,0 +1,5 @@
+# yarn lockfile v1
+
+"@scope/lib@^1.0.0":
+  version "1.2.3"
+  resolved "https://registry.yarnpkg.com/@scope/lib/-/lib-1.2.3.tgz"

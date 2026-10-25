@@ -1,0 +1,78 @@
+{
+  "$defs": {
+    "AgentRunner": {
+      "enum": [
+        "codex",
+        "opencode"
+      ],
+      "type": "string"
+    },
+    "Frequency": {
+      "enum": [
+        "daily",
+        "weekdays",
+        "weekly"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "agent": {
+      "$ref": "#/$defs/AgentRunner"
+    },
+    "agent_executable": {
+      "type": "string"
+    },
+    "agent_model": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "at": {
+      "type": "string"
+    },
+    "frequency": {
+      "$ref": "#/$defs/Frequency"
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "report_dir": {
+      "type": "string"
+    },
+    "schema_version": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "timezone": {
+      "type": "string"
+    },
+    "use_connected_apps": {
+      "default": false,
+      "type": "boolean"
+    },
+    "window_minutes": {
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "project_id",
+    "agent",
+    "agent_executable",
+    "timezone",
+    "at",
+    "window_minutes",
+    "frequency",
+    "report_dir"
+  ],
+  "title": "ScheduleConfig",
+  "type": "object"
+}

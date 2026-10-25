@@ -1,0 +1,650 @@
+{
+  "$defs": {
+    "AdvisoryDetail": {
+      "properties": {
+        "advisory_id": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "fixed_versions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "severity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "source",
+        "advisory_id",
+        "description",
+        "fixed_versions"
+      ],
+      "type": "object"
+    },
+    "Applicability": {
+      "enum": [
+        "affected",
+        "not_affected",
+        "possible",
+        "unknown",
+        "conflict"
+      ],
+      "type": "string"
+    },
+    "Coverage": {
+      "properties": {
+        "detail": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/CoverageState"
+        }
+      },
+      "required": [
+        "source",
+        "scope",
+        "state",
+        "detail"
+      ],
+      "type": "object"
+    },
+    "CoverageState": {
+      "enum": [
+        "checked",
+        "partial",
+        "unsupported",
+        "unavailable",
+        "unresolved",
+        "disabled"
+      ],
+      "type": "string"
+    },
+    "Decision": {
+      "enum": [
+        "actionable",
+        "review",
+        "informational",
+        "dismissed"
+      ],
+      "type": "string"
+    },
+    "EvidenceReference": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "FindingCheck": {
+      "properties": {
+        "case_id": {
+          "type": "string"
+        },
+        "decision": {
+          "$ref": "#/$defs/Decision"
+        },
+        "impact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImpactResult"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "local_checks": {
+          "items": {
+            "$ref": "#/$defs/LocalCheck"
+          },
+          "type": "array"
+        },
+        "references": {
+          "items": {
+            "$ref": "#/$defs/FindingReference"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "case_id",
+        "decision",
+        "references",
+        "local_checks"
+      ],
+      "type": "object"
+    },
+    "FindingReference": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "url"
+      ],
+      "type": "object"
+    },
+    "HandoffItem": {
+      "properties": {
+        "advisory_details": {
+          "items": {
+            "$ref": "#/$defs/AdvisoryDetail"
+          },
+          "type": "array"
+        },
+        "applicability": {
+          "$ref": "#/$defs/Applicability"
+        },
+        "case_id": {
+          "type": "string"
+        },
+        "components": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "detail_gaps": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "evidence_links": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "evidence_sha256": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "known_exploited": {
+          "type": "boolean"
+        },
+        "open_questions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "origin": {
+          "items": {
+            "$ref": "#/$defs/Origin"
+          },
+          "type": "array"
+        },
+        "recommended_action": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "verification": {
+          "$ref": "#/$defs/Verification"
+        }
+      },
+      "required": [
+        "case_id",
+        "components",
+        "origin",
+        "summary",
+        "advisory_details",
+        "detail_gaps",
+        "applicability",
+        "verification",
+        "known_exploited",
+        "evidence_links",
+        "evidence_sha256",
+        "open_questions",
+        "recommended_action"
+      ],
+      "type": "object"
+    },
+    "ImpactAnswer": {
+      "additionalProperties": false,
+      "properties": {
+        "answer": {
+          "$ref": "#/$defs/ImpactAnswerValue"
+        },
+        "evidence": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceReference"
+          },
+          "type": "array"
+        },
+        "instance_id": {
+          "type": "string"
+        },
+        "question": {
+          "$ref": "#/$defs/ImpactQuestionId"
+        },
+        "rationale": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "instance_id",
+        "question",
+        "answer",
+        "rationale"
+      ],
+      "type": "object"
+    },
+    "ImpactAnswerValue": {
+      "enum": [
+        "yes",
+        "no",
+        "unknown",
+        "not_applicable"
+      ],
+      "type": "string"
+    },
+    "ImpactConfidence": {
+      "enum": [
+        "high",
+        "medium",
+        "low"
+      ],
+      "type": "string"
+    },
+    "ImpactQuestionId": {
+      "enum": [
+        "artifact_deployed",
+        "affected_feature_used",
+        "untrusted_input_reaches_feature",
+        "required_conditions_present",
+        "fix_or_mitigation_applied"
+      ],
+      "type": "string"
+    },
+    "ImpactResult": {
+      "properties": {
+        "answers": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ImpactAnswer"
+          },
+          "type": "array"
+        },
+        "assessed_at": {
+          "type": "string"
+        },
+        "case_id": {
+          "type": "string"
+        },
+        "confidence": {
+          "$ref": "#/$defs/ImpactConfidence"
+        },
+        "facts_sha256": {
+          "type": "string"
+        },
+        "instances": {
+          "items": {
+            "$ref": "#/$defs/InstanceImpact"
+          },
+          "type": "array"
+        },
+        "schema_version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "verdict": {
+          "$ref": "#/$defs/ImpactVerdict"
+        }
+      },
+      "required": [
+        "schema_version",
+        "case_id",
+        "facts_sha256",
+        "verdict",
+        "confidence",
+        "instances",
+        "assessed_at"
+      ],
+      "type": "object"
+    },
+    "ImpactVerdict": {
+      "enum": [
+        "urgent_update",
+        "priority_update",
+        "routine_update",
+        "mitigated",
+        "not_affected",
+        "needs_evidence"
+      ],
+      "type": "string"
+    },
+    "InstanceImpact": {
+      "properties": {
+        "confidence": {
+          "$ref": "#/$defs/ImpactConfidence"
+        },
+        "instance_id": {
+          "type": "string"
+        },
+        "open_questions": {
+          "items": {
+            "$ref": "#/$defs/ImpactQuestionId"
+          },
+          "type": "array"
+        },
+        "reasons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "verdict": {
+          "$ref": "#/$defs/ImpactVerdict"
+        }
+      },
+      "required": [
+        "instance_id",
+        "verdict",
+        "confidence",
+        "reasons",
+        "open_questions"
+      ],
+      "type": "object"
+    },
+    "LocalCheck": {
+      "properties": {
+        "artifact_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "attestation_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "context": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TestContext"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "detail": {
+          "type": "string"
+        },
+        "instance_id": {
+          "type": "string"
+        },
+        "observed_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "result": {
+          "$ref": "#/$defs/LocalResult"
+        }
+      },
+      "required": [
+        "instance_id",
+        "result",
+        "detail"
+      ],
+      "type": "object"
+    },
+    "LocalResult": {
+      "enum": [
+        "not_run",
+        "blocked",
+        "reproduced",
+        "not_reproduced",
+        "inconclusive",
+        "not_applicable",
+        "invalid_evidence"
+      ],
+      "type": "string"
+    },
+    "MonitoredComponent": {
+      "properties": {
+        "instance_id": {
+          "type": "string"
+        },
+        "origin": {
+          "$ref": "#/$defs/Origin"
+        },
+        "ref": {
+          "type": "string"
+        },
+        "requested_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resolved_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "upstream": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workspace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "instance_id",
+        "ref",
+        "origin"
+      ],
+      "type": "object"
+    },
+    "Origin": {
+      "enum": [
+        "declared",
+        "locked",
+        "observed_artifact",
+        "deployed"
+      ],
+      "type": "string"
+    },
+    "TestContext": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/TestMode"
+        }
+      },
+      "required": [
+        "mode",
+        "description"
+      ],
+      "type": "object"
+    },
+    "TestMode": {
+      "enum": [
+        "workspace_copy",
+        "artifact_reproducer"
+      ],
+      "type": "string"
+    },
+    "Verification": {
+      "enum": [
+        "source_confirmed",
+        "lab_reproduced",
+        "not_reproduced",
+        "inconclusive",
+        "disproven"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "actionable": {
+      "items": {
+        "$ref": "#/$defs/HandoffItem"
+      },
+      "type": "array"
+    },
+    "audience": {
+      "type": "string"
+    },
+    "coverage_gaps": {
+      "items": {
+        "$ref": "#/$defs/Coverage"
+      },
+      "type": "array"
+    },
+    "dismissed_count": {
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "finding_checks": {
+      "items": {
+        "$ref": "#/$defs/FindingCheck"
+      },
+      "type": "array"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "informational_count": {
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "inventory": {
+      "items": {
+        "$ref": "#/$defs/MonitoredComponent"
+      },
+      "type": "array"
+    },
+    "last_agent_review": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "last_scan": {
+      "type": "string"
+    },
+    "last_successful_scan": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "needs_review": {
+      "items": {
+        "$ref": "#/$defs/HandoffItem"
+      },
+      "type": "array"
+    },
+    "notification_status": {
+      "type": "string"
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "project_name": {
+      "type": "string"
+    },
+    "scheduler_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "schema_version": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "audience",
+    "project_id",
+    "project_name",
+    "generated_at",
+    "last_scan",
+    "inventory",
+    "actionable",
+    "needs_review",
+    "informational_count",
+    "dismissed_count",
+    "coverage_gaps",
+    "notification_status",
+    "finding_checks"
+  ],
+  "title": "MorningReport",
+  "type": "object"
+}

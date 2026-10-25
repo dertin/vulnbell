@@ -1,0 +1,176 @@
+{
+  "$defs": {
+    "Alerts": {
+      "additionalProperties": false,
+      "properties": {
+        "webhook_env": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Component": {
+      "additionalProperties": false,
+      "properties": {
+        "feeds": {
+          "items": {
+            "$ref": "#/$defs/Feed"
+          },
+          "type": "array"
+        },
+        "ref": {
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string"
+        },
+        "upstream": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage",
+          "default": "tracked"
+        },
+        "version": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "ref"
+      ],
+      "type": "object"
+    },
+    "Feed": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/FeedKind"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "url"
+      ],
+      "type": "object"
+    },
+    "FeedKind": {
+      "enum": [
+        "csaf",
+        "vex",
+        "rss",
+        "atom"
+      ],
+      "type": "string"
+    },
+    "Research": {
+      "additionalProperties": false,
+      "properties": {
+        "topics": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 30,
+          "type": "array"
+        },
+        "web": {
+          "$ref": "#/$defs/WebResearch",
+          "default": "off"
+        }
+      },
+      "type": "object"
+    },
+    "Schedule": {
+      "enum": [
+        "daily",
+        "weekdays",
+        "weekly"
+      ],
+      "type": "string"
+    },
+    "Usage": {
+      "enum": [
+        "tracked",
+        "deployed"
+      ],
+      "type": "string"
+    },
+    "WebResearch": {
+      "enum": [
+        "agent",
+        "off"
+      ],
+      "type": "string"
+    }
+  },
+  "$id": "urn:vulnbell:schema:profile:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "alerts": {
+      "$ref": "#/$defs/Alerts",
+      "default": {}
+    },
+    "components": {
+      "items": {
+        "$ref": "#/$defs/Component"
+      },
+      "type": "array"
+    },
+    "name": {
+      "maxLength": 120,
+      "minLength": 1,
+      "type": "string"
+    },
+    "project_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "research": {
+      "$ref": "#/$defs/Research",
+      "default": {
+        "topics": [],
+        "web": "off"
+      }
+    },
+    "schedule": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Schedule"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "schema": {
+      "const": 1
+    },
+    "workspaces": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema",
+    "project_id",
+    "name"
+  ],
+  "title": "Profile",
+  "type": "object"
+}
