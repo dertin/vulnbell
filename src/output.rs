@@ -383,7 +383,7 @@ pub fn discovery_markdown(report: &MorningReport) -> String {
 
 pub fn morning_markdown(report: &MorningReport) -> String {
     let mut text = format!(
-        "# VulnBell — {}\n\nCorte: {} · Revisión del agente: {}\n\n| Accionables | En revisión | Informativos | Descartados | Brechas |\n|---:|---:|---:|---:|---:|\n| {} | {} | {} | {} | {} |\n\n",
+        "# VulnBell — {}\n\nCorte: {} · Revisión del agente: {}\n\n| Estado | Casos | Significado |\n|---|---:|---|\n| Accionables | {} | Versión afectada confirmada; evaluar impacto, actualización o mitigación. |\n| En revisión | {} | Señal de un issue/PR o evidencia incompleta o contradictoria; falta corroborar el reclamo o la identidad del artefacto. |\n| Informativos | {} | Contexto útil sin acción de seguridad pendiente. |\n| Descartados | {} | Un veredicto sustentado por evidencia cerró el caso en el alcance evaluado. |\n\nBrechas de cobertura: **{}** comprobaciones incompletas de fuentes o inventario; no son hallazgos de seguridad.\n\n",
         inline(&report.project_name),
         report.last_scan,
         report.last_agent_review.as_deref().unwrap_or("pendiente"),
@@ -424,8 +424,17 @@ pub fn morning_markdown(report: &MorningReport) -> String {
             continue;
         }
         if decision == Decision::Review {
-            text.push_str("| Caso / componente | Hipótesis | Condición pendiente / próximo paso | Evidencia |\n|---|---|---|---|\n");
+            text.push_str("| Caso / componente | Señal investigada | Por qué sigue en revisión | Próximo paso | Evidencia |\n|---|---|---|---|---|\n");
             for item in items {
+                let mut review_context = format!(
+                    "Aplicabilidad: {}; verificación: {}.",
+                    applicability_label(item.applicability),
+                    verification_label(item.verification)
+                );
+                for question in &item.open_questions {
+                    review_context.push(' ');
+                    review_context.push_str(question);
+                }
                 let link = item
                     .evidence_links
                     .first()
@@ -437,15 +446,12 @@ pub fn morning_markdown(report: &MorningReport) -> String {
                     })
                     .unwrap_or_else(|| "sin enlace".into());
                 text.push_str(&format!(
-                    "| {} / {} | {} | {} | {} |\n",
+                    "| {} / {} | {} | {} | {} | {} |\n",
                     inline(&item.case_id),
                     inline(&item.components.join(", ")),
                     inline(&item.summary),
-                    inline(
-                        item.open_questions
-                            .first()
-                            .unwrap_or(&item.recommended_action)
-                    ),
+                    inline(&review_context),
+                    inline(&item.recommended_action),
                     link
                 ));
             }

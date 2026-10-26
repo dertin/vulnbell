@@ -218,7 +218,7 @@ fn every_reference_is_kept_for_review_and_dismissed_cases_without_claiming_local
         verification: Verification::SourceConfirmed,
         decision: Decision::Review,
         facts_sha256: "facts".into(),
-        open_questions: Vec::new(),
+        open_questions: vec!["Confirmar si la versión 1.0.0 incluye la función reportada.".into()],
         suggested_search_queries: Vec::new(),
         sandbox: SandboxAvailability {
             available: true,
@@ -247,6 +247,20 @@ fn every_reference_is_kept_for_review_and_dismissed_cases_without_claiming_local
         case.decision = decision;
         snapshot.cases = vec![case.clone()];
         let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+        let summary = vulnbell::output::morning_markdown(&report);
+        assert!(summary.contains("| Estado | Casos | Significado |"));
+        assert!(summary.contains("no son hallazgos de seguridad"));
+        if decision == Decision::Review {
+            assert!(summary.contains("| En revisión | 1 |"));
+            assert!(summary.contains("SYNTHETIC hypothesis"));
+            assert!(summary.contains("Por qué sigue en revisión"));
+            assert!(
+                summary.contains("Aplicabilidad: desconocido; verificación: confirmado por fuente")
+            );
+            assert!(summary.contains("Confirmar si la versión 1.0.0 incluye la función reportada"));
+            assert!(summary.contains("Próximo paso"));
+            assert!(summary.contains("https://github.com/example/project/issues/1"));
+        }
         assert_eq!(report.finding_checks.len(), 1);
         assert_eq!(report.finding_checks[0].references.len(), 2);
         assert_eq!(

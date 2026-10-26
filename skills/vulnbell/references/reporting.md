@@ -6,9 +6,14 @@ Write reports in Spanish. Start with the title and data. Omit greetings, long in
 # VulnBell — <project>
 Cutoff: <date/time/zone> · Coverage: <full/partial>
 
-| Actionable | In review | Informational | Dismissed |
-|---:|---:|---:|---:|
-| ... | ... | ... | ... |
+| Status | Cases | Meaning |
+|---|---:|---|
+| Actionable | ... | Affected artifact/version confirmed; assess project impact and update or mitigate. |
+| In review | ... | An issue/PR signal, uncertain artifact identity, or incomplete/conflicting evidence still needs corroboration. |
+| Informational | ... | Useful context with no pending security action. |
+| Dismissed | ... | An evidence-backed verdict closed the case within the assessed scope. |
+
+Coverage gaps: <count> incomplete source or inventory checks; these are not security findings.
 
 ## Inventory
 
@@ -31,9 +36,9 @@ Cutoff: <date/time/zone> · Coverage: <full/partial>
 
 ## In review
 
-| Case / component | Hypothesis and possible impact | Open question / next step | Evidence |
-|---|---|---|---|
-| ... | ... | ... | ... |
+| Case / component | Signal and possible impact | Why still in review | Next step | Evidence |
+|---|---|---|---|---|
+| ... | What the source claims, in one sentence | Verified facts, uncertainty and the condition still unconfirmed | Concrete check | Original issue/PR/advisory links |
 
 ## Coverage and execution
 
@@ -43,6 +48,8 @@ Cutoff: <date/time/zone> · Coverage: <full/partial>
 ```
 
 Keep scheduled reports within 500 words; aim for 350–450. Prioritize actionable findings and at most three hypotheses. Give counts for the remaining cases. Group duplicate symptoms and link full cases and evidence for details. If the user requests a full report, include all relevant cases in the same structure.
+
+Use the recorded case decision for the counts. Each in-review entry needs its case ID, affected component/version, a short description of the claim, what is already verified, and what still prevents a conclusion. A bare issue title or “investigation pending” is insufficient when the recorded evidence has more detail. Explain missing data explicitly. Project-impact uncertainty is separate from confirmation that the artifact/version is affected.
 
 Scheduled reports append the discovery progress and complete source map from recorded CLI data. Do not repeat that table in the generated narrative. Count it separately from the narrative word budget. Agent-observed dependencies have not been attested by a native lockfile parser or deployment record.
 

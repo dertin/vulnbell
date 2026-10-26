@@ -2,9 +2,14 @@
 
 Cutoff: 2026-10-25 22:52 UTC · Coverage: partial
 
-| Actionable | In review | Informational | Dismissed |
-|---:|---:|---:|---:|
-| 1 | 0 | 0 | 0 |
+| Status | Cases | Meaning |
+|---|---:|---|
+| Actionable | 1 | Affected artifact/version confirmed; assess project impact and update or mitigate. |
+| In review | 0 | An issue/PR signal, uncertain artifact identity, or incomplete/conflicting evidence still needs corroboration. |
+| Informational | 0 | Useful context with no pending security action. |
+| Dismissed | 0 | An evidence-backed verdict closed the case within the assessed scope. |
+
+Counts refer to cases. Incomplete source or inventory checks are listed separately under coverage gaps.
 
 ## Inventory
 
@@ -33,6 +38,10 @@ No workspace or deployment inventory was provided.
 | Untrusted input reaches those fields | Unknown | No project source or data-flow evidence |
 | Advisory conditions present | Unknown | No project configuration |
 | Fix or mitigation applied | Unknown | No deployment evidence |
+
+## In review
+
+No open hypotheses in this scan.
 
 ## Local verification
 

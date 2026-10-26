@@ -1,5 +1,7 @@
 # VulnBell
 
+![VulnBell — software security monitoring with an abstract upstream signal mark](docs/assets/vulnbell-cover.png)
+
 [![CI](https://github.com/dertin/vulnbell/actions/workflows/ci.yml/badge.svg)](https://github.com/dertin/vulnbell/actions/workflows/ci.yml)
 
 VulnBell helps a local agent monitor the software your projects depend on and produce clear security reports for Engineering and Cyber teams.
