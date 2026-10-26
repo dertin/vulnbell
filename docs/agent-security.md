@@ -7,8 +7,7 @@ Issues, pull requests, web pages, code, and claimed security reports are untrust
 - The researcher receives a bounded plan through stdin and has only public research tools.
 - Shell, local file access, personal MCP, Apps, plugins, hooks, and subagents are disabled.
 - The report writer receives recorded data and has no tools.
-- The runner checks its effective tool permissions before research. Local web fetch and inherited configuration are denied.
-- `use_connected_apps: true` is rejected.
+- Each adapter checks its supported client version and effective tool permissions before research. Local web fetch and inherited configuration are denied.
 - Imported research is stored as context. It cannot create a lab attestation or dismiss a case by itself.
 - The impact verdict is calculated by the CLI from fixed questions and registered evidence. It never changes the case decision or grants test permission.
 
@@ -26,6 +25,6 @@ If static evidence is insufficient and a dynamic check is authorized, only selec
 
 ## Scope
 
-These controls apply to VulnBell's runner. A Skill loaded in another harness cannot revoke that agent's permissions. The client, provider, runtime, and operating system remain trusted dependencies. Local hashes record integrity; they are not remote certification.
+These controls apply to validated VulnBell adapters. A Skill loaded in another harness cannot revoke that agent's permissions. A new adapter is not supported until its effective research and reporting capabilities pass the adapter contract. The client, provider, runtime, and operating system remain trusted dependencies. Local hashes record integrity; they are not remote certification.
 
 Reports stay local. Sharing with Cyber needs an approved destination. Searches must not include credentials, private code, or local paths.

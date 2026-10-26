@@ -1,4 +1,4 @@
-use super::{ScheduleConfig, base_command};
+use super::{AgentAdapter, Request, base_command};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -9,19 +9,24 @@ use std::{
     process::Command,
 };
 
+pub(super) const TESTED_VERSION: &str = "1.19.4";
+
+pub(super) struct OpenCodeAdapter<'a> {
+    pub executable: &'a Path,
+    pub model: &'a str,
+}
+
 struct Session {
     directory: tempfile::TempDir,
     settings: Value,
     permissions: Value,
     auth: String,
 }
+
 impl Session {
-    fn new(config: &ScheduleConfig, directory: &Path, research: bool) -> Result<Self> {
-        let model = config
-            .agent_model
-            .as_deref()
-            .context("OpenCode requires agent_model")?;
-        let (provider, _) = model
+    fn new(adapter: &OpenCodeAdapter<'_>, directory: &Path, research: bool) -> Result<Self> {
+        let (provider, _) = adapter
+            .model
             .split_once('/')
             .context("OpenCode model must be provider/model")?;
         let auth_path = match std::env::var_os("XDG_DATA_HOME") {
@@ -69,8 +74,9 @@ impl Session {
             auth: serde_json::to_string(&auth)?,
         })
     }
-    fn command(&self, config: &ScheduleConfig) -> Result<Command> {
-        let mut command = base_command(config, &self.directory.path().join("work"));
+
+    fn command(&self, adapter: &OpenCodeAdapter<'_>) -> Result<Command> {
+        let mut command = base_command(adapter.executable, &self.directory.path().join("work"));
         command.env_remove("CODEX_HOME");
         for (key, name) in [
             ("HOME", "home"),
@@ -109,14 +115,15 @@ impl Session {
             .arg("--pure");
         Ok(command)
     }
-    fn preflight(&self, config: &ScheduleConfig, research: bool) -> Result<()> {
-        let mut version = base_command(config, self.directory.path());
+
+    fn preflight(&self, adapter: &OpenCodeAdapter<'_>, research: bool) -> Result<()> {
+        let mut version = base_command(adapter.executable, self.directory.path());
         version.arg("--version");
         let observed = crate::process::run_bounded_agent(&mut version, 5, 4096)?;
-        if !observed.success || String::from_utf8_lossy(&observed.stdout).trim() != "1.19.4" {
-            bail!("OpenCode requires tested version 1.19.4");
+        if !observed.success || String::from_utf8_lossy(&observed.stdout).trim() != TESTED_VERSION {
+            bail!("OpenCode adapter requires tested version {TESTED_VERSION}");
         }
-        let mut command = self.command(config)?;
+        let mut command = self.command(adapter)?;
         command.args(["debug", "config"]);
         let result = crate::process::run_bounded_agent(&mut command, 20, 1024 * 1024)?;
         if !result.success {
@@ -130,7 +137,7 @@ impl Session {
         {
             bail!("OpenCode effective configuration differs from the required capability policy");
         }
-        let mut command = self.command(config)?;
+        let mut command = self.command(adapter)?;
         command.args(["debug", "agent", "vulnbell"]);
         let result = crate::process::run_bounded_agent(&mut command, 20, 1024 * 1024)?;
         if !result.success {
@@ -159,12 +166,14 @@ impl Session {
         Ok(())
     }
 }
+
 #[derive(Deserialize)]
 struct Event {
     #[serde(rename = "type")]
     kind: String,
     part: Option<Part>,
 }
+
 #[derive(Deserialize)]
 struct Part {
     text: Option<String>,
@@ -172,10 +181,12 @@ struct Part {
     tool: Option<String>,
     state: Option<ToolState>,
 }
+
 #[derive(Deserialize)]
 struct ToolState {
     status: String,
 }
+
 fn final_output(bytes: &[u8], research: bool) -> Result<String> {
     let mut output = String::new();
     let mut finished = false;
@@ -223,49 +234,52 @@ fn final_output(bytes: &[u8], research: bool) -> Result<String> {
     }
     Ok(output)
 }
-pub(super) fn execute(
-    config: &ScheduleConfig,
-    directory: &Path,
-    output: &Path,
-    prompt: &str,
-    schema: Option<&Path>,
-    seconds: u64,
-    log: &Path,
-) -> Result<()> {
-    let research = schema.is_some();
-    let session = Session::new(config, directory, research)?;
-    session.preflight(config, research)?;
-    let mut command = session.command(config)?;
-    command
-        .args(["run", "--format", "json", "--agent", "vulnbell", "--model"])
-        .arg(
-            config
-                .agent_model
-                .as_deref()
-                .context("OpenCode requires agent_model")?,
-        );
-    let input = match schema {
-        Some(path) => format!(
-            "{prompt}\n\nReturn one JSON object matching this schema, without Markdown fences:\n{}",
-            String::from_utf8(crate::read_limited(path, 1024 * 1024)?)?
-        ),
-        None => prompt.to_owned(),
-    };
-    if input.len() > 4 * 1024 * 1024 {
-        bail!("OpenCode task and schema exceed the 4 MiB input budget");
+
+impl AgentAdapter for OpenCodeAdapter<'_> {
+    fn check(&self, directory: &Path) -> Result<()> {
+        for research in [true, false] {
+            let session = Session::new(self, directory, research)?;
+            session.preflight(self, research)?;
+        }
+        Ok(())
     }
-    let result = crate::process::run_agent_with_input(
-        &mut command,
-        seconds,
-        8 * 1024 * 1024,
-        input.as_bytes(),
-    )?;
-    crate::atomic_write(log, &result.stdout)?;
-    crate::atomic_write(&log.with_extension("stderr"), &result.stderr)?;
-    if !result.success {
-        bail!("OpenCode failed or exceeded its execution window; inspect private job logs");
+
+    fn execute(&self, request: Request<'_>) -> Result<()> {
+        let research = request.schema.is_some();
+        let session = Session::new(self, request.directory, research)?;
+        session.preflight(self, research)?;
+        let mut command = session.command(self)?;
+        command
+            .args(["run", "--format", "json", "--agent", "vulnbell", "--model"])
+            .arg(self.model);
+        let input = match request.schema {
+            Some(path) => format!(
+                "{}\n\nReturn one JSON object matching this schema, without Markdown fences:\n{}",
+                request.prompt,
+                String::from_utf8(crate::read_limited(path, 1024 * 1024)?)?
+            ),
+            None => request.prompt.to_owned(),
+        };
+        if input.len() > 4 * 1024 * 1024 {
+            bail!("OpenCode task and schema exceed the 4 MiB input budget");
+        }
+        let result = crate::process::run_agent_with_input(
+            &mut command,
+            request.seconds,
+            8 * 1024 * 1024,
+            input.as_bytes(),
+        )?;
+        crate::atomic_write(request.log, &result.stdout)?;
+        crate::atomic_write(&request.log.with_extension("stderr"), &result.stderr)?;
+        if !result.success {
+            bail!("OpenCode failed or exceeded its execution window; inspect private job logs");
+        }
+        crate::atomic_write(
+            request.output,
+            final_output(&result.stdout, research)?.as_bytes(),
+        )
     }
-    crate::atomic_write(output, final_output(&result.stdout, research)?.as_bytes())
 }
+
 #[cfg(test)]
 mod tests;

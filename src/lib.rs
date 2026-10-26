@@ -10,6 +10,7 @@ pub mod output;
 pub mod process;
 pub mod profile;
 pub mod research;
+pub mod runners;
 pub mod sandbox;
 pub mod scheduler;
 pub mod skills;

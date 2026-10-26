@@ -56,7 +56,7 @@ To get a fresh report at any time:
 
 ## Schedule reports
 
-Scheduling is configured per project. Choose `daily`, `weekdays`, or `weekly`, plus a time zone, start time, allowed execution window, local agent, and report folder.
+Scheduling is configured per project. Choose `daily`, `weekdays`, or `weekly`, plus a time zone, start time, allowed execution window, local runner, and report folder. Executable paths and model selection are stored once in the local VulnBell data directory instead of every project schedule. Credentials remain in the selected agent client.
 
 If your computer starts during the window, the review runs. If it misses the whole window, that run is skipped. The next run follows the schedule. VulnBell does not send team messages by default.
 
@@ -66,7 +66,9 @@ If your computer starts during the window, the review runs. If it misses the who
 
 VulnBell applies the configured schedule window and records completed, failed, and skipped runs on every platform. It does not wake a powered-off computer. Native job installation is currently included for Linux; macOS and Windows use their system schedulers.
 
-[Set up scheduled runs](docs/automation.md) · [Agent integration](docs/agents.md)
+Each run writes a Markdown file below the schedule's absolute `report_dir`. `vulnbell status` shows the exact path of the latest report. Private logs and audit data stay in VulnBell's data directory.
+
+[Set up scheduled runs](docs/automation.md) · [Local runners](docs/runners.md) · [Agent integration](docs/agents.md)
 
 ## CLI
 
@@ -76,6 +78,7 @@ vulnbell scan --project radar.yaml --json
 vulnbell inbox --project radar.yaml --json
 vulnbell impact SIG-... --project radar.yaml
 vulnbell report --project radar.yaml --audience cyber
+vulnbell runners list --json
 vulnbell run --project radar.yaml --now
 ```
 

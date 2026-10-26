@@ -58,6 +58,15 @@
             }
           ]
         },
+        "runner": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runner_configured": {
+          "type": "boolean"
+        },
         "scheduler_failure": {
           "type": [
             "string",
@@ -80,6 +89,7 @@
       "required": [
         "configured",
         "configuration_valid",
+        "runner_configured",
         "installed",
         "healthy"
       ],

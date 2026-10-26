@@ -243,13 +243,20 @@ fn status_lists_registered_projects_and_persisted_schedule_outcomes() {
     fs::write(&path, serde_saphyr::to_string(&profile).unwrap()).unwrap();
 
     let store = Store::open(project_id).unwrap();
-    let config = vulnbell::scheduler::ScheduleConfig {
+    let runner_id = format!("status-{project_id}");
+    let runner = vulnbell::runners::RunnerConfig {
         schema_version: 1,
+        id: runner_id.clone(),
+        adapter: vulnbell::runners::AdapterConfig::Codex {
+            executable: std::env::current_exe().unwrap(),
+            model: None,
+        },
+    };
+    vulnbell::runners::save(&runner).unwrap();
+    let config = vulnbell::scheduler::ScheduleConfig {
+        schema_version: 2,
         project_id: project_id.into(),
-        agent: vulnbell::scheduler::AgentRunner::Codex,
-        agent_executable: std::env::current_exe().unwrap(),
-        agent_model: None,
-        use_connected_apps: false,
+        runner: runner_id.clone(),
         timezone: "America/Montevideo".into(),
         at: "08:00".into(),
         window_minutes: 180,
@@ -292,6 +299,8 @@ fn status_lists_registered_projects_and_persisted_schedule_outcomes() {
     assert_eq!(project["schedule"]["requested"], "daily");
     assert_eq!(project["schedule"]["configured"], true);
     assert_eq!(project["schedule"]["configuration_valid"], true);
+    assert_eq!(project["schedule"]["runner"], runner_id);
+    assert_eq!(project["schedule"]["runner_configured"], true);
     assert_eq!(project["schedule"]["installed"], false);
     assert_eq!(project["schedule"]["healthy"], false);
     assert_eq!(
@@ -338,6 +347,7 @@ fn status_lists_registered_projects_and_persisted_schedule_outcomes() {
     );
 
     fs::remove_dir_all(vulnbell::store::data_root().join(project_id)).unwrap();
+    fs::remove_file(vulnbell::runners::config_path(&runner_id).unwrap()).unwrap();
 }
 
 #[test]

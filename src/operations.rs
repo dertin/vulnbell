@@ -14,6 +14,7 @@ pub use status::{StatusReport, status, status_markdown};
 
 pub fn doctor() -> Result<serde_json::Value> {
     let skill_status = crate::skills::status()?;
+    let runners = crate::runners::list()?;
     let mut command = Command::new("systemctl");
     command.env_clear().env("PATH", "/usr/bin:/bin");
     for key in ["XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "HOME"] {
@@ -24,7 +25,7 @@ pub fn doctor() -> Result<serde_json::Value> {
     command.args(["--user", "show-environment"]);
     let scheduler = run_bounded(&mut command, 5, 65536).is_ok_and(|result| result.success);
     Ok(
-        serde_json::json!({"schema_version":1,"cli_version":env!("CARGO_PKG_VERSION"),"data_directory":crate::store::data_root(),"skills":skill_status,"sandbox":crate::sandbox::availability(),"scheduler":{"systemd_user":scheduler,"unattended_agent_review":false},"credentials":{"github":std::env::var_os("GITHUB_TOKEN").is_some(),"nvd":std::env::var_os("NVD_API_KEY").is_some()},"connectivity":"not_checked: scan reports per-source network evidence","supported_hosts":["Codex (.agents/skills)","OpenCode (.agents/skills)"],"host_integration":"installation paths only; see docs/coverage.md for completed real host flows"}),
+        serde_json::json!({"schema_version":1,"cli_version":env!("CARGO_PKG_VERSION"),"data_directory":crate::store::data_root(),"skills":skill_status,"sandbox":crate::sandbox::availability(),"scheduler":{"systemd_user":scheduler,"unattended_agent_review":false},"runners":{"configured":runners,"adapters":crate::runners::adapter_catalog()},"credentials":{"github":std::env::var_os("GITHUB_TOKEN").is_some(),"nvd":std::env::var_os("NVD_API_KEY").is_some()},"connectivity":"not_checked: scan reports per-source network evidence"}),
     )
 }
 fn systemd_command(args: &[&str]) -> Result<ProcessResult> {
@@ -70,17 +71,23 @@ pub fn schedule(
         bail!("scheduler action must be install or status");
     }
     if profile.schedule.is_none() {
-        bail!("profile must request schedule: daily");
+        bail!("profile must request schedule: daily, weekdays or weekly");
     }
     if !systemd_command(&["show-environment"])?.success {
         bail!("systemd user scheduler unavailable; no job installed");
     }
     if let Some(config_path) = config_path {
-        let config: crate::scheduler::ScheduleConfig =
-            serde_json::from_slice(&crate::read_limited(config_path, 65536)?)?;
+        let bytes = crate::read_limited(config_path, 65536)?;
+        let config = crate::scheduler::parse_config(profile, &bytes)?;
         crate::scheduler::save_config(profile, &store, &config)?;
     }
     let config = crate::scheduler::load_config(profile, &store)?;
+    crate::runners::load(&config.runner).with_context(|| {
+        format!(
+            "schedule references runner '{}'; configure it before installing the job",
+            config.runner
+        )
+    })?;
     let path = path.canonicalize()?;
     let executable = std::env::current_exe()?.canonicalize()?;
     let directory = crate::user_home()?.join(".config/systemd/user");

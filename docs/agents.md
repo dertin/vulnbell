@@ -14,8 +14,10 @@ The default Skill location is:
 | Linux and macOS | `$HOME/.agents/skills/vulnbell` |
 | Windows | `%USERPROFILE%\.agents\skills\vulnbell` |
 
-The Skill guides the local agent through profile creation, inventory, advisory checks, upstream research, impact assessment, sandbox approval, reporting, and status checks. The CLI preserves the same projects, cases, evidence, impact answers, sandbox attestations, and reports when the configured runner changes.
+The Skill guides the current interactive agent through profile creation, inventory, advisory checks, upstream research, impact assessment, sandbox approval, reporting, and status checks. The CLI preserves the same projects, cases, evidence, impact answers, sandbox attestations, and reports when the configured runner changes.
 
-For unattended runs, choose one of the runner values exposed by `vulnbell schema schedule --json` and provide its absolute executable path. The runner receives a bounded research request through standard input and returns validated JSON. Report generation receives only recorded data and returns Markdown. Missing credentials, invalid output, unavailable providers, and permission failures produce a partial report instead of hiding the failed step.
+Scheduled execution starts a separate local runner. It does not reuse the interactive conversation or load the installed Skill. Configure that runner once with `vulnbell runners configure`, reference its ID from project schedules, and verify it with `vulnbell runners check`.
+
+The runner receives a bounded research request through standard input and returns validated JSON. Report generation receives only recorded data and returns Markdown. Missing credentials, invalid output, unavailable providers, and permission failures produce a partial report instead of hiding the failed step. See [Local runners](runners.md).
 
 Scheduled research can access public web evidence. It cannot inherit local shell access, project tools, plugins, hooks, or connected applications. Report generation has no tools. See [Agent security](agent-security.md) for the permission boundary.

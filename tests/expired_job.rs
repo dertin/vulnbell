@@ -7,14 +7,12 @@ fn an_expired_job_never_scans_or_starts_the_missing_agent() {
     std::fs::write(&path,format!("schema: 1\nproject_id: {project}\nname: expired-job-test\ncomponents:\n - ref: unknown\nschedule: daily\n")).unwrap();
     let profile = vulnbell::profile::load(&path).unwrap();
     let store = vulnbell::store::Store::open(&project).unwrap();
+    store.register_project(&profile.name, &path).unwrap();
     let expired = Utc::now() - Duration::minutes(10);
     let config = vulnbell::scheduler::ScheduleConfig {
-        schema_version: 1,
+        schema_version: 2,
         project_id: project.clone(),
-        agent: vulnbell::scheduler::AgentRunner::Codex,
-        agent_executable: directory.path().join("agent-does-not-exist"),
-        agent_model: None,
-        use_connected_apps: false,
+        runner: format!("missing-{project}"),
         timezone: "UTC".into(),
         at: format!("{:02}:{:02}", expired.hour(), expired.minute()),
         window_minutes: 1,
@@ -22,6 +20,23 @@ fn an_expired_job_never_scans_or_starts_the_missing_agent() {
         report_dir: directory.path().join("reports"),
     };
     vulnbell::scheduler::save_config(&profile, &store, &config).unwrap();
+    let status = vulnbell::operations::status().unwrap();
+    let project_status = status
+        .projects
+        .iter()
+        .find(|item| item.project_id == project)
+        .unwrap();
+    assert_eq!(
+        project_status.schedule.runner.as_deref(),
+        Some(config.runner.as_str())
+    );
+    assert!(!project_status.schedule.runner_configured);
+    assert!(
+        project_status
+            .errors
+            .iter()
+            .any(|error| error.contains("runner") && error.contains("unavailable"))
+    );
     let result = vulnbell::scheduler::run(&profile, &path, false).unwrap();
     assert_eq!(result["state"], "skipped_expired");
     assert!(store.meta("last_scan").unwrap().is_none());

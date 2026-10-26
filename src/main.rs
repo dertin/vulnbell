@@ -40,7 +40,7 @@ enum Commands {
     },
     /// Print a versioned JSON Schema generated from the Rust contract.
     Schema {
-        #[arg(value_parser=["profile","verdict","case","test","attestation","impact","report","research","snapshot","schedule","status"])]
+        #[arg(value_parser=["profile","verdict","case","test","attestation","impact","report","research","runner","snapshot","schedule","status"])]
         contract: String,
         #[arg(long)]
         json: bool,
@@ -124,6 +124,11 @@ enum Commands {
         #[arg(long,default_value="manager",value_parser=["manager","cyber","audit"])]
         audience: String,
     },
+    /// Configure and verify local unattended agent adapters.
+    Runners {
+        #[command(subcommand)]
+        command: RunnerCommands,
+    },
     /// Configure or inspect a real user-level daily scheduler; install runs the service once.
     Schedule {
         #[arg(value_parser=["install","status"])]
@@ -163,6 +168,25 @@ enum Skills {
         host: String,
         #[arg(long)]
         directory: Option<PathBuf>,
+    },
+}
+#[derive(Subcommand)]
+enum RunnerCommands {
+    /// Save a typed runner configuration in the local VulnBell data directory.
+    Configure {
+        #[arg(long)]
+        from: PathBuf,
+    },
+    /// List locally configured runners without starting them.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Verify the configured client version and effective capability policy.
+    Check {
+        id: String,
+        #[arg(long)]
+        json: bool,
     },
 }
 #[derive(Subcommand)]
@@ -265,6 +289,9 @@ fn run() -> Result<i32> {
                 ))?,
                 "research" => {
                     serde_json::to_value(schemars::schema_for!(vulnbell::research::ResearchBatch))?
+                }
+                "runner" => {
+                    serde_json::to_value(schemars::schema_for!(vulnbell::runners::RunnerConfig))?
                 }
                 "report" => {
                     serde_json::to_value(schemars::schema_for!(vulnbell::output::MorningReport))?
@@ -435,6 +462,19 @@ fn run() -> Result<i32> {
             let profile = profile::load(&project)?;
             emit(&vulnbell::scheduler::run(&profile, &project, now)?)?;
         }
+        Commands::Runners { command } => match command {
+            RunnerCommands::Configure { from } => {
+                let config: vulnbell::runners::RunnerConfig =
+                    serde_json::from_slice(&vulnbell::read_limited(&from, 64 * 1024)?)?;
+                emit(&vulnbell::runners::save(&config)?)?;
+            }
+            RunnerCommands::List { .. } => emit(&serde_json::json!({
+                "schema_version": 1,
+                "runners": vulnbell::runners::list()?,
+                "adapters": vulnbell::runners::adapter_catalog(),
+            }))?,
+            RunnerCommands::Check { id, .. } => emit(&vulnbell::runners::check(&id)?)?,
+        },
         Commands::Schedule {
             action,
             project,

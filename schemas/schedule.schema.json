@@ -1,12 +1,5 @@
 {
   "$defs": {
-    "AgentRunner": {
-      "enum": [
-        "codex",
-        "opencode"
-      ],
-      "type": "string"
-    },
     "Frequency": {
       "enum": [
         "daily",
@@ -19,18 +12,6 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
-    "agent": {
-      "$ref": "#/$defs/AgentRunner"
-    },
-    "agent_executable": {
-      "type": "string"
-    },
-    "agent_model": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
     "at": {
       "type": "string"
     },
@@ -43,6 +24,9 @@
     "report_dir": {
       "type": "string"
     },
+    "runner": {
+      "type": "string"
+    },
     "schema_version": {
       "format": "uint32",
       "minimum": 0,
@@ -50,10 +34,6 @@
     },
     "timezone": {
       "type": "string"
-    },
-    "use_connected_apps": {
-      "default": false,
-      "type": "boolean"
     },
     "window_minutes": {
       "format": "uint16",
@@ -65,8 +45,7 @@
   "required": [
     "schema_version",
     "project_id",
-    "agent",
-    "agent_executable",
+    "runner",
     "timezone",
     "at",
     "window_minutes",

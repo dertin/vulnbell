@@ -2,6 +2,7 @@ use std::{fs, path::Path};
 use vulnbell::{
     inventory::parse_lock,
     profile::{self, Profile},
+    runners::RunnerConfig,
     scheduler::ScheduleConfig,
 };
 
@@ -28,17 +29,33 @@ fn examples_and_empty_scaffold_validate_offline() {
     assert_eq!(validation.warnings[0].code, "empty_scope");
 
     let manual = profile::load(Path::new("examples/manual-project.yaml")).unwrap();
-    for path in ["examples/schedule.json", "examples/schedule-opencode.json"] {
-        let config: ScheduleConfig = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    let schedule: ScheduleConfig =
+        serde_json::from_slice(&fs::read("examples/schedule.json").unwrap()).unwrap();
+    #[cfg(windows)]
+    let schedule = {
+        let mut schedule = schedule;
+        schedule.report_dir = std::env::temp_dir().join("vulnbell-example-reports");
+        schedule
+    };
+    schedule.validate(&manual).unwrap();
+
+    for path in [
+        "examples/runner-codex.json",
+        "examples/runner-opencode.json",
+    ] {
+        let config: RunnerConfig = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
         #[cfg(windows)]
         let config = {
-            // These systemd examples intentionally use Unix absolute paths.
             let mut config = config;
-            config.agent_executable = std::env::current_exe().unwrap();
-            config.report_dir = std::env::temp_dir().join("vulnbell-example-reports");
+            match &mut config.adapter {
+                vulnbell::runners::AdapterConfig::Codex { executable, .. }
+                | vulnbell::runners::AdapterConfig::OpenCode { executable, .. } => {
+                    *executable = std::env::current_exe().unwrap();
+                }
+            }
             config
         };
-        config.validate(&manual).unwrap();
+        config.validate().unwrap();
     }
 }
 #[test]
@@ -238,6 +255,10 @@ fn all_published_json_schemas_match_their_rust_contracts() {
         (
             "research",
             serde_json::to_value(schemars::schema_for!(vulnbell::research::ResearchBatch)).unwrap(),
+        ),
+        (
+            "runner",
+            serde_json::to_value(schemars::schema_for!(vulnbell::runners::RunnerConfig)).unwrap(),
         ),
         (
             "schedule",

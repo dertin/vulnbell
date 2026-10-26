@@ -8,32 +8,18 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
-mod runner;
-use runner::execute_agent;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ScheduleConfig {
     pub schema_version: u32,
     pub project_id: String,
-    pub agent: AgentRunner,
-    pub agent_executable: PathBuf,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_model: Option<String>,
-    #[serde(default)]
-    pub use_connected_apps: bool,
+    pub runner: String,
     pub timezone: String,
     pub at: String,
     pub window_minutes: u16,
     pub frequency: Frequency,
     pub report_dir: PathBuf,
-}
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentRunner {
-    Codex,
-    #[serde(rename = "opencode")]
-    OpenCode,
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -57,9 +43,10 @@ pub struct Slot {
 }
 impl ScheduleConfig {
     pub fn validate(&self, profile: &Profile) -> Result<()> {
-        if self.schema_version != 1 || self.project_id != profile.project_id.to_string() {
+        if self.schema_version != 2 || self.project_id != profile.project_id.to_string() {
             bail!("schedule configuration belongs to another project/schema");
         }
+        crate::runners::validate_id(&self.runner)?;
         let frequency_matches = matches!(
             (&profile.schedule, self.frequency),
             (Some(crate::profile::Schedule::Daily), Frequency::Daily)
@@ -80,31 +67,8 @@ impl ScheduleConfig {
         if self.window_minutes == 0 || self.window_minutes > 1440 {
             bail!("window_minutes must be 1..1440");
         }
-        if !self.report_dir.is_absolute() || !self.agent_executable.is_absolute() {
-            bail!("report_dir and agent_executable must be absolute paths");
-        }
-        if self.agent_model.as_deref().is_some_and(|model| {
-            model.is_empty()
-                || model.len() > 200
-                || !model
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || b"/._:-".contains(&byte))
-        }) {
-            bail!("agent_model must be a bounded model identifier");
-        }
-        if matches!(self.agent, AgentRunner::OpenCode)
-            && !self.agent_model.as_deref().is_some_and(|model| {
-                model
-                    .split_once('/')
-                    .is_some_and(|(provider, model)| !provider.is_empty() && !model.is_empty())
-            })
-        {
-            bail!("OpenCode requires an explicit agent_model in provider/model format");
-        }
-        if self.use_connected_apps {
-            bail!(
-                "unattended connected Apps are disabled: the research role permits public web tools only"
-            );
+        if !self.report_dir.is_absolute() {
+            bail!("report_dir must be an absolute path");
         }
         Ok(())
     }
@@ -160,11 +124,24 @@ pub fn save_config(profile: &Profile, store: &Store, config: &ScheduleConfig) ->
     config.validate(profile)?;
     crate::atomic_write(&config_path(store), &serde_json::to_vec_pretty(config)?)
 }
-pub fn load_config(profile: &Profile, store: &Store) -> Result<ScheduleConfig> {
-    let config: ScheduleConfig =
-        serde_json::from_slice(&crate::read_limited(&config_path(store), 65536)?)?;
+pub fn parse_config(profile: &Profile, bytes: &[u8]) -> Result<ScheduleConfig> {
+    let value: serde_json::Value = serde_json::from_slice(bytes)?;
+    if value
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        == Some(1)
+    {
+        bail!(
+            "schedule schema 1 embeds agent settings; configure a runner and write schedule schema 2"
+        );
+    }
+    let config: ScheduleConfig = serde_json::from_value(value)?;
     config.validate(profile)?;
     Ok(config)
+}
+pub fn load_config(profile: &Profile, store: &Store) -> Result<ScheduleConfig> {
+    let bytes = crate::read_limited(&config_path(store), 65536)?;
+    parse_config(profile, &bytes)
 }
 pub fn calendar(config: &ScheduleConfig) -> String {
     let prefix = match config.frequency {
@@ -242,14 +219,16 @@ pub fn run(profile: &Profile, profile_path: &Path, force: bool) -> Result<serde_
     let mut research_error = None;
     if seconds_left() == 0 {
         research_error = Some("execution window expired after deterministic scan".to_owned());
-    } else if let Err(error) = execute_agent(
-        &config,
-        &agent_directory,
-        &batch_path,
-        &prompt,
-        Some(&schema_path),
-        seconds_left().min(900),
-        &directory.join("research-agent.jsonl"),
+    } else if let Err(error) = crate::runners::execute(
+        &config.runner,
+        crate::runners::Request {
+            directory: &agent_directory,
+            output: &batch_path,
+            prompt: &prompt,
+            schema: Some(&schema_path),
+            seconds: seconds_left().min(900),
+            log: &directory.join("research-agent.jsonl"),
+        },
     ) {
         research_error = Some(error.to_string());
     }
@@ -278,14 +257,16 @@ pub fn run(profile: &Profile, profile_path: &Path, force: bool) -> Result<serde_
         serde_json::to_string(&report)?
     );
     let agent_report = if seconds_left() > 0 {
-        execute_agent(
-            &config,
-            &agent_directory,
-            &generated,
-            &prompt,
-            None,
-            seconds_left().min(600),
-            &directory.join("report-agent.jsonl"),
+        crate::runners::execute(
+            &config.runner,
+            crate::runners::Request {
+                directory: &agent_directory,
+                output: &generated,
+                prompt: &prompt,
+                schema: None,
+                seconds: seconds_left().min(600),
+                log: &directory.join("report-agent.jsonl"),
+            },
         )
     } else {
         Err(anyhow::anyhow!(

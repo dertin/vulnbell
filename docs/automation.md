@@ -1,17 +1,17 @@
 # Scheduled runs
 
-Each project sets its frequency, time zone, start time, allowed window, local agent, and Markdown folder.
+Each project sets its frequency, time zone, start time, allowed window, runner ID, and Markdown folder. Executable paths and model settings belong to the local runner configuration, not the project schedule.
 
-1. Set `schedule: daily`, `weekdays`, or `weekly` in the profile.
-2. Create the configuration using that profile's UUID and absolute paths.
-3. Register the job with the system scheduler and check the report from its first run.
+1. Configure and check a local runner as described in [Local runners](runners.md).
+2. Set `schedule: daily`, `weekdays`, or `weekly` in the profile.
+3. Create the schedule using that profile's UUID, runner ID, and absolute report directory.
+4. Register the job with the system scheduler and check the report from its first run.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "project_id": "<profile UUID>",
-  "agent": "<runner>",
-  "agent_executable": "/absolute/path/to/agent",
+  "runner": "default",
   "timezone": "America/Montevideo",
   "at": "08:00",
   "window_minutes": 180,
@@ -20,7 +20,7 @@ Each project sets its frequency, time zone, start time, allowed window, local ag
 }
 ```
 
-Use `vulnbell schema schedule --json` to see the available runner values and whether the selected runner needs `agent_model`. See [Agent integration](agents.md).
+Use `vulnbell schema schedule --json` for the exact project contract. `vulnbell runners list --json` shows the runner IDs available on the current machine.
 
 Linux can install and inspect a user-level systemd timer directly:
 
@@ -48,6 +48,6 @@ vulnbell status --json
 
 The timer runs as soon as possible within the window. If the computer misses the whole window, that run is skipped. Runs for the same project cannot overlap. Expired periods are not replayed. VulnBell does not wake the computer or promise to run before login.
 
-The job scans, researches upstream activity, validates and imports the results, and writes a report. An agent failure leaves a Markdown report marked as partial and keeps earlier checkpoints. `vulnbell status` shows every registered project, timer health, completed or skipped runs, failures, and the latest report. `schedule status` shows the same persisted details for one profile.
+The job scans, researches upstream activity, validates and imports the results, and writes a report. An agent failure leaves a Markdown report marked as partial and keeps earlier checkpoints. `vulnbell status` shows every registered project, runner availability, timer health, completed or skipped runs, failures, and the latest report. `schedule status` shows the same persisted details for one profile.
 
-Private job files are stored in `<data directory>/<UUID>/jobs/`. The job does not change project code, send messages, or approve active tests.
+Reports are written below the configured absolute `report_dir`, using one unique Markdown filename per run. The `report` field returned by `vulnbell run` and `last_report` from `vulnbell status` contain the exact path. Private job files are stored in `<data directory>/<UUID>/jobs/`. The job does not change project code, send messages, or approve active tests.

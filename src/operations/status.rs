@@ -42,6 +42,8 @@ pub struct ProjectScheduleStatus {
     pub requested: Option<Schedule>,
     pub configured: bool,
     pub configuration_valid: bool,
+    pub runner: Option<String>,
+    pub runner_configured: bool,
     pub installed: bool,
     pub timer_active: Option<bool>,
     pub timer_state: Option<String>,
@@ -144,6 +146,14 @@ pub fn status_markdown(report: &StatusReport) -> String {
             "not requested"
         };
         text.push_str(&format!("- Schedule: {schedule}\n"));
+        if let Some(runner) = &project.schedule.runner {
+            let state = if project.schedule.runner_configured {
+                "configured"
+            } else {
+                "missing"
+            };
+            text.push_str(&format!("- Runner: `{}` ({state})\n", one_line(runner)));
+        }
         if let Some(outcome) = &project.schedule.last_job_outcome {
             text.push_str(&format!("- Last job: {}\n", one_line(outcome)));
         }
@@ -190,19 +200,31 @@ pub(super) fn project_status(store: &Store) -> Result<ProjectStatus> {
         }
     };
     let schedule_configured = crate::scheduler::config_path(store).is_file();
-    let configuration_valid = if schedule_configured {
+    let schedule = if schedule_configured {
         match profile.as_ref() {
             Some(profile) => match crate::scheduler::load_config(profile, store) {
-                Ok(_) => true,
+                Ok(config) => Some(config),
                 Err(error) => {
                     errors.push(format!("schedule configuration is invalid: {error}"));
-                    false
+                    None
                 }
             },
-            None => false,
+            None => None,
         }
     } else {
-        false
+        None
+    };
+    let configuration_valid = schedule.is_some();
+    let runner = schedule.as_ref().map(|config| config.runner.clone());
+    let runner_configured = match runner.as_deref() {
+        Some(id) => match crate::runners::load(id) {
+            Ok(_) => true,
+            Err(error) => {
+                errors.push(format!("runner '{id}' is unavailable or invalid: {error}"));
+                false
+            }
+        },
+        None => false,
     };
     let timer_id = store.meta("scheduler_id")?;
     let timer = inspect_timer(timer_id.as_deref());
@@ -222,8 +244,11 @@ pub(super) fn project_status(store: &Store) -> Result<ProjectStatus> {
     let requested = profile
         .as_ref()
         .and_then(|profile| profile.schedule.clone());
-    let healthy =
-        requested.is_some() && configuration_valid && timer.installed && timer.active == Some(true);
+    let healthy = requested.is_some()
+        && configuration_valid
+        && runner_configured
+        && timer.installed
+        && timer.active == Some(true);
     Ok(ProjectStatus {
         project_id,
         name: store.meta("project_name")?,
@@ -240,6 +265,8 @@ pub(super) fn project_status(store: &Store) -> Result<ProjectStatus> {
             requested,
             configured: schedule_configured,
             configuration_valid,
+            runner,
+            runner_configured,
             installed: timer.installed,
             timer_active: timer.active,
             timer_state: timer.state,
@@ -276,6 +303,8 @@ fn unavailable_project(project_id: String, error: String) -> ProjectStatus {
             requested: None,
             configured: false,
             configuration_valid: false,
+            runner: None,
+            runner_configured: false,
             installed: false,
             timer_active: None,
             timer_state: None,

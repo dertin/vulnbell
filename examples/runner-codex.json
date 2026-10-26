@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "id": "default",
+  "adapter": {
+    "type": "codex",
+    "executable": "/absolute/path/to/codex"
+  }
+}

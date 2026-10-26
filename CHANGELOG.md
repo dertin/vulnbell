@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Project schedules now reference a machine-local runner ID. Typed Codex and OpenCode adapter settings are configured and checked separately.
+- Scheduled report paths and runner availability are exposed through CLI status.
+
 ## 0.1.0 - 2026-10-25
 
 ### Added

@@ -1,0 +1,72 @@
+{
+  "$defs": {
+    "AdapterConfig": {
+      "oneOf": [
+        {
+          "properties": {
+            "executable": {
+              "type": "string"
+            },
+            "model": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "codex",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "executable"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "executable": {
+              "type": "string"
+            },
+            "model": {
+              "type": "string"
+            },
+            "type": {
+              "const": "opencode",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "executable",
+            "model"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "adapter": {
+      "$ref": "#/$defs/AdapterConfig"
+    },
+    "id": {
+      "type": "string"
+    },
+    "schema_version": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "id",
+    "adapter"
+  ],
+  "title": "RunnerConfig",
+  "type": "object"
+}
