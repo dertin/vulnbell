@@ -10,7 +10,7 @@ authors = ["Guillermo Céspedes Tabárez <dev.dertin@gmail.com>"]
 keywords = ["security", "dependencies", "monitoring", "vulnerability"]
 categories = ["command-line-utilities", "development-tools"]
 readme = "README.md"
-include = ["src/**", "skills/**", "schemas/**", "examples/**", "tests/**", "docs/**", "CHANGELOG.md", "CONTRIBUTING.md", "SECURITY.md", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE", "!AGENTS.md"]
+include = ["src/**", "skills/**", "schemas/**", "examples/**", "tests/**", "docs/**", "CHANGELOG.md", "CONTRIBUTING.md", "SECURITY.md", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE", "!AGENTS.md", "!**/__pycache__/**"]
 
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }-v{ version }{ archive-suffix }"
