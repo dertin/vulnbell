@@ -14,6 +14,7 @@
 - Project schedules reference a machine-local runner ID. Typed adapter settings are configured and checked separately.
 - Project state uses schema 2. Databases from 0.1.0 are rejected without conversion; create new monitors.
 - Scheduled report paths and runner availability are exposed through CLI status.
+- Reports explain each case status and show the evidence, unresolved conditions and next step for cases in review.
 
 ## 0.1.0 - 2026-10-25
 

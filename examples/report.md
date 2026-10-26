@@ -1,4 +1,4 @@
-# VulnBell — Sample report
+# VulnBell - Sample report
 
 Cutoff: 2026-10-25 22:52 UTC · Coverage: partial
 
@@ -21,7 +21,7 @@ No workspace or deployment inventory was provided.
 
 ## Actionable
 
-### SIG-d92c7ad148de84684bab — SSE event injection
+### SIG-d92c7ad148de84684bab - SSE event injection
 
 - **Component:** @nestjs/core 10.4.8.
 - **Status:** affected by GHSA-36xv-jgw5-4q75; reproduced in an isolated minimal project.

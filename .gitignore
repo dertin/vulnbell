@@ -8,7 +8,6 @@
 /fuzz/artifacts/
 __pycache__/
 /AGENTS.md
-/docs/assets/vulnbell-cover.prompt.txt
 
 .env
 .env.*

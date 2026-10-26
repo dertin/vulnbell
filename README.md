@@ -1,6 +1,6 @@
 # VulnBell
 
-![VulnBell — software security monitoring with an abstract upstream signal mark](docs/assets/vulnbell-cover.png)
+![VulnBell - software security monitoring with a VB monogram](docs/assets/vulnbell-cover.png)
 
 [![CI](https://github.com/dertin/vulnbell/actions/workflows/ci.yml/badge.svg)](https://github.com/dertin/vulnbell/actions/workflows/ci.yml)
 
