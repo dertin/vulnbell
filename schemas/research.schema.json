@@ -16,7 +16,12 @@
         "merge_proposal",
         "comment",
         "review",
-        "news"
+        "news",
+        "discussion",
+        "documentation",
+        "changelog",
+        "release",
+        "advisory"
       ],
       "type": "string"
     },
@@ -84,9 +89,38 @@
       ],
       "type": "string"
     },
+    "SourceContinuation": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "type": "string"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "cursor"
+      ],
+      "type": "object"
+    },
     "SourceReview": {
       "additionalProperties": false,
       "properties": {
+        "continuation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceContinuation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "coverage": {
           "$ref": "#/$defs/ReviewCoverage"
         },

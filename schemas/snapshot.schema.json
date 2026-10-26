@@ -300,6 +300,7 @@
       "enum": [
         "declared",
         "locked",
+        "agent_observed",
         "observed_artifact",
         "deployed"
       ],

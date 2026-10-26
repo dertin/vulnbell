@@ -19,6 +19,7 @@ fn readers_have_no_host_execution_or_ambient_mcp_and_reporters_have_no_web() {
         directory.path(),
         &output,
         None,
+        AgentRole::ToolFree,
         &[McpServer {
             name: "personal-write-tool".into(),
             transport: McpTransport::Stdio,
@@ -52,6 +53,28 @@ fn readers_have_no_host_execution_or_ambient_mcp_and_reporters_have_no_web() {
 }
 
 #[test]
+fn structured_local_discovery_has_no_web_despite_its_json_schema() {
+    let directory = tempfile::tempdir().unwrap();
+    let executable = Path::new("/usr/bin/codex");
+    let adapter = adapter(executable);
+    let output = directory.path().join("result.json");
+    let schema = directory.path().join("discovery.schema.json");
+    let command = adapter.command(
+        directory.path(),
+        &output,
+        Some(&schema),
+        AgentRole::ToolFree,
+        &[],
+    );
+    assert!(
+        command
+            .get_args()
+            .any(|arg| arg == "web_search=\"disabled\"")
+    );
+    assert!(command.get_args().any(|arg| arg == "--output-schema"));
+}
+
+#[test]
 #[ignore = "requires authenticated Codex 0.164.0; actual production reader adversarial acceptance"]
 fn actual_reader_preserves_the_security_claim_without_host_effects() {
     let parent = tempfile::tempdir().unwrap();
@@ -79,6 +102,7 @@ fn actual_reader_preserves_the_security_claim_without_host_effects() {
         output: &output,
         prompt: &prompt,
         schema: Some(&schema),
+        role: AgentRole::PublicResearch,
         seconds: 90,
         log: &log,
     });

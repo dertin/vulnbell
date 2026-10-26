@@ -17,11 +17,20 @@ pub struct Profile {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub components: Vec<Component>,
     #[serde(default)]
+    pub discovery: DiscoveryMode,
+    #[serde(default)]
     pub research: Research,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule: Option<Schedule>,
     #[serde(default)]
     pub alerts: Alerts,
+}
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryMode {
+    #[default]
+    Agent,
+    Off,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

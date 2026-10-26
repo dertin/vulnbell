@@ -126,6 +126,8 @@ pub struct MorningReport {
     pub coverage_gaps: Vec<crate::model::Coverage>,
     pub notification_status: String,
     pub finding_checks: Vec<FindingCheck>,
+    pub discovery: Option<crate::discovery::DiscoverySummary>,
+    pub source_map: Vec<crate::discovery::IdentityObservation>,
 }
 #[derive(serde::Serialize, schemars::JsonSchema)]
 pub struct MonitoredComponent {
@@ -155,6 +157,19 @@ pub struct HandoffItem {
     pub recommended_action: String,
 }
 pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Result<MorningReport> {
+    let (discovery, source_map) = match store.meta("profile_path")? {
+        Some(path) => {
+            let path = std::path::Path::new(&path);
+            match crate::profile::load(path) {
+                Ok(profile) => (
+                    Some(crate::discovery::summary(&profile, path, store)?),
+                    crate::discovery::source_map(&profile, path, store)?,
+                ),
+                Err(_) => (None, Vec::new()),
+            }
+        }
+        None => (None, Vec::new()),
+    };
     let active_ids: std::collections::HashSet<&str> = snapshot
         .instances
         .iter()
@@ -285,13 +300,27 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
             .coverage
             .iter()
             .filter(|coverage| {
+                if coverage.source == "general_discovery"
+                    && coverage.scope == "project"
+                    && discovery.is_some()
+                {
+                    return false;
+                }
                 !matches!(
                     coverage.state,
                     crate::model::CoverageState::Checked | crate::model::CoverageState::Disabled
                 )
             })
             .cloned()
+            .chain(
+                discovery
+                    .as_ref()
+                    .filter(|summary| summary.enabled && !summary.complete)
+                    .map(crate::discovery::coverage),
+            )
             .collect(),
+        discovery,
+        source_map,
         notification_status: snapshot.alert_status.clone(),
         finding_checks: snapshot
             .cases
@@ -305,6 +334,53 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
             .collect(),
     })
 }
+pub fn discovery_markdown(report: &MorningReport) -> String {
+    let mut text = String::new();
+    if let Some(discovery) = &report.discovery {
+        text.push_str(&format!("## Descubrimiento\n\nEstado: {} · Directorios pendientes: {} · Archivos pendientes: {} · Revisados: {} · Excluidos: {} · No disponibles: {} · Componentes sin mapa: {} · Fuentes no disponibles: {}\n\n",if !discovery.enabled {"desactivado"}else if discovery.complete {"revisado en el alcance autorizado"}else{"parcial; continuar desde el checkpoint"},discovery.directories_pending,discovery.files_pending,discovery.files_reviewed,discovery.files_excluded,discovery.files_unavailable,discovery.components_unmapped,discovery.sources_unavailable));
+    }
+    if !report.source_map.is_empty() {
+        text.push_str("## Mapa de fuentes\n\nAsociaciones documentadas por el agente; no certifican por sí solas identidad oficial ni aplicabilidad.\n\n| Componente | Fuente | Estado | Enlace / detalle |\n|---|---|---|---|\n");
+        for mapping in &report.source_map {
+            let reference = report
+                .inventory
+                .iter()
+                .find(|item| item.instance_id == mapping.instance_id)
+                .map(|item| item.reference.as_str())
+                .unwrap_or(&mapping.instance_id);
+            for source in &mapping.sources {
+                use crate::discovery::{MappingState, SourceKind};
+                let kind = match source.kind {
+                    SourceKind::Website => "Sitio oficial",
+                    SourceKind::Repository => "Repositorio",
+                    SourceKind::Issues => "Issues",
+                    SourceKind::ProposedChanges => "Cambios propuestos",
+                    SourceKind::Discussions => "Discusiones",
+                    SourceKind::Documentation => "Documentación",
+                    SourceKind::Changelog => "Historial de cambios",
+                    SourceKind::Releases => "Versiones",
+                    SourceKind::Advisories => "Avisos de seguridad",
+                };
+                let state = match source.state {
+                    MappingState::Mapped => "mapeada",
+                    MappingState::Unavailable => "no disponible",
+                    MappingState::NotApplicable => "no aplica",
+                };
+                text.push_str(&format!(
+                    "| {} | {} | {} | {} — {} |\n",
+                    inline(reference),
+                    kind,
+                    state,
+                    inline(source.url.as_deref().unwrap_or("—")),
+                    inline(&source.detail)
+                ));
+            }
+        }
+        text.push('\n');
+    }
+    text
+}
+
 pub fn morning_markdown(report: &MorningReport) -> String {
     let mut text = format!(
         "# VulnBell — {}\n\nCorte: {} · Revisión del agente: {}\n\n| Accionables | En revisión | Informativos | Descartados | Brechas |\n|---:|---:|---:|---:|---:|\n| {} | {} | {} | {} | {} |\n\n",
@@ -332,6 +408,7 @@ pub fn morning_markdown(report: &MorningReport) -> String {
         ));
     }
     text.push('\n');
+    text.push_str(&discovery_markdown(report));
     for (decision, items) in [
         (Decision::Actionable, &report.actionable),
         (Decision::Review, &report.needs_review),
@@ -521,6 +598,7 @@ fn inline(value: &str) -> String {
 fn origin_label(origin: crate::model::Origin) -> &'static str {
     use crate::model::Origin;
     match origin {
+        Origin::AgentObserved => "observado por agente / agent observed",
         Origin::Declared => "declarado / tracked",
         Origin::Locked => "lockfile / locked",
         Origin::ObservedArtifact => "artefacto observado",

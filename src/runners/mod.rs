@@ -59,11 +59,18 @@ pub struct AdapterInfo {
 }
 
 #[derive(Clone, Copy)]
+pub(crate) enum AgentRole {
+    PublicResearch,
+    ToolFree,
+}
+
+#[derive(Clone, Copy)]
 pub(crate) struct Request<'a> {
     pub directory: &'a Path,
     pub output: &'a Path,
     pub prompt: &'a str,
     pub schema: Option<&'a Path>,
+    pub role: AgentRole,
     pub seconds: u64,
     pub log: &'a Path,
 }

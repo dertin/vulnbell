@@ -10,6 +10,7 @@ use chrono::{DateTime, Duration, NaiveDate, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+pub(crate) mod automation;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -28,6 +29,14 @@ pub struct SourceReview {
     pub until: String,
     pub coverage: ReviewCoverage,
     pub detail: String,
+    #[serde(default)]
+    pub continuation: Option<SourceContinuation>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SourceContinuation {
+    pub cursor: String,
+    pub url: Option<String>,
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -53,6 +62,11 @@ pub enum EventKind {
     Comment,
     Review,
     News,
+    Discussion,
+    Documentation,
+    Changelog,
+    Release,
+    Advisory,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -89,6 +103,8 @@ pub struct ResearchTarget {
     pub until: String,
     pub last_complete_review: Option<String>,
     pub seen: Vec<SeenEvent>,
+    pub seen_truncated: bool,
+    pub continuation: Option<SourceContinuation>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SeenEvent {
@@ -105,8 +121,23 @@ pub struct ResearchPlan {
     pub targets: Vec<ResearchTarget>,
     pub required_agent_sites: Vec<String>,
     pub policy: String,
+    pub next_cursor: Option<String>,
 }
 pub fn plan(store: &Store) -> Result<ResearchPlan> {
+    build_plan(store, "", usize::MAX, true)
+}
+pub fn plan_page(store: &Store, after: &str, limit: usize) -> Result<ResearchPlan> {
+    if !(1..=20).contains(&limit) {
+        bail!("research page size must be 1..20");
+    }
+    build_plan(store, after, limit, true)
+}
+fn build_plan(
+    store: &Store,
+    after: &str,
+    limit: usize,
+    include_seen: bool,
+) -> Result<ResearchPlan> {
     use rusqlite::OptionalExtension;
     let snapshot = store.latest()?;
     let mut repositories: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -118,12 +149,45 @@ pub fn plan(store: &Store) -> Result<ResearchPlan> {
                 .push(instance.id.clone());
         }
     }
+    if let Some(path) = store.meta("profile_path")? {
+        let path = std::path::Path::new(&path);
+        let profile = crate::profile::load(path)?;
+        for (instance_id, url) in crate::discovery::mapped_sources(&profile, path, store)? {
+            if snapshot
+                .instances
+                .iter()
+                .any(|instance| instance.id == instance_id)
+            {
+                let ids = repositories
+                    .entry(url.trim_end_matches('/').to_owned())
+                    .or_default();
+                if !ids.contains(&instance_id) {
+                    ids.push(instance_id);
+                }
+            }
+        }
+    }
     let first_scan = store
         .meta("first_scan")?
         .unwrap_or_else(|| snapshot.started_at.clone());
     let initial = DateTime::parse_from_rfc3339(&first_scan)? - Duration::days(30);
+    let instances_by_id: BTreeMap<_, _> = snapshot
+        .instances
+        .iter()
+        .map(|instance| (instance.id.as_str(), instance))
+        .collect();
     let mut targets = Vec::new();
-    for (upstream, instance_ids) in repositories {
+    let mut next_cursor = None;
+    for (upstream, instance_ids) in repositories
+        .into_iter()
+        .filter(|(url, _)| url.as_str() > after)
+    {
+        if targets.len() == limit {
+            next_cursor = targets
+                .last()
+                .map(|target: &ResearchTarget| target.upstream.clone());
+            break;
+        }
         let checkpoint: Option<String> = store
             .connection
             .query_row(
@@ -132,27 +196,54 @@ pub fn plan(store: &Store) -> Result<ResearchPlan> {
                 |row| row.get(0),
             )
             .optional()?;
-        let from = match &checkpoint {
+        let mut from = match &checkpoint {
             Some(checkpoint) => {
                 (DateTime::parse_from_rfc3339(checkpoint)? - Duration::minutes(5)).to_rfc3339()
             }
             None => initial.to_rfc3339(),
         };
-        let mut statement = store.connection.prepare("SELECT external_id,url,content_sha256,updated_at FROM research_events WHERE upstream=?1 ORDER BY updated_at DESC LIMIT 5000")?;
-        let seen = statement
-            .query_map([&upstream], |row| {
+        let progress: Option<String> = store
+            .connection
+            .query_row(
+                "SELECT body FROM research_progress WHERE upstream=?1",
+                [&upstream],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let mut until = snapshot.finished_at.clone();
+        let mut continuation = None;
+        if let Some(body) = progress {
+            let progress: SourceReview = serde_json::from_str(&body)?;
+            from = progress.from;
+            until = progress.until;
+            continuation = progress.continuation;
+        }
+        let mut seen = Vec::new();
+        let mut seen_bytes = 0;
+        let mut seen_truncated = false;
+        if include_seen {
+            let mut statement = store.connection.prepare("SELECT external_id,url,content_sha256,updated_at FROM research_events WHERE upstream=?1 ORDER BY updated_at DESC")?;
+            let rows = statement.query_map([&upstream], |row| {
                 Ok(SeenEvent {
                     external_id: row.get(0)?,
                     url: row.get(1)?,
                     content_sha256: row.get(2)?,
                     updated_at: row.get(3)?,
                 })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let components: Vec<ResearchComponent> = snapshot
-            .instances
+            })?;
+            for row in rows {
+                let event = row?;
+                seen_bytes += serde_json::to_vec(&event)?.len();
+                if seen_bytes > 512 * 1024 {
+                    seen_truncated = true;
+                    break;
+                }
+                seen.push(event);
+            }
+        }
+        let components: Vec<ResearchComponent> = instance_ids
             .iter()
-            .filter(|instance| instance_ids.contains(&instance.id))
+            .filter_map(|id| instances_by_id.get(id.as_str()))
             .map(|instance| ResearchComponent {
                 instance_id: instance.id.clone(),
                 reference: instance.reference.clone(),
@@ -166,17 +257,19 @@ pub fn plan(store: &Store) -> Result<ResearchPlan> {
             instance_ids,
             components,
             from,
-            until: snapshot.finished_at.clone(),
+            until,
             last_complete_review: checkpoint,
             seen,
+            seen_truncated,
+            continuation,
         });
     }
-    Ok(ResearchPlan {schema_version:1,project_id:snapshot.project_id,snapshot_id:snapshot.id,targets,required_agent_sites:vec!["github.com".into(),"gitlab.com".into(),"launchpad.net (bugs and merge proposals)".into()],policy:"The local agent searches issues and PR/MR/merge proposals, paginates the supplied window and imports evidence. Only complete reviews advance checkpoints. The CLI does not scrape upstream sites. Initial window is 30 days; later windows overlap the last completed review by 5 minutes. Revisit changed events; failure to reproduce never proves no attack vector.".into()})
+    Ok(ResearchPlan {schema_version:1,project_id:snapshot.project_id,snapshot_id:snapshot.id,targets,next_cursor,required_agent_sites:vec!["github.com".into(),"gitlab.com".into(),"launchpad.net (bugs and merge proposals)".into()],policy:"Review issues, proposed changes, discussions, documentation, changelogs, releases and advisories at each mapped source. Exhaust relevant pages and linked context in the supplied window. Only complete reviews advance source checkpoints. Follow next_cursor for remaining targets. seen_truncated means the prompt contains only a sample; the CLI still deduplicates all imported events. Initial window is 30 days; later windows overlap the last completed review by 5 minutes.".into()})
 }
 pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json::Value> {
     use rusqlite::{OptionalExtension, params};
     let _lock = store.lock()?;
-    let plan = plan(store)?;
+    let plan = build_plan(store, "", usize::MAX, false)?;
     if batch.schema_version != 1
         || batch.project_id != plan.project_id
         || batch.snapshot_id != plan.snapshot_id
@@ -189,6 +282,18 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
     let snapshot = store.latest()?;
     let mut sources = HashSet::new();
     for review in &batch.sources {
+        if let Some(continuation) = &review.continuation {
+            if review.coverage == ReviewCoverage::Complete
+                || continuation.cursor.is_empty()
+                || continuation.cursor.len() > 4096
+                || continuation.cursor.chars().any(char::is_control)
+            {
+                bail!("continuation requires an incomplete review and a bounded cursor");
+            }
+            if let Some(url) = &continuation.url {
+                crate::profile::public_https_syntax(url)?;
+            }
+        }
         let target = plan
             .targets
             .iter()
@@ -417,6 +522,15 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
             transaction.execute(
                 "INSERT OR REPLACE INTO research_cursors VALUES (?1,?2)",
                 params![source.upstream, source.until],
+            )?;
+            transaction.execute(
+                "DELETE FROM research_progress WHERE upstream=?1",
+                [&source.upstream],
+            )?;
+        } else {
+            transaction.execute(
+                "INSERT OR REPLACE INTO research_progress VALUES (?1,?2)",
+                params![source.upstream, serde_json::to_string(source)?],
             )?;
         }
     }

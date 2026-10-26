@@ -50,6 +50,13 @@
       ],
       "type": "object"
     },
+    "DiscoveryMode": {
+      "enum": [
+        "agent",
+        "off"
+      ],
+      "type": "string"
+    },
     "Feed": {
       "additionalProperties": false,
       "properties": {
@@ -129,6 +136,10 @@
         "$ref": "#/$defs/Component"
       },
       "type": "array"
+    },
+    "discovery": {
+      "$ref": "#/$defs/DiscoveryMode",
+      "default": "agent"
     },
     "name": {
       "maxLength": 120,

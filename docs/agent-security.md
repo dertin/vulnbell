@@ -5,10 +5,12 @@ Issues, pull requests, web pages, code, and claimed security reports are untrust
 ## Scheduled runner
 
 - The researcher receives a bounded plan through stdin and has only public research tools.
+- Workspace discovery receives bounded text fragments in a separate tool-free role. Public discovery receives only component references and public URLs.
 - Shell, local file access, personal MCP, Apps, plugins, hooks, and subagents are disabled.
 - The report writer receives recorded data and has no tools.
 - Each adapter checks its supported client version and effective tool permissions before research. Local web fetch and inherited configuration are denied.
 - Imported research is stored as context. It cannot create a lab attestation or dismiss a case by itself.
+- Discovery imports verify scope, current file bytes, literal excerpts and acquired public evidence. Observed dependencies and agent-supplied product mappings require review before becoming actionable findings.
 - The impact verdict is calculated by the CLI from fixed questions and registered evidence. It never changes the case decision or grants test permission.
 
 ## Active tests

@@ -3,11 +3,12 @@
 | Area | Support |
 |---|---|
 | Manual inventory | Products, binaries, PURL/CPE, exact versions, and explicitly requested `latest` |
-| Workspaces | Cargo.lock through v4; npm v1–v3; Composer; pnpm 6/9; Yarn classic v1 |
+| Native workspace parsers | Cargo.lock through v4; npm v1–v3; Composer; pnpm 6/9; Yarn classic v1 |
+| General discovery | Enabled by default; paginated workspace extraction and source mapping through the agent, including formats without a native parser |
 | SBOM | CycloneDX JSON 1.4–1.6 and SPDX JSON 2.2/2.3 |
 | Advisories | OSV, GHSA, RustSec, CVE Records, NVD, and CISA KEV |
 | Vendor feeds | CSAF 2.0 and OpenVEX 0.2.0 with exact identity matching; limited signature and complex relationship checks |
-| Issues and proposed changes | GitHub, GitLab, and Launchpad, through the agent and per-upstream review windows |
+| Public sources | Issues, proposed changes, discussions, docs, changelogs, releases and advisories on mapped public sites, with independent review windows |
 | Reports | Local Markdown/JSON for manager, cyber, and audit audiences |
 | Project status | Registered profiles, scan results, schedule health, skipped runs, agent failures, and latest reports |
 | Project impact | Guided evidence-bound questions, static workspace review, saved rationales, and update urgency |
@@ -17,7 +18,9 @@
 
 ## Limits
 
-- Go/Python, modern Yarn, RSS/Atom, and other formats not implemented are marked as partial coverage or unsupported.
+- Go/Python, JVM, .NET, Ruby, C/C++ and other formats can use general discovery. This does not imply native parsing or automatic registry resolution for every ecosystem. Unsupported native formats and incomplete observations remain visible.
+- RSS/Atom have no native feed connector. The agent can map and review public release pages through general discovery.
+- Discovery resumes across pages and runs. Inaccessible/private sources, binary files and insufficient parsing context cannot be labelled complete.
 - Local or Git dependencies are not silently treated as public registry packages. Private registries, backports, and binary equivalence need more evidence.
 - A declared version does not prove deployment or exposure. Unclear matches stay in review.
 - Access restrictions, missing dates, rate limits, and unread pages stay visible. Partial reviews do not advance the checkpoint.

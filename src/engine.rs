@@ -72,15 +72,12 @@ fn scan_inner(
     let profile_bytes = crate::read_limited(path, 1024 * 1024)?;
     let profile_hash = crate::digest(&profile_bytes);
     let mut instances: Vec<Instance> = profile.components.iter().map(Instance::declared).collect();
-    let remaining = 100_000usize
-        .checked_sub(instances.len())
-        .context("declared inventory exceeds 100000 instances")?;
+    let remaining = 100_000usize.saturating_sub(instances.len());
     let inventory = crate::inventory::discover(&profile.workspaces, path, store, remaining);
     instances.extend(inventory.instances);
-    if instances.len() > 100_000 {
-        bail!("inventory exceeds 100000 instances");
-    }
+    let discovery_coverage = crate::discovery::augment(profile, path, store, &mut instances)?;
     let mut coverage = inventory.coverage;
+    coverage.extend(discovery_coverage);
     let mut http = Http::new(store, offline);
     for instance in &mut instances {
         coverage.extend(crate::identity::resolve(instance, &mut http));
@@ -312,7 +309,14 @@ pub fn cases_from_claims(
                 && group
                     .iter()
                     .any(|claim| claim.applicability == Applicability::NotAffected);
-        let applicability = if conflict {
+        let observed_identity = instance.origin == crate::model::Origin::AgentObserved
+            || instance
+                .identity_evidence
+                .iter()
+                .any(|item| item.source == "agent_product_mapping");
+        let applicability = if observed_identity {
+            Applicability::Unknown
+        } else if conflict {
             Applicability::Conflict
         } else if affected {
             Applicability::Affected
@@ -344,12 +348,12 @@ pub fn cases_from_claims(
             )
             .as_bytes(),
         );
-        let verification = if affected && !conflict {
+        let verification = if affected && !conflict && !observed_identity {
             Verification::SourceConfirmed
         } else {
             Verification::Inconclusive
         };
-        let decision = if affected && !conflict {
+        let decision = if affected && !conflict && !observed_identity {
             Decision::Actionable
         } else {
             Decision::Review

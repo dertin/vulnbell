@@ -18,6 +18,6 @@ The Skill guides the current interactive agent through profile creation, invento
 
 Scheduled execution starts a separate local runner. It does not reuse the interactive conversation or load the installed Skill. Configure that runner once with `vulnbell runners configure`, reference its ID from project schedules, and verify it with `vulnbell runners check`.
 
-The runner receives a bounded research request through standard input and returns validated JSON. Report generation receives only recorded data and returns Markdown. Missing credentials, invalid output, unavailable providers, and permission failures produce a partial report instead of hiding the failed step. See [Local runners](runners.md).
+The runner receives bounded requests through standard input and returns validated JSON. Workspace discovery reads supplied fragments without tools. Public discovery and research receive public identities without workspace text. Report generation receives recorded data and returns Markdown. Missing credentials, invalid output, unavailable providers, and permission failures produce a partial report. See [Local runners](runners.md).
 
 Scheduled research can access public web evidence. It cannot inherit local shell access, project tools, plugins, hooks, or connected applications. Report generation has no tools. See [Agent security](agent-security.md) for the permission boundary.

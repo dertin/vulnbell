@@ -55,6 +55,8 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --all-targets --locked
+      - name: Test read-only manifest helper
+        run: python -I -m unittest discover -s tests -p test_manifest_reader.py
       - run: cargo package --locked --allow-dirty
       - name: Install from Git and verify the embedded Skill
         if: runner.os == 'Linux'

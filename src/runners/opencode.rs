@@ -1,4 +1,4 @@
-use super::{AgentAdapter, Request, base_command};
+use super::{AgentAdapter, AgentRole, Request, base_command};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -245,7 +245,7 @@ impl AgentAdapter for OpenCodeAdapter<'_> {
     }
 
     fn execute(&self, request: Request<'_>) -> Result<()> {
-        let research = request.schema.is_some();
+        let research = matches!(request.role, AgentRole::PublicResearch);
         let session = Session::new(self, request.directory, research)?;
         session.preflight(self, research)?;
         let mut command = session.command(self)?;

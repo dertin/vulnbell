@@ -40,7 +40,7 @@ enum Commands {
     },
     /// Print a versioned JSON Schema generated from the Rust contract.
     Schema {
-        #[arg(value_parser=["profile","verdict","case","test","attestation","impact","report","research","runner","snapshot","schedule","status"])]
+        #[arg(value_parser=["profile","verdict","case","test","attestation","impact","report","research","discovery","runner","snapshot","schedule","status"])]
         contract: String,
         #[arg(long)]
         json: bool,
@@ -152,6 +152,27 @@ enum Commands {
         project: PathBuf,
         #[arg(long)]
         from: Option<PathBuf>,
+        #[arg(long, default_value = "")]
+        after: String,
+        #[arg(long, default_value_t = 1)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Resume general discovery, import observations, or acquire public source evidence.
+    Discovery {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long, conflicts_with = "evidence_url")]
+        from: Option<PathBuf>,
+        #[arg(long)]
+        evidence_url: Option<String>,
+        #[arg(long,conflicts_with_all=["from","evidence_url"])]
+        gaps: bool,
+        #[arg(long, requires = "gaps", default_value = "")]
+        after: String,
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
         #[arg(long)]
         json: bool,
     },
@@ -252,6 +273,7 @@ fn run() -> Result<i32> {
                 name: "my-monitor".into(),
                 workspaces: Vec::new(),
                 components: Vec::new(),
+                discovery: Default::default(),
                 research: Default::default(),
                 schedule: None,
                 alerts: Default::default(),
@@ -290,6 +312,9 @@ fn run() -> Result<i32> {
                 "research" => {
                     serde_json::to_value(schemars::schema_for!(vulnbell::research::ResearchBatch))?
                 }
+                "discovery" => serde_json::to_value(schemars::schema_for!(
+                    vulnbell::discovery::DiscoveryBatch
+                ))?,
                 "runner" => {
                     serde_json::to_value(schemars::schema_for!(vulnbell::runners::RunnerConfig))?
                 }
@@ -488,14 +513,48 @@ fn run() -> Result<i32> {
                 from.as_deref(),
             )?)?;
         }
-        Commands::Research { project, from, .. } => {
+        Commands::Research {
+            project,
+            from,
+            after,
+            limit,
+            ..
+        } => {
             let (_, mut store) = store_for(&project)?;
             if let Some(path) = from {
                 let batch: vulnbell::research::ResearchBatch =
                     serde_json::from_slice(&vulnbell::read_limited(&path, 16 * 1024 * 1024)?)?;
                 emit(&vulnbell::research::import(&mut store, batch)?)?;
             } else {
-                emit(&vulnbell::research::plan(&store)?)?;
+                emit(&vulnbell::research::plan_page(&store, &after, limit)?)?;
+            }
+        }
+        Commands::Discovery {
+            project,
+            from,
+            evidence_url,
+            gaps,
+            after,
+            limit,
+            ..
+        } => {
+            let (profile, mut store) = store_for(&project)?;
+            if gaps {
+                emit(&vulnbell::discovery::gaps(
+                    &profile, &project, &store, &after, limit,
+                )?)?;
+            } else if let Some(path) = from {
+                let batch: vulnbell::discovery::DiscoveryBatch =
+                    serde_json::from_slice(&vulnbell::read_limited(&path, 4 * 1024 * 1024)?)?;
+                emit(&vulnbell::discovery::import(
+                    &profile, &project, &mut store, batch,
+                )?)?;
+            } else if let Some(url) = evidence_url {
+                emit(&vulnbell::discovery::acquire(&profile, &store, &url)?)?;
+            } else {
+                let _lock = store.lock()?;
+                let plan = vulnbell::discovery::plan(&profile, &project, &store, limit)?;
+                emit(&plan)?;
             }
         }
         Commands::Sandbox { command } => match command {

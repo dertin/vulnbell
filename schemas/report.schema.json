@@ -91,6 +91,63 @@
       ],
       "type": "string"
     },
+    "DiscoverySummary": {
+      "properties": {
+        "complete": {
+          "type": "boolean"
+        },
+        "components_unmapped": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "directories_pending": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "files_excluded": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_pending": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_reviewed": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_unavailable": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sources_unavailable": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "enabled",
+        "directories_pending",
+        "files_pending",
+        "files_reviewed",
+        "files_excluded",
+        "files_unavailable",
+        "components_unmapped",
+        "sources_unavailable",
+        "complete"
+      ],
+      "type": "object"
+    },
     "EvidenceReference": {
       "additionalProperties": false,
       "properties": {
@@ -242,6 +299,45 @@
         "evidence_sha256",
         "open_questions",
         "recommended_action"
+      ],
+      "type": "object"
+    },
+    "IdentityObservation": {
+      "additionalProperties": false,
+      "properties": {
+        "cpe_product": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "instance_id": {
+          "type": "string"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sources": {
+          "items": {
+            "$ref": "#/$defs/SourceMapping"
+          },
+          "type": "array"
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "instance_id",
+        "fingerprint",
+        "rationale",
+        "sources"
       ],
       "type": "object"
     },
@@ -459,6 +555,14 @@
       ],
       "type": "string"
     },
+    "MappingState": {
+      "enum": [
+        "mapped",
+        "unavailable",
+        "not_applicable"
+      ],
+      "type": "string"
+    },
     "MonitoredComponent": {
       "properties": {
         "instance_id": {
@@ -506,10 +610,58 @@
       "enum": [
         "declared",
         "locked",
+        "agent_observed",
         "observed_artifact",
         "deployed"
       ],
       "type": "string"
+    },
+    "SourceKind": {
+      "enum": [
+        "website",
+        "repository",
+        "issues",
+        "proposed_changes",
+        "discussions",
+        "documentation",
+        "changelog",
+        "releases",
+        "advisories"
+      ],
+      "type": "string"
+    },
+    "SourceMapping": {
+      "additionalProperties": false,
+      "properties": {
+        "detail": {
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/EvidenceReference"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/$defs/SourceKind"
+        },
+        "state": {
+          "$ref": "#/$defs/MappingState"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "state",
+        "detail",
+        "evidence"
+      ],
+      "type": "object"
     },
     "TestContext": {
       "additionalProperties": false,
@@ -561,6 +713,16 @@
         "$ref": "#/$defs/Coverage"
       },
       "type": "array"
+    },
+    "discovery": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DiscoverySummary"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "dismissed_count": {
       "format": "uint",
@@ -627,6 +789,12 @@
       "format": "uint32",
       "minimum": 0,
       "type": "integer"
+    },
+    "source_map": {
+      "items": {
+        "$ref": "#/$defs/IdentityObservation"
+      },
+      "type": "array"
     }
   },
   "required": [
@@ -643,7 +811,8 @@
     "dismissed_count",
     "coverage_gaps",
     "notification_status",
-    "finding_checks"
+    "finding_checks",
+    "source_map"
   ],
   "title": "MorningReport",
   "type": "object"

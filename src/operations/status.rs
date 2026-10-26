@@ -26,6 +26,7 @@ pub struct ProjectStatus {
     pub last_agent_success: Option<String>,
     pub last_agent_failure: Option<String>,
     pub errors: Vec<String>,
+    pub discovery: Option<crate::discovery::DiscoverySummary>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -138,6 +139,9 @@ pub fn status_markdown(report: &StatusReport) -> String {
             _ => "never completed".to_owned(),
         };
         text.push_str(&format!("- Scan: {scan}\n"));
+        if let Some(discovery) = &project.discovery {
+            text.push_str(&format!("- General discovery: {}; pending directories={}, files={}, unmapped components={}, unavailable sources={}\n",if !discovery.enabled {"disabled"}else if discovery.complete {"reviewed within authorized scope"}else{"partial"},discovery.directories_pending,discovery.files_pending,discovery.components_unmapped,discovery.sources_unavailable));
+        }
         let schedule = if project.schedule.healthy {
             "active"
         } else if project.schedule.requested.is_some() {
@@ -249,6 +253,16 @@ pub(super) fn project_status(store: &Store) -> Result<ProjectStatus> {
         && runner_configured
         && timer.installed
         && timer.active == Some(true);
+    let discovery = match (profile.as_ref(), profile_path.as_deref()) {
+        (Some(profile), Some(path)) => match crate::discovery::summary(profile, path, store) {
+            Ok(summary) => Some(summary),
+            Err(error) => {
+                errors.push(format!("discovery state is unavailable: {error}"));
+                None
+            }
+        },
+        _ => None,
+    };
     Ok(ProjectStatus {
         project_id,
         name: store.meta("project_name")?,
@@ -283,6 +297,7 @@ pub(super) fn project_status(store: &Store) -> Result<ProjectStatus> {
         last_agent_success: store.meta("last_agent_success")?,
         last_agent_failure: store.meta("last_agent_failure")?,
         errors,
+        discovery,
     })
 }
 
@@ -321,6 +336,7 @@ fn unavailable_project(project_id: String, error: String) -> ProjectStatus {
         last_agent_success: None,
         last_agent_failure: None,
         errors: vec![format!("cannot read project state: {error}")],
+        discovery: None,
     }
 }
 

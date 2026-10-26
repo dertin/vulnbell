@@ -42,9 +42,16 @@ impl Store {
             CREATE TABLE IF NOT EXISTS history (sequence INTEGER PRIMARY KEY, case_id TEXT NOT NULL, body TEXT NOT NULL, recorded_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS alerts (id TEXT PRIMARY KEY, sent_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS research_cursors (upstream TEXT PRIMARY KEY, reviewed_until TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS research_progress (upstream TEXT PRIMARY KEY, body TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS research_events (key TEXT PRIMARY KEY, upstream TEXT NOT NULL, external_id TEXT NOT NULL, url TEXT NOT NULL, content_sha256 TEXT NOT NULL, updated_at TEXT NOT NULL, body TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS research_reviews (sequence INTEGER PRIMARY KEY, body TEXT NOT NULL, recorded_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS inventory_cache (key TEXT PRIMARY KEY, body TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS discovery_walk (scope TEXT NOT NULL, root TEXT NOT NULL, path TEXT NOT NULL, cursor TEXT NOT NULL, stamp TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY(scope,root,path));
+            CREATE TABLE IF NOT EXISTS discovery_files (id TEXT PRIMARY KEY, scope TEXT NOT NULL, root TEXT NOT NULL, path TEXT NOT NULL, stamp TEXT NOT NULL, offset INTEGER NOT NULL, state TEXT NOT NULL, reason TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS discovery_packages (id TEXT PRIMARY KEY, scope TEXT NOT NULL, file_id TEXT NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, sha256 TEXT NOT NULL, body TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS discovery_sources (scope TEXT NOT NULL, instance_id TEXT NOT NULL, fingerprint TEXT NOT NULL, checked_at TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(scope,instance_id));
+            CREATE TABLE IF NOT EXISTS discovery_documents (id TEXT PRIMARY KEY, body TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS discovery_history (sequence INTEGER PRIMARY KEY, scope TEXT NOT NULL, phase TEXT NOT NULL, body TEXT NOT NULL, recorded_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, body BLOB NOT NULL, etag TEXT, fetched_at INTEGER NOT NULL);
             PRAGMA user_version=1;")?;
         Ok(Self {

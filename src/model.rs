@@ -34,6 +34,7 @@ impl Coverage {
 pub enum Origin {
     Declared,
     Locked,
+    AgentObserved,
     ObservedArtifact,
     Deployed,
 }

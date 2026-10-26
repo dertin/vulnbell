@@ -1,5 +1,62 @@
 {
   "$defs": {
+    "DiscoverySummary": {
+      "properties": {
+        "complete": {
+          "type": "boolean"
+        },
+        "components_unmapped": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "directories_pending": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "files_excluded": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_pending": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_reviewed": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_unavailable": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sources_unavailable": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "enabled",
+        "directories_pending",
+        "files_pending",
+        "files_reviewed",
+        "files_excluded",
+        "files_unavailable",
+        "components_unmapped",
+        "sources_unavailable",
+        "complete"
+      ],
+      "type": "object"
+    },
     "ProjectScheduleStatus": {
       "properties": {
         "configuration_valid": {
@@ -97,6 +154,16 @@
     },
     "ProjectStatus": {
       "properties": {
+        "discovery": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DiscoverySummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "errors": {
           "items": {
             "type": "string"

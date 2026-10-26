@@ -12,9 +12,13 @@ Tell the agent what to monitor in any of these ways:
 
 A project directory is optional. Without one, VulnBell evaluates the declared software against its published versions and general exposure conditions.
 
+Native parsers extract supported lockfiles first. General discovery is enabled by default for other languages, formats and software: the agent identifies the package system, follows its official documentation, imports evidence-linked dependency observations and maps public sources. Large workspaces are reviewed through resumable pages. Ask the agent to disable this mode, or set `discovery: off` in the profile, to use only native extraction and already configured sources.
+
 VulnBell checks published advisories and CVE data, including OSV, GitHub Security Advisories, RustSec, CVE Records, NVD, and CISA KEV. Unlike a CVE-only monitor, the agent also reviews recent upstream issues, pull requests, merge requests, bug reports, fixes, and release information. This can surface credible security signals before a CVE is published. These early signals remain untrusted until the available evidence supports them.
 
 Each report identifies the affected component and version, project impact, urgency, evidence links, local or sandbox verification, recommended action, and anything that could not be confirmed.
+
+Reports also show the source map and discovery progress, including pending files, excluded inputs and unavailable sources. Incomplete work remains partial.
 
 [See a sample report](examples/report.md).
 
@@ -68,7 +72,7 @@ VulnBell applies the configured schedule window and records completed, failed, a
 
 Each run writes a Markdown file below the schedule's absolute `report_dir`. `vulnbell status` shows the exact path of the latest report. Private logs and audit data stay in VulnBell's data directory.
 
-[Set up scheduled runs](docs/automation.md) · [Local runners](docs/runners.md) · [Agent integration](docs/agents.md)
+[Set up scheduled runs](docs/automation.md) · [General discovery](docs/discovery.md) · [Local runners](docs/runners.md) · [Agent integration](docs/agents.md)
 
 ## CLI
 

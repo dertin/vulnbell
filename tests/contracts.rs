@@ -232,6 +232,11 @@ fn yaml_rejects_duplicate_keys_unknown_tags_and_excessive_nesting() {
 fn all_published_json_schemas_match_their_rust_contracts() {
     let generated = [
         (
+            "discovery",
+            serde_json::to_value(schemars::schema_for!(vulnbell::discovery::DiscoveryBatch))
+                .unwrap(),
+        ),
+        (
             "verdict",
             serde_json::to_value(schemars::schema_for!(vulnbell::model::Verdict)).unwrap(),
         ),

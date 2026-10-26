@@ -6,6 +6,7 @@
 /fuzz/target/
 /fuzz/corpus/
 /fuzz/artifacts/
+__pycache__/
 
 .env
 .env.*

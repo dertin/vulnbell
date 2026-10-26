@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+
+- Default-on general discovery with a per-project opt-out, persistent workspace pages, evidence-linked observations and public source maps.
+- Tool-free scheduled workspace extraction, separate public discovery, discovery status and report coverage.
+- Read-only Python helper and ecosystem-specific Skill guidance for structured manifests.
+
 ### Changed
 
 - Project schedules now reference a machine-local runner ID. Typed Codex and OpenCode adapter settings are configured and checked separately.

@@ -1,4 +1,5 @@
 //! Deterministic inventory, evidence and execution contracts for VulnBell.
+pub mod discovery;
 pub mod engine;
 pub mod identity;
 pub mod impact;

@@ -44,6 +44,8 @@ Cutoff: <date/time/zone> · Coverage: <full/partial>
 
 Keep scheduled reports within 500 words; aim for 350–450. Prioritize actionable findings and at most three hypotheses. Give counts for the remaining cases. Group duplicate symptoms and link full cases and evidence for details. If the user requests a full report, include all relevant cases in the same structure.
 
+Scheduled reports append the discovery progress and complete source map from recorded CLI data. Do not repeat that table in the generated narrative. Count it separately from the narrative word budget. Agent-observed dependencies have not been attested by a native lockfile parser or deployment record.
+
 `last_scan` is the completed snapshot's finish time. `last_successful_scan: null` means no scan with full source coverage has been recorded. It does **not** mean the job failed or never ran. Say “scan completed with partial coverage,” in the report's language. Report runner/import failures only when the CLI provides them. Keep the scan cutoff separate from the later agent-review/report time.
 
 The final report folder is different from the private job folder. Use the supplied absolute audit-file paths for local links. Keep original HTTPS evidence URLs.

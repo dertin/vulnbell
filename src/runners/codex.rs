@@ -1,4 +1,4 @@
-use super::{AgentAdapter, Request, base_command};
+use super::{AgentAdapter, AgentRole, Request, base_command};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::{path::Path, process::Command};
@@ -50,10 +50,11 @@ impl CodexAdapter<'_> {
         directory: &Path,
         output: &Path,
         schema: Option<&Path>,
+        role: AgentRole,
         mcp_servers: &[McpServer],
     ) -> Command {
         let mut command = base_command(self.executable, directory);
-        let research = schema.is_some();
+        let research = matches!(role, AgentRole::PublicResearch);
         command.args([
             "--no-daemon",
             "--strict-config",
@@ -144,6 +145,7 @@ impl AgentAdapter for CodexAdapter<'_> {
             request.directory,
             request.output,
             request.schema,
+            request.role,
             &mcp_servers,
         );
         let process = crate::process::run_agent_with_input(

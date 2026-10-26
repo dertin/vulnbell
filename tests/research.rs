@@ -49,6 +49,7 @@ fn agent_reviews_github_gitlab_launchpad_with_dedupe_and_failure_safe_checkpoint
     })
     .collect();
     let review = SourceReview {
+        continuation: None,
         upstream: target.upstream.clone(),
         from: target.from.clone(),
         until: target.until.clone(),
@@ -120,6 +121,7 @@ fn agent_reviews_github_gitlab_launchpad_with_dedupe_and_failure_safe_checkpoint
     let mut changed = events;
     changed[0].excerpt.push_str(" Substantive new detail.");
     let review = SourceReview {
+        continuation: None,
         from: next.targets[0].from.clone(),
         ..review
     };

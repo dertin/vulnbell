@@ -5,7 +5,7 @@ GitHub Actions runs `.github/workflows/ci.yml` on pushes, pull requests, and man
 | Check | What it checks |
 |---|---|
 | Workflow syntax | Pinned version of actionlint |
-| Tests | fmt, Clippy, tests, and package builds on Linux/macOS/Windows; Git installation and embedded Skill on Linux |
+| Tests | fmt, Clippy, Rust tests, read-only Python manifest helper, and package builds on Linux/macOS/Windows; Git installation and embedded Skill on Linux |
 | Dependency advisories | RustSec through a pinned version of cargo-audit |
 | MSRV | Rust 1.90.0 |
 | Real Microsandbox isolation | Pinned runtime and image, a real VM, control tests, and failure handling on Linux/KVM |
