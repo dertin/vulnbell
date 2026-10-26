@@ -4,7 +4,7 @@ use crate::{
     store::Store,
 };
 use anyhow::{Context, Result, bail};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use rusqlite::params;
 use sha2::Sha256;
 mod details;

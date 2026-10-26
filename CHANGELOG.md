@@ -10,6 +10,7 @@
 
 ### Changed
 
+- Updated direct and transitive dependencies, including HTTP/TLS, SQLite, cryptography and manifest parsers.
 - Project schedules now reference a machine-local runner ID. Typed Codex and OpenCode adapter settings are configured and checked separately.
 - Scheduled report paths and runner availability are exposed through CLI status.
 

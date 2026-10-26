@@ -470,7 +470,7 @@ pub fn discover(
                 }
                 use rusqlite::OptionalExtension;
                 let hash = crate::digest(&bytes);
-                let key = format!("parser-v2:{name}:{hash}");
+                let key = format!("parser-v3:{name}:{hash}");
                 let cached: Option<String> = store
                     .connection
                     .query_row(
@@ -522,8 +522,25 @@ pub fn discover(
                                     continue;
                                 }
                             };
-                        if let Some(namespace) = namespace {
-                            purl.with_namespace(namespace);
+                        if let Some(namespace) = namespace
+                            && purl.with_namespace(namespace).is_err()
+                        {
+                            inventory.coverage.push(Coverage::new(
+                                "inventory",
+                                &relative,
+                                CoverageState::Partial,
+                                "invalid package namespace",
+                            ));
+                            continue;
+                        }
+                        if purl.validate().is_err() {
+                            inventory.coverage.push(Coverage::new(
+                                "inventory",
+                                &relative,
+                                CoverageState::Partial,
+                                "invalid package identity",
+                            ));
+                            continue;
                         }
                         let reference = purl.to_string();
                         let identity = format!(

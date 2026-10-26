@@ -7,6 +7,44 @@ use vulnbell::{
 };
 
 #[test]
+fn persisted_hashes_keep_the_sha256_wire_format() {
+    assert_eq!(
+        vulnbell::digest(b"abc"),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+}
+
+#[test]
+fn sqlite_unsigned_values_reject_negative_reads_and_overflowing_writes() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch("CREATE TABLE offsets (value INTEGER NOT NULL)")
+        .unwrap();
+    let maximum = 9_223_372_036_854_775_807_u64;
+    connection
+        .execute("INSERT INTO offsets VALUES (?1)", [maximum])
+        .unwrap();
+    let stored: u64 = connection
+        .query_row("SELECT value FROM offsets", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(stored, maximum);
+    assert!(
+        connection
+            .execute("INSERT INTO offsets VALUES (?1)", [u64::MAX])
+            .is_err()
+    );
+    assert!(
+        connection
+            .query_row::<u64, _, _>("SELECT -1", [], |row| row.get(0))
+            .is_err()
+    );
+    let count: usize = connection
+        .query_row("SELECT COUNT(*) FROM offsets", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[test]
 fn generated_profile_schema_matches_committed_contract() {
     let committed: serde_json::Value =
         serde_json::from_slice(&fs::read("schemas/profile.schema.json").unwrap()).unwrap();

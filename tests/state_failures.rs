@@ -1,5 +1,42 @@
 use std::fs;
 use vulnbell::store::Store;
+
+#[test]
+fn invalid_package_namespace_cannot_fall_back_to_another_registry_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = directory.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    fs::write(
+        workspace.join("Cargo.lock"),
+        r#"version = 4
+[[package]]
+name = "untrusted/serde"
+version = "1.0.229"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+[[package]]
+name = "serde_json"
+version = "1.0.154"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#,
+    )
+    .unwrap();
+    let project = uuid::Uuid::new_v4().to_string();
+    let store = Store::open(&project).unwrap();
+    let inventory = vulnbell::inventory::discover(
+        &["workspace".into()],
+        &directory.path().join("radar.yaml"),
+        &store,
+        100,
+    );
+    assert_eq!(inventory.instances.len(), 1);
+    assert_eq!(inventory.instances[0].reference, "pkg:cargo/serde_json");
+    assert!(inventory.coverage.iter().any(|coverage| coverage.state
+        == vulnbell::model::CoverageState::Partial
+        && coverage.detail == "invalid package namespace"));
+    drop(store);
+    fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+}
+
 #[test]
 fn concurrent_scans_and_future_schema_versions_fail_closed() {
     let project = uuid::Uuid::new_v4().to_string();
