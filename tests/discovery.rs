@@ -1,4 +1,4 @@
-use std::{fs, path::Path};
+use std::fs;
 use vulnbell::{
     discovery::{self, DiscoveryBatch, FileReview, PackageObservation},
     profile::{self, DiscoveryMode, Profile},
@@ -398,6 +398,6 @@ fn discovery_never_follows_workspace_symlinks() {
     let page = discovery::plan(&profile, &path, &store, 20).unwrap();
     assert!(page.workspace.is_empty());
     assert_eq!(page.summary.files_excluded, 1);
-    assert!(Path::new(&path).exists());
+    assert!(path.exists());
     cleanup(store, &profile);
 }
