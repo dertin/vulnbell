@@ -2,9 +2,19 @@
 
 [![CI](https://github.com/dertin/vulnbell/actions/workflows/ci.yml/badge.svg)](https://github.com/dertin/vulnbell/actions/workflows/ci.yml)
 
-Monitor your software for security risks. Get clear reports for Engineering and Cyber teams.
+VulnBell helps a local agent monitor the software your projects depend on and produce clear security reports for Engineering and Cyber teams.
 
-VulnBell combines a Rust CLI with an Agent Skill. Describe products, binaries, and dependencies, add local workspaces, or use both. You do not need a local repository. Reports separate actionable findings, open questions, and sources that could not be checked.
+Tell the agent what to monitor in any of these ways:
+
+- list products, binaries, libraries, and exact versions;
+- give it a project directory so it can inventory lockfiles and dependencies, then inspect source and configuration when impact depends on how a library is used;
+- combine a project directory with additional software that is not declared by the project.
+
+A project directory is optional. Without one, VulnBell evaluates the declared software against its published versions and general exposure conditions.
+
+VulnBell checks published advisories and CVE data, including OSV, GitHub Security Advisories, RustSec, CVE Records, NVD, and CISA KEV. Unlike a CVE-only monitor, the agent also reviews recent upstream issues, pull requests, merge requests, bug reports, fixes, and release information. This can surface credible security signals before a CVE is published. These early signals remain untrusted until the available evidence supports them.
+
+Each report identifies the affected component and version, project impact, urgency, evidence links, local or sandbox verification, recommended action, and anything that could not be confirmed.
 
 [See a sample report](examples/report.md).
 
@@ -22,7 +32,7 @@ Or build it with Rust 1.90+, Git, and a C compiler:
 cargo install vulnbell --locked
 ```
 
-Then install the shared Agent Skill:
+Then install the Agent Skill:
 
 ```sh
 vulnbell skills install
@@ -30,13 +40,15 @@ vulnbell doctor --json
 vulnbell status
 ```
 
-The Skill installs to `~/.agents/skills/vulnbell`, shared by Codex and OpenCode. The configured local agent reviews upstream evidence and available project source; the CLI keeps inventory, impact answers, sandbox attestations, and reports in auditable contracts.
+The Skill uses the Agent Skills format. Its default location is `$HOME/.agents/skills/vulnbell` on Linux and macOS, or `%USERPROFILE%\.agents\skills\vulnbell` on Windows. `vulnbell doctor --json` shows the resolved location and checks the installation.
+
+The local agent reviews public upstream evidence and available project source. The CLI keeps the inventory, evidence, impact answers, sandbox attestations, and reports as auditable local data.
 
 ## Ask your agent to set up monitoring
 
-> Use VulnBell to monitor Keycloak 26.8.1, WordPress latest, and this project's dependencies. Create and validate the profile, investigate security risks, and save a Markdown report.
+> Use VulnBell to monitor Keycloak 26.8.1, WordPress latest, and the project at `/home/alex/projects/acme-api`. Inspect that workspace to inventory its dependencies and determine whether reported issues affect its source or configuration. Create and validate the profile, investigate new advisories and upstream activity, configure a daily run at 08:00 in my time zone with a three-hour execution window, and save a concise Markdown report.
 
-The agent first checks `vulnbell status --json` for an existing monitor. It then creates or updates the profile, builds the inventory, checks advisories, and reviews recent issues and pull requests. You do not need to write YAML. `latest` follows stable releases; it does not mean that version is deployed in your project.
+The agent first checks `vulnbell status --json` for an existing monitor. It then creates or updates the profile, builds the inventory, checks advisories and CVEs, and reviews recent activity from the verified upstream projects. You do not need to write YAML. `latest` follows stable releases; it does not mean that version is deployed in your project.
 
 To get a fresh report at any time:
 
@@ -44,11 +56,17 @@ To get a fresh report at any time:
 
 ## Schedule reports
 
-Set each project's frequency, time zone, start time, allowed time window, agent, and report folder. Linux uses user-level systemd.
+Scheduling is configured per project. Choose `daily`, `weekdays`, or `weekly`, plus a time zone, start time, allowed execution window, local agent, and report folder.
 
 If your computer starts during the window, the review runs. If it misses the whole window, that run is skipped. The next run follows the schedule. VulnBell does not send team messages by default.
 
-[Set up daily runs](docs/automation.md) · [Agents and models](docs/agents.md)
+- Linux: `vulnbell schedule install` installs a user-level systemd timer.
+- macOS: configure launchd to call `vulnbell run --project <profile>`.
+- Windows: configure Task Scheduler to call the same command.
+
+VulnBell applies the configured schedule window and records completed, failed, and skipped runs on every platform. It does not wake a powered-off computer. Native job installation is currently included for Linux; macOS and Windows use their system schedulers.
+
+[Set up scheduled runs](docs/automation.md) · [Agent integration](docs/agents.md)
 
 ## CLI
 

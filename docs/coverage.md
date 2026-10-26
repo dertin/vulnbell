@@ -11,8 +11,8 @@
 | Reports | Local Markdown/JSON for manager, cyber, and audit audiences |
 | Project status | Registered profiles, scan results, schedule health, skipped runs, agent failures, and latest reports |
 | Project impact | Guided evidence-bound questions, static workspace review, saved rationales, and update urgency |
-| Scheduled agents | Codex 0.164.0 and the OpenCode 1.19.4 adapter |
-| Scheduler | User-level systemd on Linux |
+| Scheduled agents | Isolated runners listed by `vulnbell schema schedule` |
+| Scheduler | Built-in user-level systemd installation on Linux; launchd and Task Scheduler can invoke `vulnbell run` |
 | Sandbox | Microsandbox 0.7.11; real execution tested on Linux x86_64/KVM |
 
 ## Limits
@@ -22,7 +22,7 @@
 - A declared version does not prove deployment or exposure. Unclear matches stay in review.
 - Access restrictions, missing dates, rate limits, and unread pages stay visible. Partial reviews do not advance the checkpoint.
 - CI builds and tests the core on Linux, macOS, and Windows. It does not certify VM execution on macOS/Windows.
-- Codex has been tested locally with a real provider. OpenCode has active-permission and contract checks; a model run needs provider credentials and quota. Reports are local Markdown by default. A webhook needs its own receiver.
+- Unattended agent runs need valid local credentials and provider quota. Reports are local Markdown by default. A webhook needs its own receiver.
 
 ## Tests
 

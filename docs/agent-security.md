@@ -7,7 +7,7 @@ Issues, pull requests, web pages, code, and claimed security reports are untrust
 - The researcher receives a bounded plan through stdin and has only public research tools.
 - Shell, local file access, personal MCP, Apps, plugins, hooks, and subagents are disabled.
 - The report writer receives recorded data and has no tools.
-- OpenCode uses temporary HOME/XDG folders and checks its active tools. Local `webfetch` is denied.
+- The runner checks its effective tool permissions before research. Local web fetch and inherited configuration are denied.
 - `use_connected_apps: true` is rejected.
 - Imported research is stored as context. It cannot create a lab attestation or dismiss a case by itself.
 - The impact verdict is calculated by the CLI from fixed questions and registered evidence. It never changes the case decision or grants test permission.

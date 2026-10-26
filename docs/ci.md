@@ -11,7 +11,7 @@ GitHub Actions runs `.github/workflows/ci.yml` on pushes, pull requests, and man
 | Real Microsandbox isolation | Pinned runtime and image, a real VM, control tests, and failure handling on Linux/KVM |
 | VulnBell required checks | Every job above must pass |
 
-CI needs no model credentials and does not run agents against paid services. Contract and policy tests run automatically. Codex/OpenCode tests that need provider access run locally.
+CI needs no model credentials and does not run agents against paid services. Contract and policy tests run automatically. Checks that need a live agent account run locally.
 
 The sandbox job needs `/dev/kvm`. It fails if KVM is missing; it does not skip tests or switch backends. GitHub does not guarantee nested virtualization on every runner. Logs and synthetic evidence are saved even when tests fail.
 
