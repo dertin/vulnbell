@@ -12,7 +12,7 @@ fn agent_reviews_github_gitlab_launchpad_with_dedupe_and_failure_safe_checkpoint
     let profile = vulnbell::profile::load(&path).unwrap();
     vulnbell::engine::scan(&profile, &path, true).unwrap();
     let mut store = Store::open(&project).unwrap();
-    let plan = vulnbell::research::plan(&store).unwrap();
+    let plan = vulnbell::research::plan_page(&store, "", 20).unwrap();
     let target = &plan.targets[0];
     let events: Vec<ResearchEvent> = [
         (
@@ -70,7 +70,9 @@ fn agent_reviews_github_gitlab_launchpad_with_dedupe_and_failure_safe_checkpoint
     let day_result = vulnbell::research::import(&mut store, day_precision).unwrap();
     assert_eq!(day_result["sources"][0]["coverage"], "partial");
     assert!(
-        vulnbell::research::plan(&store).unwrap().targets[0]
+        vulnbell::research::plan_page(&store, "", 20)
+            .unwrap()
+            .targets[0]
             .last_complete_review
             .is_none()
     );
@@ -81,14 +83,18 @@ fn agent_reviews_github_gitlab_launchpad_with_dedupe_and_failure_safe_checkpoint
     let undated_result = vulnbell::research::import(&mut store, undated).unwrap();
     assert_eq!(undated_result["sources"][0]["coverage"], "partial");
     assert!(
-        vulnbell::research::plan(&store).unwrap().targets[0]
+        vulnbell::research::plan_page(&store, "", 20)
+            .unwrap()
+            .targets[0]
             .last_complete_review
             .is_none()
     );
     let first = vulnbell::research::import(&mut store, batch.clone()).unwrap();
     assert_eq!(first["changed_cases"], 3);
     assert!(
-        vulnbell::research::plan(&store).unwrap().targets[0]
+        vulnbell::research::plan_page(&store, "", 20)
+            .unwrap()
+            .targets[0]
             .last_complete_review
             .is_none()
     );
@@ -113,7 +119,7 @@ fn agent_reviews_github_gitlab_launchpad_with_dedupe_and_failure_safe_checkpoint
     let mut completed = batch;
     completed.sources[0].coverage = ReviewCoverage::Complete;
     vulnbell::research::import(&mut store, completed).unwrap();
-    let next = vulnbell::research::plan(&store).unwrap();
+    let next = vulnbell::research::plan_page(&store, "", 20).unwrap();
     assert_eq!(
         next.targets[0].last_complete_review.as_deref(),
         Some(target.until.as_str())

@@ -45,9 +45,7 @@ pub struct Provenance {
     pub observed_at: String,
     pub workspace: Option<String>,
     pub direct: Option<bool>,
-    #[serde(default)]
     pub resolution: Option<String>,
-    #[serde(default)]
     pub artifact_integrity: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

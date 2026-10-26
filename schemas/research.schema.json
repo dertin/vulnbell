@@ -118,8 +118,7 @@
             {
               "type": "null"
             }
-          ],
-          "default": null
+          ]
         },
         "coverage": {
           "$ref": "#/$defs/ReviewCoverage"

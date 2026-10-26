@@ -402,7 +402,6 @@
     "ImpactResult": {
       "properties": {
         "answers": {
-          "default": [],
           "items": {
             "$ref": "#/$defs/ImpactAnswer"
           },
@@ -441,6 +440,7 @@
         "facts_sha256",
         "verdict",
         "confidence",
+        "answers",
         "instances",
         "assessed_at"
       ],

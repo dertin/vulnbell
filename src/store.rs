@@ -6,6 +6,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+const DATABASE_SCHEMA: u32 = 2;
+
 pub fn data_root() -> PathBuf {
     if let Some(path) = std::env::var_os("VULNBELL_DATA_DIR") {
         return PathBuf::from(path);
@@ -22,42 +24,56 @@ pub struct Store {
 impl Store {
     pub fn open(project_id: &str) -> Result<Self> {
         let directory = project_directory(project_id)?;
-        fs::create_dir_all(directory.join("evidence"))?;
+        fs::create_dir_all(&directory)?;
+        let database = directory.join("state.sqlite");
+        let existing = database.exists();
+        let connection = if existing {
+            Self::open_existing(project_id)?;
+            Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_WRITE)?
+        } else {
+            Connection::open(database)?
+        };
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        let mut store = Self {
+            connection,
+            directory,
+        };
+        if existing {
+            store.check_schema()?;
+        }
+        store
+            .connection
+            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+        if !existing {
+            let transaction = store.connection.transaction()?;
+            transaction.execute_batch("
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE snapshots (id TEXT PRIMARY KEY, body TEXT NOT NULL);
+            CREATE TABLE cases (id TEXT PRIMARY KEY, body TEXT NOT NULL);
+            CREATE TABLE history (sequence INTEGER PRIMARY KEY, case_id TEXT NOT NULL, body TEXT NOT NULL, recorded_at TEXT NOT NULL);
+            CREATE TABLE alerts (id TEXT PRIMARY KEY, sent_at TEXT NOT NULL);
+            CREATE TABLE research_cursors (upstream TEXT PRIMARY KEY, reviewed_until TEXT NOT NULL);
+            CREATE TABLE research_progress (upstream TEXT PRIMARY KEY, body TEXT NOT NULL);
+            CREATE TABLE research_events (key TEXT PRIMARY KEY, upstream TEXT NOT NULL, external_id TEXT NOT NULL, url TEXT NOT NULL, content_sha256 TEXT NOT NULL, updated_at TEXT NOT NULL, body TEXT NOT NULL);
+            CREATE TABLE research_reviews (sequence INTEGER PRIMARY KEY, body TEXT NOT NULL, recorded_at TEXT NOT NULL);
+            CREATE TABLE inventory_cache (key TEXT PRIMARY KEY, body TEXT NOT NULL);
+            CREATE TABLE discovery_walk (scope TEXT NOT NULL, root TEXT NOT NULL, path TEXT NOT NULL, cursor TEXT NOT NULL, stamp TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY(scope,root,path));
+            CREATE TABLE discovery_files (id TEXT PRIMARY KEY, scope TEXT NOT NULL, root TEXT NOT NULL, path TEXT NOT NULL, stamp TEXT NOT NULL, offset INTEGER NOT NULL, state TEXT NOT NULL, reason TEXT NOT NULL);
+            CREATE TABLE discovery_packages (id TEXT PRIMARY KEY, scope TEXT NOT NULL, file_id TEXT NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, sha256 TEXT NOT NULL, body TEXT NOT NULL);
+            CREATE TABLE discovery_sources (scope TEXT NOT NULL, instance_id TEXT NOT NULL, fingerprint TEXT NOT NULL, checked_at TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(scope,instance_id));
+            CREATE TABLE discovery_documents (id TEXT PRIMARY KEY, body TEXT NOT NULL);
+            CREATE TABLE discovery_history (sequence INTEGER PRIMARY KEY, scope TEXT NOT NULL, phase TEXT NOT NULL, body TEXT NOT NULL, recorded_at TEXT NOT NULL);
+            CREATE TABLE cache (key TEXT PRIMARY KEY, body BLOB NOT NULL, etag TEXT, fetched_at INTEGER NOT NULL);")?;
+            transaction.pragma_update(None, "user_version", DATABASE_SCHEMA)?;
+            transaction.commit()?;
+        }
+        fs::create_dir_all(store.directory.join("evidence"))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+            fs::set_permissions(&store.directory, fs::Permissions::from_mode(0o700))?;
         }
-        let connection = Connection::open(directory.join("state.sqlite"))?;
-        connection.busy_timeout(std::time::Duration::from_secs(5))?;
-        let existing_version: u32 =
-            connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if existing_version > 1 {
-            bail!("unsupported database schema {existing_version}; no downgrade attempted");
-        }
-        connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
-            CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS snapshots (id TEXT PRIMARY KEY, body TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS cases (id TEXT PRIMARY KEY, body TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS history (sequence INTEGER PRIMARY KEY, case_id TEXT NOT NULL, body TEXT NOT NULL, recorded_at TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS alerts (id TEXT PRIMARY KEY, sent_at TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS research_cursors (upstream TEXT PRIMARY KEY, reviewed_until TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS research_progress (upstream TEXT PRIMARY KEY, body TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS research_events (key TEXT PRIMARY KEY, upstream TEXT NOT NULL, external_id TEXT NOT NULL, url TEXT NOT NULL, content_sha256 TEXT NOT NULL, updated_at TEXT NOT NULL, body TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS research_reviews (sequence INTEGER PRIMARY KEY, body TEXT NOT NULL, recorded_at TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS inventory_cache (key TEXT PRIMARY KEY, body TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS discovery_walk (scope TEXT NOT NULL, root TEXT NOT NULL, path TEXT NOT NULL, cursor TEXT NOT NULL, stamp TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY(scope,root,path));
-            CREATE TABLE IF NOT EXISTS discovery_files (id TEXT PRIMARY KEY, scope TEXT NOT NULL, root TEXT NOT NULL, path TEXT NOT NULL, stamp TEXT NOT NULL, offset INTEGER NOT NULL, state TEXT NOT NULL, reason TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS discovery_packages (id TEXT PRIMARY KEY, scope TEXT NOT NULL, file_id TEXT NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, sha256 TEXT NOT NULL, body TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS discovery_sources (scope TEXT NOT NULL, instance_id TEXT NOT NULL, fingerprint TEXT NOT NULL, checked_at TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(scope,instance_id));
-            CREATE TABLE IF NOT EXISTS discovery_documents (id TEXT PRIMARY KEY, body TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS discovery_history (sequence INTEGER PRIMARY KEY, scope TEXT NOT NULL, phase TEXT NOT NULL, body TEXT NOT NULL, recorded_at TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, body BLOB NOT NULL, etag TEXT, fetched_at INTEGER NOT NULL);
-            PRAGMA user_version=1;")?;
-        Ok(Self {
-            connection,
-            directory,
-        })
+        Ok(store)
     }
     pub fn open_existing(project_id: &str) -> Result<Self> {
         let directory = project_directory(project_id)?;
@@ -220,8 +236,10 @@ impl Store {
         let version: u32 = self
             .connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version != 1 {
-            bail!("unsupported database schema {version}");
+        if version != DATABASE_SCHEMA {
+            bail!(
+                "unsupported database schema {version}; expected {DATABASE_SCHEMA}. Create a new monitor with a new project ID; existing state was not changed"
+            );
         }
         Ok(())
     }

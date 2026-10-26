@@ -6,7 +6,6 @@ rust-version = "1.90"
 description = "Security monitoring and evidence-backed reports for your software"
 license = "MIT"
 repository = "https://github.com/dertin/vulnbell"
-homepage = "https://github.com/dertin/vulnbell"
 authors = ["Guillermo Céspedes Tabárez <dev.dertin@gmail.com>"]
 keywords = ["security", "dependencies", "monitoring", "vulnerability"]
 categories = ["command-line-utilities", "development-tools"]

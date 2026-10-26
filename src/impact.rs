@@ -109,7 +109,6 @@ pub struct ImpactResult {
     pub facts_sha256: String,
     pub verdict: ImpactVerdict,
     pub confidence: ImpactConfidence,
-    #[serde(default)]
     pub answers: Vec<ImpactAnswer>,
     pub instances: Vec<InstanceImpact>,
     pub assessed_at: String,

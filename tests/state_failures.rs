@@ -2,6 +2,56 @@ use std::fs;
 use vulnbell::store::Store;
 
 #[test]
+fn incompatible_state_is_rejected_without_conversion_or_data_changes() {
+    for version in [0_u32, 1_u32] {
+        let project = uuid::Uuid::new_v4().to_string();
+        let directory = vulnbell::store::data_root().join(&project);
+        fs::create_dir_all(&directory).unwrap();
+        let database = directory.join("state.sqlite");
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        connection.execute_batch("CREATE TABLE sentinel (value TEXT NOT NULL); INSERT INTO sentinel VALUES ('preserve-this-state')").unwrap();
+        connection
+            .pragma_update(None, "user_version", version)
+            .unwrap();
+        drop(connection);
+        let before = fs::read(&database).unwrap();
+        let error = Store::open(&project).err().unwrap();
+        assert!(error.to_string().contains("unsupported database schema"));
+        assert!(Store::open_existing(&project).is_err());
+        assert_eq!(fs::read(&database).unwrap(), before);
+        assert!(!directory.join("evidence").exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
+fn current_database_is_initialized_once_and_reopens_without_rebuilding_tables() {
+    let project = uuid::Uuid::new_v4().to_string();
+    let store = Store::open(&project).unwrap();
+    let version: u32 = store
+        .connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 2);
+    store.set_meta("sentinel", "retained").unwrap();
+    store
+        .connection
+        .execute_batch("DROP TABLE discovery_documents")
+        .unwrap();
+    drop(store);
+    let store = Store::open(&project).unwrap();
+    assert_eq!(store.meta("sentinel").unwrap().as_deref(), Some("retained"));
+    assert!(
+        store
+            .connection
+            .prepare("SELECT * FROM discovery_documents")
+            .is_err()
+    );
+    drop(store);
+    fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+}
+
+#[test]
 fn invalid_package_namespace_cannot_fall_back_to_another_registry_identity() {
     let directory = tempfile::tempdir().unwrap();
     let workspace = directory.path().join("workspace");

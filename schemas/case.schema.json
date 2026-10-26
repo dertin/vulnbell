@@ -211,7 +211,6 @@
     "Provenance": {
       "properties": {
         "artifact_integrity": {
-          "default": null,
           "type": [
             "string",
             "null"
@@ -233,7 +232,6 @@
           ]
         },
         "resolution": {
-          "default": null,
           "type": [
             "string",
             "null"

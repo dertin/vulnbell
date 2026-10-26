@@ -17,4 +17,4 @@ Run `python3 -I -m unittest discover -s tests -p test_manifest_reader.py` for th
 
 Runner adapters implement the internal `AgentAdapter` contract in `src/runners/`. A new adapter needs a typed `AdapterConfig` variant, registry entry, exact supported-version check, effective research/report permission checks, bounded structured output, failure tests, and one live ignored acceptance test. Update the generated runner schema and [runner documentation](docs/runners.md) with only verified support.
 
-Never run monitored code on the host. Keep credentials, reports, databases, and downloaded artifacts outside the repository. Migrations must support older versions or reject them with a clear error.
+Never run monitored code on the host. Keep credentials, reports, databases, and downloaded artifacts outside the repository. Use current contracts only. Reject incompatible schemas without changing their data; do not add migrations or legacy readers.

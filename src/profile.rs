@@ -138,11 +138,7 @@ pub fn validate(profile: &Profile) -> Validation {
         });
     };
     if profile.schema != 1 {
-        push(
-            "/schema".into(),
-            "unsupported_schema",
-            "Use schema 1; migrations must be explicit with a backup",
-        );
+        push("/schema".into(), "unsupported_schema", "Use schema 1");
     }
     if profile.project_id.is_nil() {
         push(

@@ -29,7 +29,6 @@ pub struct SourceReview {
     pub until: String,
     pub coverage: ReviewCoverage,
     pub detail: String,
-    #[serde(default)]
     pub continuation: Option<SourceContinuation>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -122,9 +121,6 @@ pub struct ResearchPlan {
     pub required_agent_sites: Vec<String>,
     pub policy: String,
     pub next_cursor: Option<String>,
-}
-pub fn plan(store: &Store) -> Result<ResearchPlan> {
-    build_plan(store, "", usize::MAX, true)
 }
 pub fn plan_page(store: &Store, after: &str, limit: usize) -> Result<ResearchPlan> {
     if !(1..=20).contains(&limit) {

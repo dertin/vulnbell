@@ -160,6 +160,9 @@ fn complete_reachable_exposure_requires_an_urgent_update() {
     assert_eq!(result.verdict, ImpactVerdict::UrgentUpdate);
     assert_eq!(result.confidence, ImpactConfidence::Medium);
     assert_eq!(result.answers.len(), 5);
+    let mut incomplete = serde_json::to_value(&result).unwrap();
+    incomplete.as_object_mut().unwrap().remove("answers");
+    assert!(serde_json::from_value::<vulnbell::impact::ImpactResult>(incomplete).is_err());
     let stored = vulnbell::impact::latest(&store.case(&case.case_id).unwrap(), &store).unwrap();
     assert_eq!(stored.answers.len(), 5);
     assert_eq!(
