@@ -24,7 +24,7 @@ Runner configurations are stored in `<data directory>/runners/<id>.json`. `vulnb
 
 Examples are available in [`examples/runner-codex.json`](../examples/runner-codex.json) and [`examples/runner-opencode.json`](../examples/runner-opencode.json).
 
-Both adapters clear the inherited environment, verify the exact tested client version, limit research to public web search, and run report generation without tools. The check fails when the client version, credentials, provider, configuration, or effective permissions do not match the adapter contract.
+Both adapters clear the inherited environment, verify the exact tested client version, limit research to public web search, and run report generation without tools. `runners check` verifies the installed client and capability policy. Run `vulnbell run --project <profile> --now` to check provider access, credentials, research output, and report delivery together.
 
 ## Project schedule
 
