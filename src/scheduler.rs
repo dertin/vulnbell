@@ -125,17 +125,7 @@ pub fn save_config(profile: &Profile, store: &Store, config: &ScheduleConfig) ->
     crate::atomic_write(&config_path(store), &serde_json::to_vec_pretty(config)?)
 }
 pub fn parse_config(profile: &Profile, bytes: &[u8]) -> Result<ScheduleConfig> {
-    let value: serde_json::Value = serde_json::from_slice(bytes)?;
-    if value
-        .get("schema_version")
-        .and_then(serde_json::Value::as_u64)
-        == Some(1)
-    {
-        bail!(
-            "schedule schema 1 embeds agent settings; configure a runner and write schedule schema 2"
-        );
-    }
-    let config: ScheduleConfig = serde_json::from_value(value)?;
+    let config: ScheduleConfig = serde_json::from_slice(bytes)?;
     config.validate(profile)?;
     Ok(config)
 }
