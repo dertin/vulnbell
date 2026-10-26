@@ -18,7 +18,8 @@ General discovery is enabled unless the user explicitly asks to disable it. Pers
 | [.NET](https://learn.microsoft.com/en-us/nuget/consume-packages/package-references-in-project-files) | project XML, `Directory.Packages.props`, `packages.lock.json`, `project.assets.json` | Central versions, target frameworks, resolved graph and private feeds |
 | Ruby | `Gemfile.lock`, gemspec and Bundler metadata | Lock sections, platforms and Git/path sources; never evaluate a Gemfile or gemspec on the host |
 | JavaScript | package manifests, workspaces, npm/pnpm/Yarn locks | Use native parsers first; for other lock versions inspect their official schema and preserve nested resolutions |
-| Rust / PHP | Cargo/Composer manifests and locks | Use native inventory first; review workspace members, patches, features, repositories and plugins as data |
+| [Rust / Cargo](https://doc.rust-lang.org/cargo/guide/cargo-toml-vs-cargo-lock.html) | `Cargo.toml`, member manifests and `Cargo.lock` (TOML) | Use native inventory first. Read `[[package]]` records for exact versions, sources and checksums. Follow workspace members, inherited dependencies and patches; distinguish registry, Git and path packages. A lockfile does not establish which optional features are active |
+| [PHP / Composer](https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies) | `composer.json` and `composer.lock` (JSON) | Use native inventory first. Read both `packages` and `packages-dev` for versions, `source` and `dist`. Review `require`, `require-dev`, repositories, replacements and virtual packages. PHP/extension constraints do not establish the installed runtime. Do not execute Composer scripts or plugins to read the inventory |
 | C/C++ / other | Conan/vcpkg manifests and locks, CMake metadata, vendored source, SBOM and packaging metadata | Resolve artifact source and version without executing configure/build scripts |
 | Software / binaries | release manifest, image digest, packaging metadata, vendor docs and user-supplied version | Record exact build/architecture/distribution where available; a product name is not an artifact identity |
 
@@ -27,7 +28,8 @@ For unfamiliar tools, find the official documentation for the detected version a
 The bundled helper can inspect structured data in the interactive workflow:
 
 ```sh
-python3 -I <skill-directory>/scripts/read-manifest.py --root <authorized-workspace> --file pyproject.toml --format toml --limit 100
+python3 -I <skill-directory>/scripts/read-manifest.py --root <authorized-workspace> --file Cargo.lock --format toml --limit 100
+python3 -I <skill-directory>/scripts/read-manifest.py --root <authorized-workspace> --file composer.lock --format json --limit 100
 ```
 
 Use `--offset <next_offset>` until `next_offset` is null. The helper emits values with JSON pointers; it does not resolve versions or certify dependency identity. Use Python 3.11+ for TOML. Oversized, malformed or unsupported documents remain partial; use the CLI's fragment queue or a reviewed streaming parser. Do not install project packages to read a manifest.
