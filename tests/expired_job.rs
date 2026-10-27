@@ -3,7 +3,7 @@ use chrono::{Duration, Timelike, Utc};
 fn an_expired_job_never_scans_or_starts_the_missing_agent() {
     let directory = tempfile::tempdir().unwrap();
     let project = uuid::Uuid::new_v4().to_string();
-    let path = directory.path().join("radar.yaml");
+    let path = directory.path().join("vulnbell.yaml");
     std::fs::write(&path,format!("schema: 1\nproject_id: {project}\nname: expired-job-test\ncomponents:\n - ref: unknown\nschedule: daily\n")).unwrap();
     let profile = vulnbell::profile::load(&path).unwrap();
     let store = vulnbell::store::Store::open(&project).unwrap();
@@ -63,8 +63,9 @@ fn an_expired_job_never_scans_or_starts_the_missing_agent() {
     assert!(forced["report_error"].is_string());
     assert!(store.meta("last_agent_failure").unwrap().is_some());
     let report = std::fs::read_to_string(forced["report"].as_str().unwrap()).unwrap();
-    assert!(report.contains("ejecución parcial"));
-    assert!(report.contains("Cobertura y entrega"));
+    assert!(report.contains("**Agent — partial run:**"));
+    assert!(report.contains("## Coverage and delivery"));
+    assert!(!report.contains("Cobertura"));
     drop(store);
     std::fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
 }

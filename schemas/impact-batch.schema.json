@@ -1,0 +1,107 @@
+{
+  "$defs": {
+    "BatchAnswer": {
+      "additionalProperties": false,
+      "properties": {
+        "answer": {
+          "$ref": "#/$defs/ImpactAnswerValue"
+        },
+        "instance_ids": {
+          "default": [],
+          "description": "Case instances the answer covers; empty means all of them.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "notes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "question": {
+          "$ref": "#/$defs/ImpactQuestionId"
+        },
+        "rationale": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "question",
+        "answer",
+        "rationale"
+      ],
+      "type": "object"
+    },
+    "CaseImpact": {
+      "additionalProperties": false,
+      "properties": {
+        "answers": {
+          "items": {
+            "$ref": "#/$defs/BatchAnswer"
+          },
+          "type": "array"
+        },
+        "case_id": {
+          "type": "string"
+        },
+        "notes": {
+          "default": [],
+          "description": "Reviewed evidence notes registered on the case and cited by every answer without its own.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "case_id",
+        "answers"
+      ],
+      "type": "object"
+    },
+    "ImpactAnswerValue": {
+      "enum": [
+        "yes",
+        "no",
+        "unknown",
+        "not_applicable"
+      ],
+      "type": "string"
+    },
+    "ImpactQuestionId": {
+      "enum": [
+        "artifact_deployed",
+        "affected_feature_used",
+        "untrusted_input_reaches_feature",
+        "required_conditions_present",
+        "fix_or_mitigation_applied"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Impact answers for several cases. Note paths are relative to the batch file.",
+  "properties": {
+    "cases": {
+      "items": {
+        "$ref": "#/$defs/CaseImpact"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "cases"
+  ],
+  "title": "ImpactBatch",
+  "type": "object"
+}

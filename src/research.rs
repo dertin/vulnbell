@@ -1,7 +1,7 @@
 use crate::{
     model::{
-        Applicability, Case, Coverage, CoverageState, Decision, EvidenceKind, UpstreamEvent,
-        Verification,
+        Applicability, Case, Coverage, CoverageState, Decision, EvidenceKind, SourceFacts,
+        UpstreamEvent, Verification,
     },
     store::Store,
 };
@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 pub(crate) mod automation;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -44,12 +44,25 @@ pub enum ReviewCoverage {
     Partial,
     Unavailable,
 }
+/// `not_applicable`: a security claim that, per the cited source, does not affect the monitored
+/// version or build. It requires `not_applicable_reason`, is counted and remembered, and opens no case.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Assessment {
     Review,
     Informational,
+    NotApplicable,
     Ignore,
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NotApplicableReason {
+    /// The monitored resolved version already contains the fix.
+    FixedInMonitoredVersion,
+    /// Only other release lines or unreleased branches are affected.
+    AffectsOtherVersion,
+    /// The affected module, feature or platform is absent from the monitored build.
+    ComponentNotInBuild,
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -66,6 +79,7 @@ pub enum EventKind {
     Changelog,
     Release,
     Advisory,
+    Commit,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -82,7 +96,14 @@ pub struct ResearchEvent {
     /// Empty means unknown. Unknown/day precision keeps coverage partial and never advances checkpoints.
     pub updated_at: String,
     pub assessment: Assessment,
+    /// Required with `not_applicable`; forbidden otherwise.
+    #[serde(default)]
+    pub not_applicable_reason: Option<NotApplicableReason>,
     pub rationale: String,
+    /// Answers to the research questions as the item states them. `fixed_in_monitored_version`
+    /// requires `fixed_in`, and `affects_other_version` requires `affected_versions`.
+    #[serde(default)]
+    pub source_facts: SourceFacts,
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ResearchComponent {
@@ -105,12 +126,25 @@ pub struct ResearchTarget {
     pub seen_truncated: bool,
     pub continuation: Option<SourceContinuation>,
 }
+/// An imported event with the agent's previous reading, so an item whose `updated_at` is unchanged
+/// needs no new review.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SeenEvent {
     pub external_id: String,
     pub url: String,
     pub content_sha256: String,
     pub updated_at: String,
+    pub assessment: Option<Assessment>,
+    pub not_applicable_reason: Option<NotApplicableReason>,
+    /// First 300 characters of the recorded rationale.
+    pub rationale: String,
+}
+#[derive(Deserialize)]
+struct RecordedEvent {
+    assessment: Assessment,
+    #[serde(default)]
+    not_applicable_reason: Option<NotApplicableReason>,
+    rationale: String,
 }
 #[derive(Debug, Serialize)]
 pub struct ResearchPlan {
@@ -127,6 +161,10 @@ pub fn plan_page(store: &Store, after: &str, limit: usize) -> Result<ResearchPla
         bail!("research page size must be 1..20");
     }
     build_plan(store, after, limit, true)
+}
+/// Every target with its seen events, for local tools that read the whole plan at once.
+pub(crate) fn full_plan(store: &Store) -> Result<ResearchPlan> {
+    build_plan(store, "", usize::MAX, true)
 }
 fn build_plan(
     store: &Store,
@@ -218,17 +256,28 @@ fn build_plan(
         let mut seen_bytes = 0;
         let mut seen_truncated = false;
         if include_seen {
-            let mut statement = store.connection.prepare("SELECT external_id,url,content_sha256,updated_at FROM research_events WHERE upstream=?1 ORDER BY updated_at DESC")?;
+            let mut statement = store.connection.prepare("SELECT external_id,url,content_sha256,updated_at,body FROM research_events WHERE upstream=?1 ORDER BY updated_at DESC")?;
             let rows = statement.query_map([&upstream], |row| {
-                Ok(SeenEvent {
-                    external_id: row.get(0)?,
-                    url: row.get(1)?,
-                    content_sha256: row.get(2)?,
-                    updated_at: row.get(3)?,
-                })
+                Ok((
+                    SeenEvent {
+                        external_id: row.get(0)?,
+                        url: row.get(1)?,
+                        content_sha256: row.get(2)?,
+                        updated_at: row.get(3)?,
+                        assessment: None,
+                        not_applicable_reason: None,
+                        rationale: String::new(),
+                    },
+                    row.get::<_, String>(4)?,
+                ))
             })?;
             for row in rows {
-                let event = row?;
+                let (mut event, body) = row?;
+                if let Ok(recorded) = serde_json::from_str::<RecordedEvent>(&body) {
+                    event.assessment = Some(recorded.assessment);
+                    event.not_applicable_reason = recorded.not_applicable_reason;
+                    event.rationale = recorded.rationale.chars().take(300).collect();
+                }
                 seen_bytes += serde_json::to_vec(&event)?.len();
                 if seen_bytes > 512 * 1024 {
                     seen_truncated = true;
@@ -260,7 +309,7 @@ fn build_plan(
             continuation,
         });
     }
-    Ok(ResearchPlan {schema_version:1,project_id:snapshot.project_id,snapshot_id:snapshot.id,targets,next_cursor,required_agent_sites:vec!["github.com".into(),"gitlab.com".into(),"launchpad.net (bugs and merge proposals)".into()],policy:"Review issues, proposed changes, discussions, documentation, changelogs, releases and advisories at each mapped source. Exhaust relevant pages and linked context in the supplied window. Only complete reviews advance source checkpoints. Follow next_cursor for remaining targets. seen_truncated means the prompt contains only a sample; the CLI still deduplicates all imported events. Initial window is 30 days; later windows overlap the last completed review by 5 minutes.".into()})
+    Ok(ResearchPlan {schema_version:1,project_id:snapshot.project_id,snapshot_id:snapshot.id,targets,next_cursor,required_agent_sites:vec!["github.com".into(),"gitlab.com".into(),"launchpad.net (bugs and merge proposals)".into()],policy:"Review issues, proposed changes, discussions, documentation, changelogs, releases and advisories at each mapped source. Exhaust relevant pages and linked context in the supplied window. Screen each item on its title, labels and body (up to the 8000-character excerpt limit), not the title alone; for a proposed change also read the issue it closes. For every item with a security claim, answer from the item in source_facts: which advisory IDs it cites, which versions it says are affected, where it says the fix is (version, release or backport) and through which change, and which feature or configuration it requires; leave a field empty when the item does not say, never infer it. Then judge it against the monitored version. A seen event whose updated_at is unchanged keeps its recorded assessment and needs no new review; resend an event only when it changed. Only complete reviews advance source checkpoints. Follow next_cursor for remaining targets. seen_truncated means the prompt contains only a sample; the CLI still deduplicates all imported events. Initial window is 30 days; later windows overlap the last completed review by 5 minutes.".into()})
 }
 pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json::Value> {
     use rusqlite::{OptionalExtension, params};
@@ -303,7 +352,8 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
             bail!("research window mismatch/duplicate; reread research plan");
         }
     }
-    let mut cases_by_link: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
+    // One research case per upstream permalink; older per-instance cases are folded into it.
+    let mut cases_by_link: BTreeMap<String, BTreeMap<String, Case>> = BTreeMap::new();
     for case in store.cases()? {
         if !case.claims.is_empty() {
             continue;
@@ -312,18 +362,37 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
             let Ok(url) = crate::profile::public_https_syntax(&event.url) else {
                 continue;
             };
-            for instance in &case.instances {
-                cases_by_link
-                    .entry((instance.id.clone(), url.to_string()))
-                    .or_default()
-                    .insert(case.case_id.clone());
-            }
+            cases_by_link
+                .entry(url.to_string())
+                .or_default()
+                .insert(case.case_id.clone(), case.clone());
         }
     }
     let mut merged_case_ids = HashSet::new();
-    for identifiers in cases_by_link.values() {
-        merged_case_ids.extend(identifiers.iter().skip(1).cloned());
+    let mut linked: BTreeMap<String, Case> = BTreeMap::new();
+    let mut folded = Vec::new();
+    for (url, group) in cases_by_link {
+        let mut members = group.into_values();
+        let Some(mut survivor) = members.next() else {
+            continue;
+        };
+        let mut was_folded = false;
+        for member in members {
+            for instance in member.instances {
+                if !survivor.instances.iter().any(|kept| kept.id == instance.id) {
+                    survivor.instances.push(instance);
+                }
+            }
+            merged_case_ids.insert(member.case_id);
+            was_folded = true;
+        }
+        if was_folded {
+            folded.push(survivor.clone());
+        }
+        linked.insert(url, survivor);
     }
+    merged_case_ids.retain(|id| !linked.values().any(|case| &case.case_id == id));
+    let mut assessments: BTreeMap<String, usize> = BTreeMap::new();
     let mut prepared = Vec::new();
     let mut duplicates = 0;
     let mut imprecise_sources: HashSet<String> = HashSet::new();
@@ -354,6 +423,19 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
         {
             bail!("event identifiers/text exceed limits or rationale missing");
         }
+        if (event.assessment == Assessment::NotApplicable) != event.not_applicable_reason.is_some()
+        {
+            bail!("not_applicable requires not_applicable_reason, and only it accepts one");
+        }
+        validate_source_facts(&event.source_facts, event.not_applicable_reason)?;
+        *assessments
+            .entry(
+                serde_json::to_value(event.assessment)?
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            )
+            .or_default() += 1;
         let from = DateTime::parse_from_rfc3339(&target.from)?;
         let until = DateTime::parse_from_rfc3339(&target.until)?;
         let in_window = if event.updated_at.trim().is_empty() {
@@ -372,13 +454,19 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
         if !in_window {
             bail!("event timestamp is outside review window");
         }
-        let content = serde_json::to_vec(&(
+        let observed = (
             &event.kind,
             event_url.as_str(),
             event.title.as_str(),
             event.excerpt.as_str(),
             event.updated_at.as_str(),
-        ))?;
+        );
+        // Events without source facts keep the content hash they had before facts existed.
+        let content = if event.source_facts.is_empty() {
+            serde_json::to_vec(&observed)?
+        } else {
+            serde_json::to_vec(&(observed, &event.source_facts))?
+        };
         let target_facts: Vec<_> = snapshot
             .instances
             .iter()
@@ -406,71 +494,95 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
             Some(event.url.clone()),
             EvidenceKind::Context,
         )?;
-        let mut cases = Vec::new();
-        if event.assessment != Assessment::Ignore {
-            for id in &event.instance_ids {
-                let instance = snapshot
-                    .instances
-                    .iter()
-                    .find(|instance| &instance.id == id)
-                    .context("event instance missing")?
-                    .clone();
-                let facts =
-                    crate::digest(format!("{hash}:{}", instance.context_fingerprint()).as_bytes());
-                let case_id = match cases_by_link
-                    .get(&(id.clone(), event_url.to_string()))
-                    .and_then(|ids| ids.first())
-                {
-                    Some(existing) => existing.clone(),
-                    None => format!(
-                        "SIG-{}",
-                        &crate::digest(format!("research:{key}:{id}").as_bytes())[..20]
+        let existing = linked.get(event_url.as_str());
+        let mut open_questions = vec![event.rationale.clone()];
+        let (decision, coverage_detail) = match (event.assessment, existing) {
+            (Assessment::Review, _) => {
+                open_questions.push("Check release code and attack prerequisites before asserting a real attack vector.".into());
+                (
+                    Some(Decision::Review),
+                    "Agent observation; security applicability not established".to_owned(),
+                )
+            }
+            (Assessment::Informational, _) => (
+                Some(Decision::Informational),
+                "Agent observation; security applicability not established".to_owned(),
+            ),
+            (Assessment::NotApplicable | Assessment::Ignore, None) => (None, String::new()),
+            (_, Some(previous)) => {
+                let detail = match event.not_applicable_reason {
+                    Some(reason) => format!(
+                        "Agent re-assessed as not applicable ({reason:?}); this is not a dismissal"
                     ),
+                    None => "Agent re-assessed as lacking a relevant security claim".to_owned(),
                 };
-                let upstream_event = UpstreamEvent {
-                    provider: event.provider.clone(),
-                    kind: format!("{:?}", event.kind).to_lowercase(),
-                    id: event.external_id.clone(),
-                    url: event.url.clone(),
-                    title: event.title.clone(),
-                    updated_at: if event.updated_at.is_empty() {
-                        None
-                    } else {
-                        Some(event.updated_at.clone())
-                    },
-                    sha256: evidence.sha256.clone(),
-                };
-                let decision = match event.assessment {
-                    Assessment::Informational => Decision::Informational,
-                    Assessment::Review => Decision::Review,
-                    Assessment::Ignore => continue,
-                };
-                let coverage = vec![Coverage::new(
+                if previous.decision == Decision::Actionable {
+                    open_questions.push("Research no longer supports this actionable case; confirm and record a new verdict before closing it.".into());
+                    (Some(Decision::Review), detail)
+                } else {
+                    (Some(Decision::Informational), detail)
+                }
+            }
+        };
+        let mut cases = Vec::new();
+        if let Some(decision) = decision {
+            let instances = event
+                .instance_ids
+                .iter()
+                .map(|id| {
+                    snapshot
+                        .instances
+                        .iter()
+                        .find(|instance| &instance.id == id)
+                        .cloned()
+                        .context("event instance missing")
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let case_id = match existing {
+                Some(previous) => previous.case_id.clone(),
+                None => format!(
+                    "SIG-{}",
+                    &crate::digest(format!("research:{key}").as_bytes())[..20]
+                ),
+            };
+            let upstream_event = UpstreamEvent {
+                provider: event.provider.clone(),
+                kind: format!("{:?}", event.kind).to_lowercase(),
+                id: event.external_id.clone(),
+                url: event.url.clone(),
+                title: event.title.clone(),
+                updated_at: if event.updated_at.is_empty() {
+                    None
+                } else {
+                    Some(event.updated_at.clone())
+                },
+                sha256: evidence.sha256.clone(),
+                source_facts: event.source_facts.clone(),
+            };
+            cases.push(Case {
+                schema_version: 1,
+                case_id,
+                project_id: batch.project_id.clone(),
+                snapshot_id: batch.snapshot_id.clone(),
+                instances,
+                claims: Vec::new(),
+                upstream_events: vec![upstream_event],
+                evidence: vec![evidence.clone()],
+                coverage: vec![Coverage::new(
                     "agent_upstream",
                     &event.upstream,
                     CoverageState::Partial,
-                    "Agent observation; security applicability not established",
-                )];
-                cases.push(Case {
-                    schema_version: 1,
-                    case_id,
-                    project_id: batch.project_id.clone(),
-                    snapshot_id: batch.snapshot_id.clone(),
-                    instances: vec![instance],
-                    claims: Vec::new(),
-                    upstream_events: vec![upstream_event],
-                    evidence: vec![evidence.clone()],
-                    coverage,
-                    applicability: Applicability::Unknown,
-                    verification: Verification::Inconclusive,
-                    decision,
-                    facts_sha256: facts,
-                    open_questions: vec![event.rationale.clone(),"Check release code and attack prerequisites before asserting a real attack vector.".into()],
-                    suggested_search_queries: Vec::new(),
-                    sandbox: crate::sandbox::availability(),
-                    updated_at: crate::now(),
-                });
-            }
+                    &coverage_detail,
+                )],
+                applicability: Applicability::Unknown,
+                verification: Verification::Inconclusive,
+                decision,
+                facts_sha256: hash.clone(),
+                open_questions,
+                suggested_search_queries: Vec::new(),
+                sandbox: crate::sandbox::availability(),
+                updated_at: crate::now(),
+            });
         }
         prepared.push((key, hash, event, cases));
     }
@@ -487,6 +599,17 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
         transaction.execute("DELETE FROM cases WHERE id=?1", [id])?;
     }
     let mut changed_cases = 0;
+    for case in &folded {
+        let body = serde_json::to_string(case)?;
+        transaction.execute(
+            "INSERT OR REPLACE INTO cases VALUES (?1,?2)",
+            params![case.case_id, body],
+        )?;
+        transaction.execute(
+            "INSERT INTO history(case_id,body,recorded_at) VALUES (?1,?2,?3)",
+            params![case.case_id, body, crate::now()],
+        )?;
+    }
     for (key, hash, event, cases) in &prepared {
         transaction.execute(
             "INSERT OR REPLACE INTO research_events VALUES (?1,?2,?3,?4,?5,?6,?7)",
@@ -547,6 +670,91 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
         EvidenceKind::Context,
     )?;
     Ok(
-        serde_json::json!({"schema_version":1,"changed_events":prepared.len(),"duplicates":duplicates,"changed_cases":changed_cases,"merged_cases":merged_case_ids.len(),"evidence":evidence,"sources":batch.sources}),
+        serde_json::json!({"schema_version":1,"changed_events":prepared.len(),"duplicates":duplicates,"changed_cases":changed_cases,"merged_cases":merged_case_ids.len(),"assessments":assessments,"evidence":evidence,"sources":batch.sources}),
     )
+}
+
+pub(crate) fn validate_source_facts(
+    facts: &SourceFacts,
+    reason: Option<NotApplicableReason>,
+) -> Result<()> {
+    if facts.identifiers.len() > 32
+        || facts.identifiers.iter().any(|identifier| {
+            identifier.len() > 64
+                || !identifier.contains('-')
+                || !identifier
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '-')
+        })
+    {
+        bail!(
+            "source_facts.identifiers takes up to 32 advisory IDs such as CVE-2026-1234 or GHSA-xxxx-xxxx-xxxx"
+        );
+    }
+    let texts = [
+        &facts.affected_versions,
+        &facts.fixed_in,
+        &facts.fix_reference,
+        &facts.required_feature,
+    ];
+    if texts
+        .iter()
+        .any(|text| text.len() > 500 || text.chars().any(char::is_control))
+    {
+        bail!("source_facts text fields take one line of up to 500 characters");
+    }
+    match reason {
+        Some(NotApplicableReason::FixedInMonitoredVersion) if facts.fixed_in.trim().is_empty() => {
+            bail!("fixed_in_monitored_version requires source_facts.fixed_in as the item states it")
+        }
+        Some(NotApplicableReason::AffectsOtherVersion)
+            if facts.affected_versions.trim().is_empty() =>
+        {
+            bail!(
+                "affects_other_version requires source_facts.affected_versions as the item states it"
+            )
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Moves completed review checkpoints back so the next plan reviews `since` onward again, for
+/// example after the screening method improved. Seen events still deduplicate imports.
+pub fn reopen(store: &mut Store, upstream: &str, since: &str) -> Result<serde_json::Value> {
+    let _lock = store.lock()?;
+    let since = DateTime::parse_from_rfc3339(since).context("--since must be RFC3339")?;
+    if since > Utc::now() {
+        bail!("--since is in the future");
+    }
+    let plan = build_plan(store, "", usize::MAX, false)?;
+    let targets: Vec<&ResearchTarget> = plan
+        .targets
+        .iter()
+        .filter(|target| upstream == "all" || target.upstream == upstream.trim_end_matches('/'))
+        .collect();
+    if targets.is_empty() {
+        bail!("no research target matches {upstream}; use an upstream from the plan or `all`");
+    }
+    let transaction = store.connection.transaction()?;
+    let mut reopened = Vec::new();
+    for target in targets {
+        let Some(checkpoint) = &target.last_complete_review else {
+            continue;
+        };
+        if DateTime::parse_from_rfc3339(checkpoint)? <= since {
+            continue;
+        }
+        let rewound = since + Duration::minutes(5);
+        transaction.execute(
+            "INSERT OR REPLACE INTO research_cursors VALUES (?1,?2)",
+            rusqlite::params![target.upstream, rewound.to_rfc3339()],
+        )?;
+        transaction.execute(
+            "DELETE FROM research_progress WHERE upstream=?1",
+            [&target.upstream],
+        )?;
+        reopened.push(serde_json::json!({"upstream": target.upstream, "previous_checkpoint": checkpoint, "from": since.to_rfc3339()}));
+    }
+    transaction.commit()?;
+    Ok(serde_json::json!({"schema_version": 1, "reopened": reopened}))
 }

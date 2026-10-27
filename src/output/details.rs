@@ -71,6 +71,24 @@ struct GhsaPackage {
     name: String,
     ecosystem: String,
 }
+#[derive(Deserialize)]
+struct RepositoryDetail {
+    ghsa_id: String,
+    description: Option<String>,
+    severity: Option<String>,
+    #[serde(default)]
+    vulnerabilities: Vec<RepositoryVulnerability>,
+}
+#[derive(Deserialize)]
+struct RepositoryVulnerability {
+    package: Option<RepositoryPackage>,
+    patched_versions: Option<String>,
+}
+#[derive(Deserialize)]
+struct RepositoryPackage {
+    ecosystem: String,
+    name: Option<String>,
+}
 
 fn matches_package(instance: &Instance, name: &str, ecosystem: &str) -> bool {
     let Some(value) = &instance.purl else {
@@ -100,7 +118,7 @@ pub(super) fn read(
     instances: &[Instance],
     store: &Store,
 ) -> Result<Option<AdvisoryDetail>> {
-    if !matches!(claim.source.as_str(), "osv" | "ghsa") {
+    if !matches!(claim.source.as_str(), "osv" | "ghsa" | "github_repository") {
         return Ok(None);
     }
     let bytes = crate::read_limited(
@@ -136,6 +154,40 @@ pub(super) fn read(
             }
         }
         (detail.details, detail.database_specific.severity)
+    } else if claim.source == "github_repository" {
+        let records: Vec<RepositoryDetail> = serde_json::from_slice(&bytes)?;
+        let detail = records
+            .into_iter()
+            .find(|detail| detail.ghsa_id == claim.id)
+            .ok_or_else(|| anyhow::anyhow!("advisory absent from recorded repository page"))?;
+        let instance = instances
+            .iter()
+            .find(|instance| instance.id == claim.instance_id);
+        for vulnerability in detail.vulnerabilities {
+            let names_instance = vulnerability.package.as_ref().is_some_and(|package| {
+                package.name.as_deref().is_some_and(|name| {
+                    instance.is_some_and(|instance| {
+                        crate::sources::repository_package_is(instance, &package.ecosystem, name)
+                    })
+                })
+            });
+            if names_instance && let Some(patched) = vulnerability.patched_versions {
+                fixed_versions.extend(
+                    patched
+                        .split(',')
+                        .map(|item| {
+                            let item = item.trim();
+                            item.strip_prefix(">=")
+                                .or_else(|| item.strip_prefix('='))
+                                .unwrap_or(item)
+                                .trim()
+                        })
+                        .filter(|version| !version.is_empty())
+                        .map(str::to_owned),
+                );
+            }
+        }
+        (detail.description.unwrap_or_default(), detail.severity)
     } else {
         let response: GhsaResponse = serde_json::from_slice(&bytes)?;
         let detail = match response {

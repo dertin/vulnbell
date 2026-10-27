@@ -39,6 +39,7 @@
           "type": "integer"
         },
         "sources_unavailable": {
+          "description": "Mapped components without a repository, so upstream research cannot cover them.",
           "format": "uint",
           "minimum": 0,
           "type": "integer"

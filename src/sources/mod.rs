@@ -118,6 +118,7 @@ struct CveMetadata {
 pub fn scan(instances: &[Instance], http: &mut Http<'_>) -> Intelligence {
     let mut intelligence = Intelligence::default();
     osv(instances, http, &mut intelligence);
+    repository_advisories(instances, http, &mut intelligence);
     for instance in instances {
         if instance.resolved_version.is_none() {
             intelligence.coverage.push(Coverage::new(
@@ -247,6 +248,7 @@ fn osv(instances: &[Instance], http: &mut Http<'_>, intelligence: &mut Intellige
                         if advisory.withdrawn.is_some() {
                             return Ok(());
                         }
+                        let document: serde_json::Value = response.json()?;
                         let evidence = http.store.record_evidence(
                             &response.body,
                             "osv",
@@ -254,6 +256,16 @@ fn osv(instances: &[Instance], http: &mut Http<'_>, intelligence: &mut Intellige
                             EvidenceKind::Advisory,
                         )?;
                         for instance in instances {
+                            let excluded = match (&instance.purl, &instance.resolved_version) {
+                                (Some(purl), Some(version)) => {
+                                    osv_ranges_exclude(&document, purl, version)
+                                }
+                                _ => false,
+                            };
+                            let mut evidence = evidence.clone();
+                            if excluded {
+                                evidence.kind = EvidenceKind::NonApplicability;
+                            }
                             intelligence.claims.push(Claim {
                                 id: advisory.id.clone(),
                                 source: "osv".into(),
@@ -263,8 +275,12 @@ fn osv(instances: &[Instance], http: &mut Http<'_>, intelligence: &mut Intellige
                                     .summary
                                     .clone()
                                     .unwrap_or_else(|| advisory.id.clone()),
-                                applicability: Applicability::Affected,
-                                evidence: evidence.clone(),
+                                applicability: if excluded {
+                                    Applicability::NotAffected
+                                } else {
+                                    Applicability::Affected
+                                },
+                                evidence,
                                 known_exploited: false,
                             });
                         }
@@ -280,7 +296,8 @@ fn osv(instances: &[Instance], http: &mut Http<'_>, intelligence: &mut Intellige
         }
     }
 }
-fn ghsa(instance: &Instance, http: &mut Http<'_>, intelligence: &mut Intelligence) -> Result<()> {
+/// GitHub advisory ecosystem and package name of a PURL; `None` for unsupported ecosystems.
+pub(crate) fn github_package(instance: &Instance) -> Result<Option<(&'static str, String)>> {
     let purl: packageurl::PackageUrl<'_> =
         instance.purl.as_deref().context("missing PURL")?.parse()?;
     let ecosystem = match purl.ty() {
@@ -290,19 +307,23 @@ fn ghsa(instance: &Instance, http: &mut Http<'_>, intelligence: &mut Intelligenc
         "pypi" => "pip",
         "golang" => "go",
         "maven" => "maven",
-        _ => {
-            intelligence.coverage.push(Coverage::new(
-                "ghsa",
-                &instance.id,
-                CoverageState::Unsupported,
-                "unsupported ecosystem mapping",
-            ));
-            return Ok(());
-        }
+        _ => return Ok(None),
     };
     let name = match purl.namespace() {
         Some(namespace) => format!("{namespace}/{}", purl.name()),
         None => purl.name().into(),
+    };
+    Ok(Some((ecosystem, name)))
+}
+fn ghsa(instance: &Instance, http: &mut Http<'_>, intelligence: &mut Intelligence) -> Result<()> {
+    let Some((ecosystem, name)) = github_package(instance)? else {
+        intelligence.coverage.push(Coverage::new(
+            "ghsa",
+            &instance.id,
+            CoverageState::Unsupported,
+            "unsupported ecosystem mapping",
+        ));
+        return Ok(());
     };
     let affects = format!(
         "{name}@{}",
@@ -358,8 +379,468 @@ fn ghsa(instance: &Instance, http: &mut Http<'_>, intelligence: &mut Intelligenc
     ));
     Ok(())
 }
+
+#[derive(Deserialize)]
+struct RepositoryAdvisory {
+    ghsa_id: String,
+    cve_id: Option<String>,
+    summary: String,
+    withdrawn_at: Option<String>,
+    #[serde(default)]
+    vulnerabilities: Vec<RepositoryVulnerability>,
+}
+#[derive(Deserialize)]
+struct RepositoryVulnerability {
+    package: Option<RepositoryPackage>,
+    vulnerable_version_range: Option<String>,
+    patched_versions: Option<String>,
+}
+#[derive(Deserialize)]
+struct RepositoryPackage {
+    ecosystem: String,
+    name: Option<String>,
+}
+
+/// Advisories that maintainers publish in their repository reach the global GitHub database
+/// and OSV only after GitHub reviews them; until then the repository is the vendor's statement.
+fn repository_advisories(
+    instances: &[Instance],
+    http: &mut Http<'_>,
+    intelligence: &mut Intelligence,
+) {
+    let mut by_repository: BTreeMap<String, Vec<(&Instance, &'static str, String)>> =
+        BTreeMap::new();
+    for instance in instances {
+        if instance.resolved_version.is_none() {
+            continue;
+        }
+        let Some(repository) = instance.upstream.as_deref().and_then(github_repository) else {
+            continue;
+        };
+        let Ok(Some((ecosystem, name))) = github_package(instance) else {
+            continue;
+        };
+        by_repository
+            .entry(repository)
+            .or_default()
+            .push((instance, ecosystem, name));
+    }
+    for (repository, members) in by_repository {
+        let (state, detail) = match repository_claims(
+            &repository,
+            &members,
+            http,
+            &mut intelligence.claims,
+        ) {
+            Ok(unevaluable) if unevaluable.is_empty() => (
+                CoverageState::Checked,
+                format!("published security advisories of {repository}"),
+            ),
+            Ok(unevaluable) => (
+                CoverageState::Partial,
+                format!(
+                    "published security advisories of {repository}; ranges not evaluable without guessing: {}",
+                    unevaluable.join(", ")
+                ),
+            ),
+            Err(error) => (CoverageState::Partial, error.to_string()),
+        };
+        for (instance, _, _) in members {
+            intelligence.coverage.push(Coverage::new(
+                "repository_advisories",
+                &instance.id,
+                state,
+                &detail,
+            ));
+        }
+    }
+}
+
+/// Pushes affected claims and returns the advisory IDs whose range could not be evaluated.
+fn repository_claims(
+    repository: &str,
+    members: &[(&Instance, &'static str, String)],
+    http: &mut Http<'_>,
+    claims: &mut Vec<Claim>,
+) -> Result<Vec<String>> {
+    let mut unevaluable = Vec::new();
+    for page in 1..=10 {
+        let url = format!(
+            "https://api.github.com/repos/{repository}/security-advisories?state=published&per_page=100&page={page}"
+        );
+        let response = http.get(&url)?;
+        let advisories: Vec<RepositoryAdvisory> = response.json()?;
+        let length = advisories.len();
+        let evidence = http.store.record_evidence(
+            &response.body,
+            "github_repository_advisories",
+            Some(url),
+            EvidenceKind::Advisory,
+        )?;
+        for advisory in advisories {
+            if advisory.withdrawn_at.is_some() {
+                continue;
+            }
+            for (instance, ecosystem, name) in members {
+                let Some(Ok(version)) = instance
+                    .resolved_version
+                    .as_deref()
+                    .map(crate::identity::normalized_version)
+                else {
+                    continue;
+                };
+                let mut strongest = RangeMatch::Outside;
+                for vulnerability in &advisory.vulnerabilities {
+                    let Some(package) = &vulnerability.package else {
+                        continue;
+                    };
+                    if package.ecosystem != *ecosystem
+                        || !package.name.as_deref().is_some_and(|advisory_name| {
+                            same_package(ecosystem, advisory_name, name)
+                        })
+                    {
+                        continue;
+                    }
+                    match vulnerability
+                        .vulnerable_version_range
+                        .as_deref()
+                        .and_then(|range| {
+                            github_range_match(
+                                range,
+                                vulnerability.patched_versions.as_deref(),
+                                &version,
+                            )
+                        }) {
+                        Some(found) => strongest = strongest.max(found),
+                        None => unevaluable.push(advisory.ghsa_id.clone()),
+                    }
+                }
+                let (applicability, kind) = match strongest {
+                    RangeMatch::Outside => continue,
+                    RangeMatch::FixedOnLine => {
+                        (Applicability::NotAffected, EvidenceKind::NonApplicability)
+                    }
+                    RangeMatch::Affected => (Applicability::Affected, EvidenceKind::Advisory),
+                };
+                let mut evidence = evidence.clone();
+                evidence.kind = kind;
+                claims.push(Claim {
+                    id: advisory.ghsa_id.clone(),
+                    source: "github_repository".into(),
+                    aliases: advisory.cve_id.iter().cloned().collect(),
+                    instance_id: instance.id.clone(),
+                    summary: advisory.summary.clone(),
+                    applicability,
+                    evidence,
+                    known_exploited: false,
+                });
+            }
+        }
+        if length < 100 && !response.truncated {
+            unevaluable.sort_unstable();
+            unevaluable.dedup();
+            return Ok(unevaluable);
+        }
+    }
+    bail!("more than 10 pages of repository advisories")
+}
+
+/// `owner/repo` of a GitHub repository URL.
+fn github_repository(upstream: &str) -> Option<String> {
+    let path = upstream.strip_prefix("https://github.com/")?;
+    let mut segments = path.split('/').filter(|segment| !segment.is_empty());
+    let owner = segments.next()?;
+    let repository = segments.next()?.trim_end_matches(".git");
+    if repository.is_empty() {
+        return None;
+    }
+    Some(format!("{owner}/{repository}"))
+}
+
+/// Whether a package named by a repository advisory is this instance.
+pub(crate) fn repository_package_is(
+    instance: &Instance,
+    advisory_ecosystem: &str,
+    advisory_name: &str,
+) -> bool {
+    matches!(
+        github_package(instance),
+        Ok(Some((ecosystem, name)))
+            if ecosystem == advisory_ecosystem && same_package(ecosystem, advisory_name, &name)
+    )
+}
+
+pub(crate) fn same_package(ecosystem: &str, advisory_name: &str, name: &str) -> bool {
+    match ecosystem {
+        "maven" => advisory_name.replace(':', "/") == name,
+        "pip" => {
+            let normalize = |value: &str| value.to_ascii_lowercase().replace(['_', '.'], "-");
+            normalize(advisory_name) == normalize(name)
+        }
+        _ => advisory_name == name,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum RangeMatch {
+    Outside,
+    /// The range alone contains the version, but `patched_versions` closes it before.
+    FixedOnLine,
+    Affected,
+}
+
+/// GitHub ranges are comma-separated comparators (`>= 3.0.0, < 3.6.0`) or a list of exact
+/// versions (`0.23.44,0.23.45`). Maintainers often state only a lower bound and leave the end
+/// to `patched_versions`. `None` when any term needs guessing or the bounds contradict.
+pub(crate) fn github_range_match(
+    range: &str,
+    patched: Option<&str>,
+    version: &semver::Version,
+) -> Option<RangeMatch> {
+    let terms: Vec<&str> = range
+        .split(',')
+        .map(str::trim)
+        .filter(|term| !term.is_empty())
+        .collect();
+    if terms.is_empty() {
+        return None;
+    }
+    if terms
+        .iter()
+        .all(|term| term.starts_with(|first: char| first.is_ascii_digit()))
+    {
+        let mut listed = RangeMatch::Outside;
+        for term in terms {
+            if &crate::identity::normalized_version(term).ok()? == version {
+                listed = RangeMatch::Affected;
+            }
+        }
+        return Some(listed);
+    }
+    let mut contains = true;
+    let mut lower: Option<semver::Version> = None;
+    let mut upper: Option<semver::Version> = None;
+    for term in terms {
+        let (operator, value) = ["<=", ">=", "<", ">", "="]
+            .into_iter()
+            .find_map(|operator| Some((operator, term.strip_prefix(operator)?.trim())))?;
+        if value.contains(char::is_whitespace) {
+            return None;
+        }
+        let bound = crate::identity::normalized_version(value).ok()?;
+        contains &= match operator {
+            "<=" => version <= &bound,
+            ">=" => version >= &bound,
+            "<" => version < &bound,
+            ">" => version > &bound,
+            _ => version == &bound,
+        };
+        if operator != "<" && operator != "<=" && lower.as_ref().is_none_or(|kept| &bound > kept) {
+            lower = Some(bound.clone());
+        }
+        if operator != ">" && operator != ">=" && upper.as_ref().is_none_or(|kept| &bound < kept) {
+            upper = Some(bound);
+        }
+    }
+    if let (Some(lower), Some(upper)) = (&lower, &upper)
+        && lower > upper
+    {
+        return None;
+    }
+    if !contains {
+        return Some(RangeMatch::Outside);
+    }
+    match patched.map(str::trim).filter(|patched| !patched.is_empty()) {
+        Some(patched) if upper.is_none() => {
+            patched_line_excludes(patched, version).map(|excluded| {
+                if excluded {
+                    RangeMatch::FixedOnLine
+                } else {
+                    RangeMatch::Affected
+                }
+            })
+        }
+        // A sole fix inside the range at or below the version contradicts the range
+        // (`>= 2.21.0, <= 2.22.0` patched in `2.21.5`, or a typo such as `< 26.37.1` patched in
+        // `26.7.1`); which side the maintainer meant cannot be told.
+        Some(patched)
+            if sole_fix(patched).is_some_and(|fix| {
+                &fix <= version && lower.as_ref().is_none_or(|lower| &fix >= lower)
+            }) =>
+        {
+            None
+        }
+        _ => Some(RangeMatch::Affected),
+    }
+}
+
+fn sole_fix(patched: &str) -> Option<semver::Version> {
+    let mut items = patched
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty());
+    let item = items.next()?;
+    if items.next().is_some() {
+        return None;
+    }
+    crate::identity::normalized_version(item.trim_start_matches(['>', '=', '~', '^']).trim()).ok()
+}
+
+/// Whether the version is at or past the fix of its release line; a fix per line is common
+/// (`0.104.0-alpha.5, 0.103.10`). `None` when the line cannot be told.
+fn patched_line_excludes(patched: &str, version: &semver::Version) -> Option<bool> {
+    let mut fixes = Vec::new();
+    for item in patched
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+    {
+        let value = item.trim_start_matches(['>', '=', '~', '^']).trim();
+        fixes.push(crate::identity::normalized_version(value).ok()?);
+    }
+    if let [fix] = fixes.as_slice() {
+        return Some(version >= fix);
+    }
+    let line = |value: &semver::Version| {
+        if value.major == 0 {
+            (0, value.minor)
+        } else {
+            (value.major, 0)
+        }
+    };
+    if let Some(fix) = fixes.iter().find(|fix| line(fix) == line(version)) {
+        return Some(version >= fix);
+    }
+    if !fixes.is_empty() && fixes.iter().all(|fix| version > fix) {
+        return Some(true);
+    }
+    None
+}
 pub fn encode(value: &str) -> String {
     url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+/// GHSA ranges without a patched version reach OSV as an open `introduced: "0"` range; the real
+/// bound survives only in `database_specific.last_known_affected_version_range`, so OSV matches
+/// every later version. True only when every entry for this package can be evaluated and none
+/// contains the version; any doubt keeps the match.
+fn osv_ranges_exclude(advisory: &serde_json::Value, purl: &str, version: &str) -> bool {
+    let Ok(version) = crate::identity::normalized_version(version) else {
+        return false;
+    };
+    let base = purl.split(['@', '?', '#']).next().unwrap_or(purl);
+    let Some(entries) = advisory
+        .get("affected")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return false;
+    };
+    let mut matched = false;
+    for entry in entries {
+        match entry
+            .pointer("/package/purl")
+            .and_then(serde_json::Value::as_str)
+        {
+            Some(entry_purl) if entry_purl.split(['@', '?', '#']).next() == Some(base) => {}
+            Some(_) => continue,
+            None => return false,
+        }
+        matched = true;
+        if osv_entry_contains(entry, &version) != Some(false) {
+            return false;
+        }
+    }
+    matched
+}
+
+/// `None` when the entry cannot be evaluated without guessing (Git ranges, unparsable versions,
+/// compound GHSA bounds).
+pub(crate) fn osv_entry_contains(
+    entry: &serde_json::Value,
+    version: &semver::Version,
+) -> Option<bool> {
+    let parse = |value: &str| {
+        if value == "0" {
+            Some(semver::Version::new(0, 0, 0))
+        } else {
+            crate::identity::normalized_version(value).ok()
+        }
+    };
+    let ranges = entry.get("ranges")?.as_array()?;
+    let ghsa_bound = entry
+        .pointer("/database_specific/last_known_affected_version_range")
+        .and_then(serde_json::Value::as_str);
+    let open_only = ranges.iter().all(|range| {
+        range
+            .get("events")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|events| {
+                events.len() == 1
+                    && events[0]
+                        .get("introduced")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("0")
+            })
+    });
+    // The enumerated versions of an open GHSA range repeat the conversion error.
+    if !(open_only && ghsa_bound.is_some())
+        && entry
+            .get("versions")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|listed| {
+                listed
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .filter_map(parse)
+                    .any(|listed| &listed == version)
+            })
+    {
+        return Some(true);
+    }
+    for range in ranges {
+        if range.get("type")?.as_str()? == "GIT" {
+            return None;
+        }
+        let mut start: Option<semver::Version> = None;
+        for event in range.get("events")?.as_array()? {
+            let (kind, value) = event.as_object()?.iter().next()?;
+            let bound = parse(value.as_str()?)?;
+            match kind.as_str() {
+                "introduced" => start = Some(bound),
+                "fixed" | "limit" => {
+                    if start
+                        .take()
+                        .is_some_and(|start| &start <= version && version < &bound)
+                    {
+                        return Some(true);
+                    }
+                }
+                "last_affected" => {
+                    if start
+                        .take()
+                        .is_some_and(|start| &start <= version && version <= &bound)
+                    {
+                        return Some(true);
+                    }
+                }
+                _ => return None,
+            }
+        }
+        if start.is_some_and(|start| &start <= version) {
+            let bound = ghsa_bound?.trim();
+            if bound.contains(',') {
+                return None;
+            }
+            let (inclusive, value) = match bound.strip_prefix("<=") {
+                Some(value) => (true, value),
+                None => (false, bound.strip_prefix('<')?),
+            };
+            let upper = parse(value.trim())?;
+            if version < &upper || inclusive && version == &upper {
+                return Some(true);
+            }
+        }
+    }
+    Some(false)
 }
 fn cpe_applies(candidate: &CpeMatch, product: &str, version: &str) -> Result<Option<bool>> {
     if !candidate.vulnerable || !candidate.criteria.starts_with(&format!("{product}:")) {

@@ -1,6 +1,85 @@
 use super::*;
 
 #[test]
+fn lockfile_hash_changes_keep_mappings_and_declaration_changes_invalidate_them() {
+    let profile: crate::profile::Profile = serde_saphyr::from_str(
+        "schema: 1\nproject_id: 0de0a8e7-f1a4-4bdc-a198-422b90bbbd84\nname: sources\ncomponents:\n  - ref: example\n    version: '1.0.0'\n",
+    )
+    .unwrap();
+    let declared = Instance::declared(&profile.components[0]);
+    let mut edited = declared.clone();
+    edited.provenance.sha256 = "other".into();
+    assert_ne!(fingerprint(&declared), fingerprint(&edited));
+    let mut locked = declared.clone();
+    locked.origin = crate::model::Origin::Locked;
+    let mut relocked = locked.clone();
+    relocked.provenance.sha256 = "other".into();
+    assert_eq!(fingerprint(&locked), fingerprint(&relocked));
+}
+
+#[test]
+fn maven_mappings_from_an_earlier_mapper_revision_are_mapped_again() {
+    let profile: crate::profile::Profile = serde_saphyr::from_str(
+        "schema: 1\nproject_id: 0de0a8e7-f1a4-4bdc-a198-422b90bbbd84\nname: sources\ncomponents:\n  - ref: pkg:maven/io.quarkus/quarkus-agroal\n    version: '3.40.1'\n",
+    )
+    .unwrap();
+    let instance = Instance::declared(&profile.components[0]);
+    let observation =
+        |rationale: String, state: MappingState, url: Option<&str>| IdentityObservation {
+            instance_id: instance.id.clone(),
+            fingerprint: fingerprint(&instance),
+            version: None,
+            cpe_product: None,
+            rationale,
+            sources: vec![SourceMapping {
+                kind: SourceKind::Repository,
+                state,
+                url: url.map(str::to_owned),
+                detail: "declared".into(),
+                evidence: Vec::new(),
+            }],
+        };
+    let earlier = format!(
+        "{} from https://repo1.maven.org/x.pom",
+        registry::NATIVE_RATIONALE
+    );
+    let current = format!(
+        "{} ({}) from https://repo1.maven.org/x.pom",
+        registry::NATIVE_RATIONALE,
+        registry::MAVEN_MAPPER
+    );
+    let unavailable = MappingState::Unavailable;
+    assert!(outdated_maven_mapping(
+        &instance,
+        &observation(earlier.clone(), unavailable, None)
+    ));
+    assert!(outdated_maven_mapping(
+        &instance,
+        &observation(
+            earlier.clone(),
+            MappingState::Mapped,
+            Some("https://gitbox.apache.org/repos/asf?p=${commons.repo.name}.git")
+        )
+    ));
+    assert!(outdated_maven_mapping(
+        &instance,
+        &observation(
+            earlier,
+            MappingState::Mapped,
+            Some("https://github.com/jboss/jboss-parent-pom")
+        )
+    ));
+    assert!(!outdated_maven_mapping(
+        &instance,
+        &observation(current, unavailable, None)
+    ));
+    assert!(!outdated_maven_mapping(
+        &instance,
+        &observation("Agent mapping".into(), unavailable, None)
+    ));
+}
+
+#[test]
 fn mapped_sources_require_acquired_evidence_and_every_category() {
     let directory = tempfile::tempdir().unwrap();
     let project = uuid::Uuid::new_v4().to_string();
@@ -56,26 +135,81 @@ fn mapped_sources_require_acquired_evidence_and_every_category() {
     invalid.sources[0].evidence[0].sha256 = "forged".into();
     assert!(import(&mut store, "test", vec![invalid]).is_err());
     assert!(import(&mut store, "test", vec![observation.clone()]).is_ok());
-    assert_eq!(mapped(&store, "test").unwrap().len(), 9);
-    assert!(targets(&store, "test", 10).unwrap().is_empty());
-    let mut unavailable = observation;
-    unavailable.sources[0].state = MappingState::Unavailable;
-    import(&mut store, "test", vec![unavailable]).unwrap();
-    assert!(targets(&store, "test", 10).unwrap().is_empty());
+    assert_eq!(mapped(&store, "test").unwrap().len(), 1);
+    assert!(
+        targets(&store, "test", &BTreeSet::new(), Mapper::Agent, 10)
+            .unwrap()
+            .is_empty()
+    );
+    let mut enrichment_gap = observation.clone();
+    enrichment_gap.sources[0].state = MappingState::Unavailable;
+    import(&mut store, "test", vec![enrichment_gap]).unwrap();
+    assert_eq!(
+        counts(
+            &store,
+            "test",
+            &BTreeSet::new(),
+            std::slice::from_ref(&instance)
+        )
+        .unwrap(),
+        (0, 0)
+    );
+    let mut no_repository = observation;
+    let repository = no_repository
+        .sources
+        .iter_mut()
+        .find(|source| source.kind == SourceKind::Repository)
+        .unwrap();
+    repository.state = MappingState::Unavailable;
+    let mut native_gap = no_repository.clone();
+    native_gap.rationale = format!("{} from https://crates.io/x", registry::NATIVE_RATIONALE);
+    import(&mut store, "test", vec![native_gap]).unwrap();
+    let pending = |mapper| {
+        targets(&store, "test", &BTreeSet::new(), mapper, 10)
+            .unwrap()
+            .len()
+    };
+    assert_eq!((pending(Mapper::Agent), pending(Mapper::Registry)), (1, 0));
+    import(&mut store, "test", vec![no_repository]).unwrap();
+    assert_eq!(
+        counts(
+            &store,
+            "test",
+            &BTreeSet::new(),
+            std::slice::from_ref(&instance)
+        )
+        .unwrap(),
+        (0, 1)
+    );
     let mut next_snapshot = store.latest().unwrap();
     next_snapshot.id = uuid::Uuid::new_v4().to_string();
     next_snapshot.started_at = (chrono::Utc::now() + chrono::Duration::seconds(1)).to_rfc3339();
     store.save_snapshot(&next_snapshot).unwrap();
-    assert_eq!(targets(&store, "test", 10).unwrap().len(), 1);
+    assert!(
+        targets(&store, "test", &BTreeSet::new(), Mapper::Agent, 10)
+            .unwrap()
+            .is_empty()
+    );
+    let week_old = (chrono::Utc::now() - chrono::Duration::days(8)).to_rfc3339();
+    store
+        .connection
+        .execute("UPDATE discovery_sources SET checked_at=?1", [&week_old])
+        .unwrap();
+    assert_eq!(
+        targets(&store, "test", &BTreeSet::new(), Mapper::Agent, 10)
+            .unwrap()
+            .len(),
+        1
+    );
     drop(directory);
     drop(store);
     std::fs::remove_dir_all(crate::store::data_root().join(project)).unwrap();
 }
 
 #[test]
-fn public_source_pages_reach_every_category_and_resume_a_pinned_partial_window() {
+fn research_pages_reach_every_researched_category_and_resume_a_pinned_partial_window() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("radar.yaml");
+    let path = directory.path().join("vulnbell.yaml");
     let project = uuid::Uuid::new_v4().to_string();
     std::fs::write(&path,format!("schema: 1\nproject_id: {project}\nname: public-sources\ncomponents:\n  - ref: example\n    version: '1.0.0'\n    upstream: https://example.org/Repository\n")).unwrap();
     let profile = crate::profile::load(&path).unwrap();
@@ -123,7 +257,9 @@ fn public_source_pages_reach_every_category_and_resume_a_pinned_partial_window()
             None => break,
         }
     }
-    assert_eq!(visited.len(), 9);
+    assert_eq!(visited.len(), 6);
+    assert!(!visited.contains("https://example.org/Website"));
+    assert!(!visited.contains("https://example.org/Releases"));
     let plan = crate::research::plan_page(&store, "", 1).unwrap();
     let target = &plan.targets[0];
     let review = crate::research::SourceReview {
@@ -177,4 +313,39 @@ fn public_source_pages_reach_every_category_and_resume_a_pinned_partial_window()
     assert!(fresh.targets[0].continuation.is_none());
     drop(store);
     std::fs::remove_dir_all(crate::store::data_root().join(project)).unwrap();
+}
+
+#[test]
+fn workspace_root_poms_mark_their_own_artifacts_as_first_party() {
+    let provider = tempfile::tempdir().unwrap();
+    std::fs::write(
+        provider.path().join("pom.xml"),
+        "<project><parent><groupId>com.prex</groupId><artifactId>parent</artifactId><version>1</version></parent><artifactId>keycloak-provider</artifactId><dependencies><dependency><groupId>org.keycloak</groupId><artifactId>keycloak-core</artifactId></dependency></dependencies></project>",
+    )
+    .unwrap();
+    let templated = tempfile::tempdir().unwrap();
+    std::fs::write(
+        templated.path().join("pom.xml"),
+        "<project><groupId>${group}</groupId><artifactId>app</artifactId></project>",
+    )
+    .unwrap();
+    let without_pom = tempfile::tempdir().unwrap();
+    let roots: Vec<String> = [&provider, &templated, &without_pom]
+        .iter()
+        .map(|directory| directory.path().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        first_party(&roots),
+        BTreeSet::from(["pkg:maven/com.prex/keycloak-provider".to_owned()])
+    );
+    let profile: crate::profile::Profile = serde_saphyr::from_str(
+        "schema: 1\nproject_id: 0de0a8e7-f1a4-4bdc-a198-422b90bbbd84\nname: sources\ncomponents:\n  - ref: pkg:maven/com.prex/keycloak-provider\n    version: '2.7.0'\n  - ref: pkg:maven/org.keycloak/keycloak-core\n    version: '26.8.1'\n",
+    )
+    .unwrap();
+    let instances: Vec<Instance> = profile.components.iter().map(Instance::declared).collect();
+    let store = Store::open("6f0c2c1e-7d1a-4c5e-9b1f-0a4f1f0d2e31").unwrap();
+    assert_eq!(
+        counts(&store, "scope", &first_party(&roots), &instances).unwrap(),
+        (1, 0)
+    );
 }

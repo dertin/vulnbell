@@ -12,6 +12,8 @@ use std::{
 };
 
 const RUNTIME_VERSION: &str = "0.7.11";
+const RUNTIME_RELEASE: &str =
+    "https://github.com/superradcompany/microsandbox/releases/tag/v0.7.11";
 const DEFAULT_IMAGE: &str = "docker.io/library/alpine@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f";
 pub fn image_path() -> PathBuf {
     crate::store::data_root().join("sandbox/microsandbox.json")
@@ -115,7 +117,11 @@ pub fn prepare_image(reference: Option<&str>) -> Result<Image> {
             std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
                 .map(|path| path.join(name))
                 .find(|path| path.is_file())
-                .context("install Microsandbox 0.7.11; msb was not found")?
+                .with_context(|| {
+                    format!(
+                        "msb was not found on PATH; install Microsandbox {RUNTIME_VERSION} from {RUNTIME_RELEASE} or set VULNBELL_MSB_EXECUTABLE"
+                    )
+                })?
                 .canonicalize()?
         }
     };
@@ -123,10 +129,29 @@ pub fn prepare_image(reference: Option<&str>) -> Result<Image> {
     let version = String::from_utf8(version)?.trim().to_owned();
     if version.split_whitespace().last() != Some(RUNTIME_VERSION) {
         bail!(
-            "unsupported Microsandbox version: require 0.7.11 and rerun backend acceptance before upgrading"
+            "unsupported Microsandbox version `{version}`: install {RUNTIME_VERSION} from {RUNTIME_RELEASE} (msb self downgrade) and rerun backend acceptance before upgrading"
         );
     }
-    checked_runtime(&executable, &["doctor"], 15)?;
+    let doctor = run_runtime(&executable, &["doctor"], 15)?;
+    if !doctor.success {
+        // Host checks (KVM access, CPU virtualization, libkrunfw) are not secrets; surface the failing lines.
+        let output = String::from_utf8_lossy(&doctor.stdout).into_owned()
+            + &String::from_utf8_lossy(&doctor.stderr);
+        let failing: Vec<&str> = output
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with('✗') || line.to_ascii_lowercase().starts_with("error"))
+            .take(10)
+            .collect();
+        bail!(
+            "Microsandbox host checks failed: {}; fix the host prerequisites (for KVM: grant /dev/kvm read/write to this user) and rerun vulnbell sandbox prepare",
+            if failing.is_empty() {
+                "see `msb doctor`".to_owned()
+            } else {
+                failing.join("; ")
+            }
+        );
+    }
     let image_reference = reference.unwrap_or(DEFAULT_IMAGE);
     validate_image(image_reference)?;
     checked_runtime(

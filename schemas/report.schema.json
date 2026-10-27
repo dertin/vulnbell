@@ -130,6 +130,7 @@
           "type": "integer"
         },
         "sources_unavailable": {
+          "description": "Mapped components without a repository, so upstream research cannot cover them.",
           "format": "uint",
           "minimum": 0,
           "type": "integer"
@@ -275,8 +276,29 @@
           },
           "type": "array"
         },
+        "provenance": {
+          "description": "Where each component version was read: `workspace/path:line`, or the profile.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "recommended_action": {
           "type": "string"
+        },
+        "recorded_verdict": {
+          "description": "Latest recorded agent verdict (`decision: rationale`), when one exists.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_facts": {
+          "description": "What the cited upstream items state (affected versions, fix, required feature).",
+          "items": {
+            "$ref": "#/$defs/SourceFacts"
+          },
+          "type": "array"
         },
         "summary": {
           "type": "string"
@@ -288,6 +310,7 @@
       "required": [
         "case_id",
         "components",
+        "provenance",
         "origin",
         "summary",
         "advisory_details",
@@ -298,7 +321,8 @@
         "evidence_links",
         "evidence_sha256",
         "open_questions",
-        "recommended_action"
+        "recommended_action",
+        "source_facts"
       ],
       "type": "object"
     },
@@ -490,6 +514,13 @@
       ],
       "type": "object"
     },
+    "Language": {
+      "enum": [
+        "en",
+        "es"
+      ],
+      "type": "string"
+    },
     "LocalCheck": {
       "properties": {
         "artifact_version": {
@@ -568,8 +599,22 @@
         "instance_id": {
           "type": "string"
         },
+        "line": {
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "origin": {
           "$ref": "#/$defs/Origin"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "ref": {
           "type": "string"
@@ -615,6 +660,70 @@
         "deployed"
       ],
       "type": "string"
+    },
+    "PendingReason": {
+      "oneOf": [
+        {
+          "const": "impact_not_assessed",
+          "description": "`vulnbell impact` has not been answered for the current case facts.",
+          "type": "string"
+        },
+        {
+          "const": "sandbox_check_missing",
+          "description": "Impact needs evidence and no sandbox attestation or recorded blocker exists.",
+          "type": "string"
+        }
+      ]
+    },
+    "PendingVerification": {
+      "properties": {
+        "case_id": {
+          "type": "string"
+        },
+        "reason": {
+          "$ref": "#/$defs/PendingReason"
+        }
+      },
+      "required": [
+        "case_id",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "SourceFacts": {
+      "additionalProperties": false,
+      "description": "What an upstream item itself states, quoted or closely paraphrased; an empty field means the\nitem does not say. These are the item's statements, not the agent's conclusions.",
+      "properties": {
+        "affected_versions": {
+          "default": "",
+          "description": "Versions or release lines the item says are affected.",
+          "type": "string"
+        },
+        "fix_reference": {
+          "default": "",
+          "description": "Pull request, commit or release that carries the fix.",
+          "type": "string"
+        },
+        "fixed_in": {
+          "default": "",
+          "description": "Version, release or backport the item says contains the fix.",
+          "type": "string"
+        },
+        "identifiers": {
+          "default": [],
+          "description": "CVE, GHSA, RUSTSEC or other advisory IDs the item cites.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "required_feature": {
+          "default": "",
+          "description": "Feature, configuration or deployment condition the item says the issue requires.",
+          "type": "string"
+        }
+      },
+      "type": "object"
     },
     "SourceKind": {
       "enum": [
@@ -749,6 +858,10 @@
       },
       "type": "array"
     },
+    "language": {
+      "$ref": "#/$defs/Language",
+      "description": "Report language from the profile; the generated sentences in this report use it."
+    },
     "last_agent_review": {
       "type": [
         "string",
@@ -769,6 +882,12 @@
         "$ref": "#/$defs/HandoffItem"
       },
       "type": "array"
+    },
+    "not_applicable_count": {
+      "description": "Upstream events the agent assessed as not affecting the monitored versions; no case is opened.",
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
     },
     "notification_status": {
       "type": "string"
@@ -795,11 +914,19 @@
         "$ref": "#/$defs/IdentityObservation"
       },
       "type": "array"
+    },
+    "verification_pending": {
+      "description": "Open cases whose verification is unfinished; a deliverable report requires none.",
+      "items": {
+        "$ref": "#/$defs/PendingVerification"
+      },
+      "type": "array"
     }
   },
   "required": [
     "schema_version",
     "audience",
+    "language",
     "project_id",
     "project_name",
     "generated_at",
@@ -809,10 +936,12 @@
     "needs_review",
     "informational_count",
     "dismissed_count",
+    "not_applicable_count",
     "coverage_gaps",
     "notification_status",
     "finding_checks",
-    "source_map"
+    "source_map",
+    "verification_pending"
   ],
   "title": "MorningReport",
   "type": "object"

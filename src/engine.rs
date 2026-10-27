@@ -10,6 +10,9 @@ use crate::{
 use anyhow::{Context, Result, bail};
 use std::{collections::HashSet, path::Path};
 
+/// Evidence sources written by the agent through `triage` and `impact`.
+const AGENT_EVIDENCE: [&str; 2] = ["agent_verdict", "impact_assessment"];
+
 pub fn scan(profile: &Profile, path: &Path, offline: bool) -> Result<Snapshot> {
     if profile.workspaces.is_empty() && profile.components.is_empty() {
         bail!("empty_scope: add components or authorized workspaces before scanning");
@@ -75,8 +78,9 @@ fn scan_inner(
     let remaining = 100_000usize.saturating_sub(instances.len());
     let inventory = crate::inventory::discover(&profile.workspaces, path, store, remaining);
     instances.extend(inventory.instances);
-    let discovery_coverage = crate::discovery::augment(profile, path, store, &mut instances)?;
     let mut coverage = inventory.coverage;
+    let discovery_coverage =
+        crate::discovery::augment(profile, path, store, &mut instances, &mut coverage)?;
     coverage.extend(discovery_coverage);
     let mut http = Http::new(store, offline);
     for instance in &mut instances {
@@ -103,27 +107,78 @@ fn scan_inner(
             .iter()
             .filter(|previous| same_advisory_instance(case, previous))
             .collect();
-        if let Some(previous) = related.iter().min_by_key(|previous| &previous.case_id) {
+        // Verdicts and impact assessments are stored under the case ID, so a claim case keeps its
+        // ID and an assessed one wins over a case without agent evidence.
+        if let Some(previous) = related.iter().min_by_key(|previous| {
+            (
+                previous.claims.is_empty(),
+                !previous
+                    .evidence
+                    .iter()
+                    .any(|evidence| AGENT_EVIDENCE.contains(&evidence.source.as_str())),
+                &previous.case_id,
+            )
+        }) {
             case.case_id = previous.case_id.clone();
+        }
+        for previous in &related {
+            for event in &previous.upstream_events {
+                if !case
+                    .upstream_events
+                    .iter()
+                    .any(|kept| kept.id == event.id && kept.url == event.url)
+                {
+                    case.upstream_events.push(event.clone());
+                }
+            }
+        }
+        for previous in related.iter().filter(|previous| previous.claims.is_empty()) {
+            for evidence in &previous.evidence {
+                if !case
+                    .evidence
+                    .iter()
+                    .any(|kept| kept.sha256 == evidence.sha256)
+                {
+                    case.evidence.push(evidence.clone());
+                }
+            }
         }
         merged_previous_ids.extend(related.iter().map(|previous| previous.case_id.clone()));
     }
     for case in &mut cases {
+        // Registry, KEV catalogue and other context documents change daily without changing
+        // the claim; instance context is already part of the base facts.
         let mut fact_hashes: Vec<&str> = case
             .evidence
             .iter()
+            .filter(|evidence| {
+                matches!(
+                    evidence.kind,
+                    EvidenceKind::Advisory | EvidenceKind::NonApplicability
+                )
+            })
             .map(|evidence| evidence.sha256.as_str())
             .collect();
         fact_hashes.sort_unstable();
         case.facts_sha256 =
             crate::digest(format!("{}:{fact_hashes:?}", case.facts_sha256).as_bytes());
-        if let Ok(previous) = store.case(&case.case_id)
-            && previous.facts_sha256 == case.facts_sha256
-        {
+        let Ok(previous) = store.case(&case.case_id) else {
+            continue;
+        };
+        if previous.facts_sha256 == case.facts_sha256 {
             case.applicability = previous.applicability;
             case.verification = previous.verification;
             case.decision = previous.decision;
             case.evidence = previous.evidence;
+        } else if previous
+            .evidence
+            .iter()
+            .any(|evidence| AGENT_EVIDENCE.contains(&evidence.source.as_str()))
+        {
+            case.open_questions.push(format!(
+                "Advisory evidence changed after the recorded {:?} verdict or impact assessment; reassess with the previous rationale in case history.",
+                previous.decision
+            ));
         }
     }
     let active_ids: HashSet<&str> = instances
@@ -148,8 +203,9 @@ fn scan_inner(
                 .iter()
                 .find(|current| current.id == old_instance.id)
             {
-                context_changed |=
-                    old_instance.context_fingerprint() != current.context_fingerprint();
+                context_changed |= old_instance.context_fingerprint()
+                    != current.context_fingerprint()
+                    || old_instance.identity_replaced(current);
                 *old_instance = current.clone();
             }
         }
@@ -226,12 +282,30 @@ fn same_advisory_instance(current: &Case, previous: &Case) -> bool {
     if !shared_instance {
         return false;
     }
+    // A research case that announced the advisory before a source published it folds into the
+    // claim case only when the claim covers every one of its instances.
+    let research_case = previous.claims.is_empty()
+        && previous.instances.iter().all(|old| {
+            current
+                .instances
+                .iter()
+                .any(|instance| instance.id == old.id)
+        });
     for claim in &current.claims {
         for identifier in std::iter::once(&claim.id).chain(&claim.aliases) {
             if previous
                 .claims
                 .iter()
                 .any(|old| old.id == *identifier || old.aliases.contains(identifier))
+            {
+                return true;
+            }
+            if research_case
+                && previous.upstream_events.iter().any(|event| {
+                    event.kind == "advisory"
+                        && (event.id == *identifier
+                            || event.id.ends_with(&format!("/{identifier}")))
+                })
             {
                 return true;
             }
@@ -355,6 +429,8 @@ pub fn cases_from_claims(
         };
         let decision = if affected && !conflict && !observed_identity {
             Decision::Actionable
+        } else if applicability == Applicability::NotAffected {
+            Decision::Informational
         } else {
             Decision::Review
         };

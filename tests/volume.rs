@@ -19,7 +19,7 @@ fn fifteen_hundred_locked_packages_use_batches_and_no_upstream_clones() {
     )
     .unwrap();
     let project = uuid::Uuid::new_v4().to_string();
-    let profile_path = directory.path().join("radar.yaml");
+    let profile_path = directory.path().join("vulnbell.yaml");
     fs::write(
         &profile_path,
         format!(

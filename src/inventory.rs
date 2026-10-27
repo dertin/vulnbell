@@ -19,6 +19,8 @@ pub struct LockedPackage {
     pub direct: Option<bool>,
     pub resolution: Option<String>,
     pub artifact_integrity: Option<String>,
+    #[serde(default)]
+    pub line: Option<usize>,
 }
 #[derive(Deserialize)]
 struct CargoLock {
@@ -119,6 +121,55 @@ fn locked(ecosystem: &str, name: String, version: String) -> LockedPackage {
         direct: None,
         resolution: None,
         artifact_integrity: None,
+        line: None,
+    }
+}
+/// Records the 1-based line of each package entry for formats with one entry per key.
+fn locate_lines(filename: &str, bytes: &[u8], packages: &mut [LockedPackage]) {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return;
+    };
+    let mut lines: BTreeMap<String, usize> = BTreeMap::new();
+    match filename {
+        "Cargo.lock" => {
+            let mut name: Option<(&str, usize)> = None;
+            for (index, line) in text.lines().enumerate() {
+                if let Some(value) = line.strip_prefix("name = ") {
+                    name = Some((value.trim_matches('"'), index + 1));
+                } else if let (Some(value), Some((package, start))) =
+                    (line.strip_prefix("version = "), name.take())
+                {
+                    lines
+                        .entry(format!("{package}@{}", value.trim_matches('"')))
+                        .or_insert(start);
+                }
+            }
+            for package in packages {
+                package.line = lines
+                    .get(&format!("{}@{}", package.name, package.version))
+                    .copied();
+            }
+        }
+        "package-lock.json" | "pnpm-lock.yaml" => {
+            for (index, line) in text.lines().enumerate() {
+                let key = line
+                    .trim()
+                    .trim_end_matches('{')
+                    .trim_end()
+                    .trim_end_matches(':');
+                lines
+                    .entry(key.trim_matches(['"', '\'']).to_owned())
+                    .or_insert(index + 1);
+            }
+            for package in packages {
+                package.line = package
+                    .resolution
+                    .as_ref()
+                    .and_then(|resolution| lines.get(resolution))
+                    .copied();
+            }
+        }
+        _ => (),
     }
 }
 fn purl_package(value: &str) -> Result<LockedPackage> {
@@ -335,7 +386,27 @@ pub fn parse_lock(filename: &str, bytes: &[u8]) -> Result<Vec<LockedPackage>> {
     if packages.len() > 100_000 {
         bail!("package count exceeds 100000");
     }
+    locate_lines(filename, bytes, &mut packages);
     Ok(packages)
+}
+/// Coverage detail for manifests without a native parser; general discovery can cover them.
+pub const UNSUPPORTED_MANIFEST: &str = "detected ecosystem lock/manifest is not implemented; provide a supported SBOM or explicit components";
+/// Coverage detail for workspaces without native lockfiles; general discovery can cover them.
+pub const NO_NATIVE_INVENTORY: &str = "no supported lockfile/SBOM found; this workspace was not evaluated for exact dependency versions";
+/// Lockfiles and SBOMs read by `parse_lock`; their parse failures are reported as inventory coverage.
+pub fn native_inventory_file(name: &str) -> bool {
+    [
+        "Cargo.lock",
+        "composer.lock",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "bom.json",
+        "sbom.json",
+    ]
+    .contains(&name)
+        || name.ends_with(".cdx.json")
+        || name.ends_with(".spdx.json")
 }
 pub fn discover(
     workspaces: &[String],
@@ -426,19 +497,7 @@ pub fn discover(
                 continue;
             }
             let name = entry.file_name().to_string_lossy();
-            let supported = [
-                "Cargo.lock",
-                "composer.lock",
-                "package-lock.json",
-                "pnpm-lock.yaml",
-                "yarn.lock",
-                "bom.json",
-                "sbom.json",
-            ]
-            .contains(&name.as_ref())
-                || name.ends_with(".cdx.json")
-                || name.ends_with(".spdx.json");
-            if !supported {
+            if !native_inventory_file(&name) {
                 if [
                     "go.mod",
                     "go.sum",
@@ -449,7 +508,16 @@ pub fn discover(
                 ]
                 .contains(&name.as_ref())
                 {
-                    inventory.coverage.push(Coverage::new("inventory",&entry.path().strip_prefix(&root).unwrap_or(entry.path()).to_string_lossy(),CoverageState::Unsupported,"detected ecosystem lock/manifest is not implemented; provide a supported SBOM or explicit components"));
+                    inventory.coverage.push(Coverage::new(
+                        "inventory",
+                        &entry
+                            .path()
+                            .strip_prefix(&root)
+                            .unwrap_or(entry.path())
+                            .to_string_lossy(),
+                        CoverageState::Unsupported,
+                        UNSUPPORTED_MANIFEST,
+                    ));
                 }
                 continue;
             }
@@ -470,7 +538,7 @@ pub fn discover(
                 }
                 use rusqlite::OptionalExtension;
                 let hash = crate::digest(&bytes);
-                let key = format!("parser-v3:{name}:{hash}");
+                let key = format!("parser-v4:{name}:{hash}");
                 let cached: Option<String> = store
                     .connection
                     .query_row(
@@ -564,6 +632,7 @@ pub fn discover(
                                 direct: package.direct,
                                 resolution: package.resolution,
                                 artifact_integrity: package.artifact_integrity,
+                                line: package.line,
                             },
                             purl: Some(reference),
                             cpe_product: None,
@@ -582,7 +651,12 @@ pub fn discover(
             }
         }
         if supported_files == 0 {
-            inventory.coverage.push(Coverage::new("inventory",workspace,CoverageState::Partial,"no supported lockfile/SBOM found; this workspace was not evaluated for exact dependency versions"));
+            inventory.coverage.push(Coverage::new(
+                "inventory",
+                workspace,
+                CoverageState::Partial,
+                NO_NATIVE_INVENTORY,
+            ));
         }
     }
     inventory

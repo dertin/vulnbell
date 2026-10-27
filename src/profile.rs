@@ -24,6 +24,32 @@ pub struct Profile {
     pub schedule: Option<Schedule>,
     #[serde(default)]
     pub alerts: Alerts,
+    #[serde(default)]
+    pub report: Report,
+}
+#[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Report {
+    /// Language of the rendered report and of every rationale the agent records for it. Technical
+    /// terms without a common translation in that language stay as they are.
+    #[serde(default)]
+    pub language: Language,
+}
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Language {
+    #[default]
+    En,
+    Es,
+}
+impl Language {
+    /// English name, used in instructions to report-writing agents.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::En => "English",
+            Self::Es => "Spanish",
+        }
+    }
 }
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

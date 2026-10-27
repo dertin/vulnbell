@@ -82,6 +82,24 @@
       ],
       "type": "string"
     },
+    "Language": {
+      "enum": [
+        "en",
+        "es"
+      ],
+      "type": "string"
+    },
+    "Report": {
+      "additionalProperties": false,
+      "properties": {
+        "language": {
+          "$ref": "#/$defs/Language",
+          "default": "en",
+          "description": "Language of the rendered report and of every rationale the agent records for it. Technical\nterms without a common translation in that language stay as they are."
+        }
+      },
+      "type": "object"
+    },
     "Research": {
       "additionalProperties": false,
       "properties": {
@@ -149,6 +167,12 @@
     "project_id": {
       "format": "uuid",
       "type": "string"
+    },
+    "report": {
+      "$ref": "#/$defs/Report",
+      "default": {
+        "language": "en"
+      }
     },
     "research": {
       "$ref": "#/$defs/Research",

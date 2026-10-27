@@ -15,6 +15,238 @@ use std::{
 
 const ENTRY_PAGE: usize = 256;
 const SLICE_BYTES: u64 = 64 * 1024;
+const DIRECTORIES_PER_PLAN: usize = 64;
+/// Bump when exclusion or classification rules change: walked directories are listed again so
+/// existing entries are reclassified, while unchanged reviewed files keep their review.
+const CLASSIFICATION_RULES: &str = "3";
+const GITIGNORE_BYTES: u64 = 1024 * 1024;
+const DEPENDENCY_OUTPUT: [&str; 13] = [
+    "node_modules",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".gradle",
+    ".terraform",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".next",
+    ".nuxt",
+    ".sqlx",
+];
+const BUILD_MANIFESTS: [&str; 4] = ["Cargo.toml", "pom.xml", "build.gradle", "build.gradle.kts"];
+const NATIVE_INVENTORY: &str =
+    "parsed by the native lockfile/SBOM inventory; parse failures appear as inventory coverage";
+const CANNOT_DECLARE: &str = "source or documentation file type cannot declare dependency versions";
+const MEDIA: &str = "image, font or document binary cannot declare dependencies";
+const ARTIFACT: &str =
+    "binary artifact requires a separate artifact assessment (SBOM or explicit component)";
+const NO_INLINE_METADATA: &str = "script source without inline dependency metadata (PEP 723 block, URL, npm: or jsr: imports, bundler/inline)";
+const INLINE_PROBE_BYTES: u64 = 1024 * 1024;
+/// Script extensions and the text through which such a file can declare dependencies.
+const INLINE_MARKERS: [(&[&str], &[&str]); 3] = [
+    (&["py", "pyw"], &["# /// script"]),
+    (
+        &["js", "mjs", "cjs", "jsx", "ts", "mts", "cts", "tsx"],
+        &[
+            "from \"http",
+            "from 'http",
+            "import(\"http",
+            "import('http",
+            "\"npm:",
+            "'npm:",
+            "\"jsr:",
+            "'jsr:",
+        ],
+    ),
+    (&["rb"], &["bundler/inline"]),
+];
+const REPOSITORY_METADATA: [&str; 4] =
+    [".gitattributes", ".editorconfig", ".mailmap", "CODEOWNERS"];
+const GIT_IGNORED: &str = "git-ignored path (generated or local output, not tracked source)";
+const OUTPUT_DIRECTORY: &str = "dependency or build output directory (installed or generated)";
+
+/// Returns the state and reason for files that need no agent review, or `None` to review.
+fn file_classification(parent: &str, name: &str) -> Option<(&'static str, &'static str)> {
+    if crate::inventory::native_inventory_file(name) {
+        return Some(("excluded", NATIVE_INVENTORY));
+    }
+    let legal = ["LICENSE", "LICENCE", "COPYING", "NOTICE", "AUTHORS"]
+        .iter()
+        .any(|prefix| name.to_ascii_uppercase().starts_with(prefix));
+    let ignore_patterns = name.starts_with('.') && name.ends_with("ignore");
+    let service_registration = Path::new(parent).ends_with("META-INF/services");
+    if legal || ignore_patterns || service_registration || REPOSITORY_METADATA.contains(&name) {
+        return Some(("excluded", CANNOT_DECLARE));
+    }
+    let extension = name
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_ascii_lowercase())
+        .unwrap_or_default();
+    match extension.as_str() {
+        "rs" | "java" | "go" | "c" | "h" | "cc" | "cpp" | "hpp" | "cs" | "swift" | "kt"
+        | "scala" | "md" | "mdc" | "rst" | "adoc" | "bru" | "sql" => {
+            Some(("excluded", CANNOT_DECLARE))
+        }
+        "png" | "jpg" | "jpeg" | "gif" | "ico" | "webp" | "bmp" | "svg" | "woff" | "woff2"
+        | "ttf" | "otf" | "eot" | "pdf" => Some(("excluded", MEDIA)),
+        "jar" | "war" | "ear" | "zip" | "whl" | "egg" | "so" | "dll" | "dylib" | "exe" | "tar"
+        | "gz" | "tgz" | "class" => Some(("unavailable", ARTIFACT)),
+        _ => None,
+    }
+}
+
+fn inline_markers(name: &str) -> Option<&'static [&'static str]> {
+    let (_, extension) = name.rsplit_once('.')?;
+    let extension = extension.to_ascii_lowercase();
+    INLINE_MARKERS
+        .iter()
+        .find(|(extensions, _)| extensions.contains(&extension.as_str()))
+        .map(|(_, markers)| *markers)
+}
+
+/// Unreadable or oversized files count as declaring, so they stay in the review queue.
+fn declares_inline(root: &str, relative: &str, markers: &[&str]) -> bool {
+    let Ok(file) = open_file(root, relative) else {
+        return true;
+    };
+    let mut bytes = Vec::new();
+    if file
+        .take(INLINE_PROBE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+        || bytes.len() as u64 > INLINE_PROBE_BYTES
+    {
+        return true;
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    markers.iter().any(|marker| text.contains(marker))
+}
+
+/// `.gitignore` rules from the workspace root down to `relative`, outermost first.
+/// Unreadable rule files are skipped, which only widens the reviewed set.
+fn ignore_rules(root: &str, relative: &str) -> Vec<ignore::gitignore::Gitignore> {
+    let mut rules = Vec::new();
+    let mut directory = PathBuf::new();
+    let levels = std::iter::once(None).chain(Path::new(relative).components().map(Some));
+    for level in levels {
+        if let Some(component) = level {
+            directory.push(component);
+        }
+        let Some(file) = directory.join(".gitignore").to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Ok(handle) = open_file(root, &file) else {
+            continue;
+        };
+        let mut text = String::new();
+        if handle
+            .take(GITIGNORE_BYTES)
+            .read_to_string(&mut text)
+            .is_err()
+        {
+            continue;
+        }
+        let mut builder =
+            ignore::gitignore::GitignoreBuilder::new(Path::new(root).join(&directory));
+        for line in text.lines() {
+            // Git also skips malformed patterns.
+            let _ = builder.add_line(None, line);
+        }
+        if let Ok(built) = builder.build() {
+            rules.push(built);
+        }
+    }
+    rules
+}
+
+fn git_ignored(rules: &[ignore::gitignore::Gitignore], path: &Path, is_dir: bool) -> bool {
+    rules
+        .iter()
+        .rev()
+        .find_map(|rule| match rule.matched(path, is_dir) {
+            ignore::Match::None => None,
+            ignore::Match::Ignore(_) => Some(true),
+            ignore::Match::Whitelist(_) => Some(false),
+        })
+        .unwrap_or(false)
+}
+
+fn output_directory(parent: &Path, name: &str) -> bool {
+    DEPENDENCY_OUTPUT.contains(&name)
+        || (name == "target"
+            && BUILD_MANIFESTS
+                .iter()
+                .any(|manifest| fs::symlink_metadata(parent.join(manifest)).is_ok()))
+}
+
+fn exclude_subtree(
+    store: &Store,
+    scope: &str,
+    root: &str,
+    child: &str,
+    reason: &str,
+) -> Result<()> {
+    let prefix = format!("{child}/%");
+    store.connection.execute(
+        "DELETE FROM discovery_packages WHERE file_id IN (SELECT id FROM discovery_files WHERE scope=?1 AND root=?2 AND path LIKE ?3)",
+        params![scope, root, prefix],
+    )?;
+    store.connection.execute(
+        "UPDATE discovery_files SET state='excluded',reason=?4 WHERE scope=?1 AND root=?2 AND path LIKE ?3",
+        params![scope, root, prefix, reason],
+    )?;
+    store.connection.execute(
+        "UPDATE discovery_walk SET state='excluded',stamp=?4 WHERE scope=?1 AND root=?2 AND path LIKE ?3",
+        params![scope, root, prefix, reason],
+    )?;
+    Ok(())
+}
+
+/// 1-based file line where `excerpt` starts inside `chunk`.
+fn excerpt_line(root: &str, relative: &str, chunk: &FileSlice, excerpt: &str) -> Option<usize> {
+    let position = chunk.content.find(excerpt)?;
+    let mut before = 0;
+    if chunk.offset > 0 {
+        let mut prefix = Vec::new();
+        open_file(root, relative)
+            .ok()?
+            .take(chunk.offset)
+            .read_to_end(&mut prefix)
+            .ok()?;
+        before = prefix.iter().filter(|byte| **byte == b'\n').count();
+    }
+    Some(before + chunk.content[..position].matches('\n').count() + 1)
+}
+
+/// Names inside `${name}` placeholders.
+fn placeholders(text: &str) -> impl Iterator<Item = &str> {
+    text.split("${")
+        .skip(1)
+        .filter_map(|rest| rest.split_once('}').map(|(name, _)| name))
+}
+
+pub(super) fn reopen(store: &Store, scope: &str, relative: &str) -> Result<usize> {
+    let ids: Vec<String> = store
+        .connection
+        .prepare("SELECT id FROM discovery_files WHERE scope=?1 AND path=?2 AND state IN ('done','unavailable')")?
+        .query_map(params![scope, relative], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    if ids.is_empty() {
+        bail!("no reviewed or unavailable discovery file at that workspace-relative path");
+    }
+    for id in &ids {
+        store
+            .connection
+            .execute("DELETE FROM discovery_packages WHERE file_id=?1", [id])?;
+        store.connection.execute(
+            "UPDATE discovery_files SET state='pending',offset=0,reason='' WHERE id=?1",
+            [id],
+        )?;
+    }
+    Ok(ids.len())
+}
 
 fn stamp(path: &Path) -> Result<String> {
     let metadata = fs::symlink_metadata(path)?;
@@ -108,10 +340,19 @@ pub(super) fn prepare(
             bail!("discovery workspace must be an authorized real project directory");
         }
         let root = root.to_str().context("workspace path must be UTF-8")?;
+        adopt_reviews(store, scope, root)?;
         store.connection.execute(
             "INSERT OR IGNORE INTO discovery_walk VALUES (?1,?2,'','','','pending')",
             params![scope, root],
         )?;
+    }
+    let rules = format!("discovery_rules:{scope}");
+    if store.meta(&rules)?.as_deref() != Some(CLASSIFICATION_RULES) {
+        store.connection.execute(
+            "UPDATE discovery_walk SET state='pending',cursor='' WHERE scope=?1 AND state='done'",
+            [scope],
+        )?;
+        store.set_meta(&rules, CLASSIFICATION_RULES)?;
     }
     let mut query = store
         .connection
@@ -130,14 +371,20 @@ pub(super) fn prepare(
         }
     }
     let mut query = store.connection.prepare(
-        "SELECT id,root,path,stamp FROM discovery_files WHERE scope=?1 AND state IN ('done','pending','unavailable')",
+        "SELECT id,root,path,stamp,state FROM discovery_files WHERE scope=?1 AND (state IN ('done','pending','unavailable') OR (state='excluded' AND reason=?2))",
     )?;
-    let files: Vec<(String, String, String, String)> = query
-        .query_map([scope], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+    let files: Vec<(String, String, String, String, String)> = query
+        .query_map(params![scope, NO_INLINE_METADATA], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
         })?
         .collect::<rusqlite::Result<_>>()?;
-    for (id, root, relative, previous) in files {
+    for (id, root, relative, previous, state) in files {
         let current = checked_path(&root, &relative).and_then(|path| stamp(&path));
         if current.as_ref().err().is_some_and(missing) {
             store.connection.execute("UPDATE discovery_files SET state='removed',reason='removed from workspace' WHERE id=?1", [&id])?;
@@ -147,8 +394,22 @@ pub(super) fn prepare(
             continue;
         }
         if current.as_ref().ok() != Some(&previous) {
+            let name = Path::new(&relative)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default();
+            let markers = inline_markers(name);
+            if state == "excluded"
+                && markers.is_some_and(|markers| !declares_inline(&root, &relative, markers))
+            {
+                store.connection.execute(
+                    "UPDATE discovery_files SET stamp=?1 WHERE id=?2",
+                    params![current.unwrap_or_default(), id],
+                )?;
+                continue;
+            }
             store.connection.execute(
-                "UPDATE discovery_files SET state='pending',offset=0,stamp=?1 WHERE id=?2",
+                "UPDATE discovery_files SET state='pending',offset=0,reason='',stamp=?1 WHERE id=?2",
                 params![current.unwrap_or_default(), id],
             )?;
             store
@@ -156,15 +417,90 @@ pub(super) fn prepare(
                 .execute("DELETE FROM discovery_packages WHERE file_id=?1", [&id])?;
         }
     }
-    expand(store, scope)
+    for _ in 0..DIRECTORIES_PER_PLAN {
+        if !expand(store, scope)? {
+            break;
+        }
+    }
+    Ok(())
 }
 
-fn expand(store: &Store, scope: &str) -> Result<()> {
+/// Adding or removing a workspace changes the scope. A root without reviewed files in this scope
+/// takes over the walk, file reviews and packages recorded for it under the earlier scope with the
+/// most reviews; the stamp checks in `prepare` then reopen only what changed on disk.
+fn adopt_reviews(store: &Store, scope: &str, root: &str) -> Result<()> {
+    let reviewed: bool = store.connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM discovery_files WHERE scope=?1 AND root=?2 AND state='done')",
+        params![scope, root],
+        |row| row.get(0),
+    )?;
+    if reviewed {
+        return Ok(());
+    }
+    let previous: Option<String> = store
+        .connection
+        .query_row(
+            "SELECT scope FROM discovery_files WHERE root=?1 AND scope<>?2 AND state='done' GROUP BY scope ORDER BY COUNT(*) DESC, scope LIMIT 1",
+            params![root, scope],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(previous) = previous else {
+        return Ok(());
+    };
+    let transaction = store.connection.unchecked_transaction()?;
+    transaction.execute(
+        "DELETE FROM discovery_packages WHERE file_id IN (SELECT id FROM discovery_files WHERE scope=?1 AND root=?2)",
+        params![scope, root],
+    )?;
+    transaction.execute(
+        "DELETE FROM discovery_files WHERE scope=?1 AND root=?2",
+        params![scope, root],
+    )?;
+    transaction.execute(
+        "DELETE FROM discovery_walk WHERE scope=?1 AND root=?2",
+        params![scope, root],
+    )?;
+    let files: Vec<(String, String)> = transaction
+        .prepare("SELECT id,path FROM discovery_files WHERE scope=?1 AND root=?2")?
+        .query_map(params![previous, root], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    for (old_id, relative) in files {
+        let id = crate::digest(format!("{scope}:{root}:{relative}").as_bytes());
+        transaction.execute(
+            "UPDATE discovery_files SET id=?1,scope=?2 WHERE id=?3",
+            params![id, scope, old_id],
+        )?;
+        transaction.execute(
+            "UPDATE discovery_packages SET file_id=?1,scope=?2 WHERE file_id=?3",
+            params![id, scope, old_id],
+        )?;
+    }
+    transaction.execute(
+        "UPDATE discovery_walk SET scope=?1 WHERE scope=?2 AND root=?3",
+        params![scope, previous, root],
+    )?;
+    transaction.execute(
+        "DELETE FROM meta WHERE key=?1",
+        [format!("discovery_rules:{scope}")],
+    )?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO discovery_sources SELECT ?1,instance_id,fingerprint,checked_at,body FROM discovery_sources WHERE scope=?2",
+        params![scope, previous],
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Expands one pending directory page; returns false when none is pending.
+fn expand(store: &Store, scope: &str) -> Result<bool> {
     let directory: Option<(String,String,String,String)> = store.connection.query_row(
         "SELECT root,path,cursor,stamp FROM discovery_walk WHERE scope=?1 AND state='pending' ORDER BY root,path LIMIT 1", [scope],
         |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional()?;
     let Some((root, relative, mut cursor, previous)) = directory else {
-        return Ok(());
+        return Ok(false);
     };
     let result = checked_path(&root,&relative).and_then(|path| {
         let current = stamp(&path)?;
@@ -178,20 +514,50 @@ fn expand(store: &Store, scope: &str) -> Result<()> {
             }
         }
         if stamp(&path)? != current { bail!("directory changed while enumerating; retry discovery"); }
+        let rules = ignore_rules(&root, &relative);
         let count = names.len();
         for name in names {
             let child = Path::new(&relative).join(&name);
             let child = child.to_str().context("invalid child path")?;
             let entry = path.join(&name);
             let metadata = fs::symlink_metadata(&entry)?;
-            let excluded = private_name(&name) || name.chars().any(char::is_control) || metadata.is_symlink();
-            if metadata.is_dir() && !excluded {
-                store.connection.execute("INSERT INTO discovery_walk VALUES (?1,?2,?3,'','','pending') ON CONFLICT(scope,root,path) DO UPDATE SET state='pending',cursor='',stamp='' WHERE discovery_walk.state='removed'", params![scope,root,child])?;
+            let private = private_name(&name) || name.chars().any(char::is_control) || metadata.is_symlink();
+            let ignored = !private && git_ignored(&rules, &entry, metadata.is_dir());
+            if metadata.is_dir() && !private {
+                let skipped = if ignored {
+                    Some(GIT_IGNORED)
+                } else if output_directory(&path, &name) {
+                    Some(OUTPUT_DIRECTORY)
+                } else {
+                    None
+                };
+                let (state, reason) = match skipped {
+                    Some(reason) => ("excluded", reason),
+                    None => ("pending", ""),
+                };
+                store.connection.execute("INSERT INTO discovery_walk VALUES (?1,?2,?3,'',?4,?5) ON CONFLICT(scope,root,path) DO UPDATE SET state=excluded.state,cursor='',stamp=excluded.stamp WHERE discovery_walk.state='removed' OR (discovery_walk.state='excluded')<>(excluded.state='excluded')", params![scope,root,child,reason,state])?;
+                if let Some(reason) = skipped {
+                    exclude_subtree(store, scope, &root, child, reason)?;
+                }
             } else {
                 let id = crate::digest(format!("{scope}:{root}:{child}").as_bytes());
-                let state = if excluded || !metadata.is_file() { "excluded" } else { "pending" };
-                let reason = if state == "excluded" { "private path, symlink, VCS metadata or nonregular file" } else { "" };
-                store.connection.execute("INSERT INTO discovery_files VALUES (?1,?2,?3,?4,?5,0,?6,?7) ON CONFLICT(id) DO UPDATE SET state=excluded.state,offset=0,stamp=excluded.stamp,reason=excluded.reason WHERE discovery_files.state='removed'", params![id,scope,root,child,stamp(&entry)?,state,reason])?;
+                let (state, reason) = if private || !metadata.is_file() {
+                    ("excluded", "private path, symlink, VCS metadata or nonregular file")
+                } else if ignored {
+                    ("excluded", GIT_IGNORED)
+                } else if let Some(classified) = file_classification(&relative, &name) {
+                    classified
+                } else if inline_markers(&name)
+                    .is_some_and(|markers| !declares_inline(&root, child, markers))
+                {
+                    ("excluded", NO_INLINE_METADATA)
+                } else {
+                    ("pending", "")
+                };
+                store.connection.execute("INSERT INTO discovery_files VALUES (?1,?2,?3,?4,?5,0,?6,?7) ON CONFLICT(id) DO UPDATE SET state=excluded.state,offset=0,stamp=excluded.stamp,reason=excluded.reason WHERE discovery_files.state='removed' OR (discovery_files.state<>excluded.state AND (discovery_files.state IN ('excluded','unavailable') OR excluded.state IN ('excluded','unavailable')))", params![id,scope,root,child,stamp(&entry)?,state,reason])?;
+                if state != "pending" {
+                    store.connection.execute("DELETE FROM discovery_packages WHERE file_id=?1", [&id])?;
+                }
             }
             cursor = name;
         }
@@ -209,7 +575,7 @@ fn expand(store: &Store, scope: &str) -> Result<()> {
             params![state, error.to_string(), scope, root, relative],
         )?;
     }
-    Ok(())
+    Ok(true)
 }
 
 pub(super) fn slice(store: &Store, scope: &str, id: &str) -> Result<FileSlice> {
@@ -355,17 +721,31 @@ pub(super) fn import(
                 bail!("package excerpt must match the current file chunk");
             }
             let component = &observation.component;
+            let version_source = match &observation.version_excerpt {
+                None => observation.excerpt.as_str(),
+                Some(definition) => {
+                    let defined = placeholders(&observation.excerpt)
+                        .any(|name| !name.is_empty() && definition.contains(name));
+                    if definition.trim().is_empty()
+                        || definition.len() > 2000
+                        || !chunk.content.contains(definition.as_str())
+                        || component.version.is_none()
+                        || !defined
+                    {
+                        bail!(
+                            "version_excerpt must come from the same chunk and define a ${{name}} placeholder used by the package excerpt"
+                        );
+                    }
+                    definition.as_str()
+                }
+            };
             if let Some(version) = &component.version
                 && (version == "latest"
                     || version.contains(['*', '^', '~', '>', '<', '=', '|'])
-                    || !observation.excerpt.contains(version)
+                    || !version_source.contains(version)
                     || ["^", "~", ">=", "<=", "!="].iter().any(|operator| {
-                        observation
-                            .excerpt
-                            .contains(&format!("{operator}{version}"))
-                            || observation
-                                .excerpt
-                                .contains(&format!("{operator} {version}"))
+                        version_source.contains(&format!("{operator}{version}"))
+                            || version_source.contains(&format!("{operator} {version}"))
                     }))
             {
                 bail!("workspace discovery requires a literal exact version or unknown");
@@ -396,6 +776,7 @@ pub(super) fn import(
             instance.provenance.workspace = Some(root.clone());
             instance.provenance.sha256 = chunk.sha256.clone();
             instance.provenance.direct = None;
+            instance.provenance.line = excerpt_line(&root, &relative, &chunk, &observation.excerpt);
             instance.identity_evidence.push(store.record_evidence(
                 &serde_json::to_vec(observation)?,
                 "agent_workspace_observation",
@@ -452,6 +833,20 @@ pub(super) fn import(
     }
     transaction.commit()?;
     Ok(())
+}
+
+/// Workspace-relative files that discovery reviewed or excluded with a recorded reason.
+pub(super) fn settled_paths(
+    store: &Store,
+    scope: &str,
+) -> Result<std::collections::HashSet<String>> {
+    let mut query = store.connection.prepare(
+        "SELECT path FROM discovery_files WHERE scope=?1 AND state IN ('done','excluded')",
+    )?;
+    let paths = query
+        .query_map([scope], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(paths)
 }
 
 pub(super) fn instances(store: &Store, scope: &str) -> Result<Vec<Instance>> {

@@ -222,6 +222,15 @@
             "null"
           ]
         },
+        "line": {
+          "description": "1-based line in `path` where the package entry or cited excerpt starts.\nDisplay-only: excluded from the context fingerprint so unrelated edits do not reopen cases.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "observed_at": {
           "type": "string"
         },
@@ -268,6 +277,41 @@
       ],
       "type": "object"
     },
+    "SourceFacts": {
+      "additionalProperties": false,
+      "description": "What an upstream item itself states, quoted or closely paraphrased; an empty field means the\nitem does not say. These are the item's statements, not the agent's conclusions.",
+      "properties": {
+        "affected_versions": {
+          "default": "",
+          "description": "Versions or release lines the item says are affected.",
+          "type": "string"
+        },
+        "fix_reference": {
+          "default": "",
+          "description": "Pull request, commit or release that carries the fix.",
+          "type": "string"
+        },
+        "fixed_in": {
+          "default": "",
+          "description": "Version, release or backport the item says contains the fix.",
+          "type": "string"
+        },
+        "identifiers": {
+          "default": [],
+          "description": "CVE, GHSA, RUSTSEC or other advisory IDs the item cites.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "required_feature": {
+          "default": "",
+          "description": "Feature, configuration or deployment condition the item says the issue requires.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "UpstreamEvent": {
       "properties": {
         "id": {
@@ -281,6 +325,9 @@
         },
         "sha256": {
           "type": "string"
+        },
+        "source_facts": {
+          "$ref": "#/$defs/SourceFacts"
         },
         "title": {
           "type": "string"

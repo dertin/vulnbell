@@ -376,13 +376,58 @@ fn resolve_inner(instance: &mut Instance, http: &mut Http<'_>) -> Result<()> {
     Ok(())
 }
 pub fn clean_repository(value: String) -> Option<String> {
-    let value = value
-        .trim_start_matches("git+")
-        .trim_end_matches(".git")
-        .to_owned();
-    if crate::profile::public_https_syntax(&value).is_ok() {
-        Some(value)
-    } else {
-        None
+    canonical_repository(&value)
+}
+
+/// Forge links (clone, tree, issues) collapse to `https://host/owner/repo` so one project is one
+/// research target; values with unresolved build placeholders such as `${project.scm.tag}` are
+/// rejected because they name no real page.
+pub fn canonical_repository(value: &str) -> Option<String> {
+    if value.contains("${") {
+        return None;
     }
+    let value = value.trim().trim_start_matches("git+");
+    let mut url = crate::profile::public_https_syntax(value).ok()?;
+    let segments: Vec<String> = url
+        .path_segments()
+        .map(|segments| {
+            segments
+                .filter(|segment| !segment.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let project: Option<Vec<&str>> = match url.host_str() {
+        Some("github.com" | "bitbucket.org") => {
+            Some(segments.iter().take(2).map(String::as_str).collect())
+        }
+        Some(host) if host == "gitlab.com" || host.starts_with("gitlab.") => {
+            let mut project: Vec<&str> = segments
+                .iter()
+                .take_while(|segment| segment.as_str() != "-")
+                .map(String::as_str)
+                .collect();
+            // Legacy GitLab routes without the `/-/` separator.
+            if project.len() > 2 && matches!(project.last(), Some(&("issues" | "merge_requests"))) {
+                project.pop();
+            }
+            Some(project)
+        }
+        _ => None,
+    };
+    if let Some(project) = project {
+        if project.len() < 2 {
+            return None;
+        }
+        let path = format!("/{}", project.join("/"));
+        url.set_path(path.trim_end_matches(".git"));
+        url.set_query(None);
+        url.set_fragment(None);
+    }
+    Some(
+        url.as_str()
+            .trim_end_matches('/')
+            .trim_end_matches(".git")
+            .to_owned(),
+    )
 }

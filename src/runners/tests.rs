@@ -32,3 +32,18 @@ fn configurations_are_typed_and_reject_unknown_adapters_or_unsafe_values() {
     };
     assert!(opencode.validate().is_err());
 }
+
+#[test]
+fn live_probe_requires_the_fetched_title_and_reports_disabled_tools() {
+    assert!(
+        probe_result(br#"{"reachable":true,"title":"Example Domain","detail":"fetched"}"#).is_ok()
+    );
+    let disabled = probe_result(
+        br#"{"reachable":false,"title":"","detail":"tool call returned 'code-mode host is disabled'"}"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(disabled.contains("code-mode host is disabled"));
+    assert!(probe_result(br#"{"reachable":true,"title":"Guessed","detail":""}"#).is_err());
+    assert!(probe_result(b"not json").is_err());
+}

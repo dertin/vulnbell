@@ -1,8 +1,12 @@
-use super::inline;
+use super::{
+    inline,
+    text::{self, fill},
+};
 use crate::{
-    impact::{ImpactAnswerValue, ImpactConfidence, ImpactQuestionId, ImpactResult, ImpactVerdict},
+    impact::{ImpactResult, ImpactVerdict},
     model::{Case, Decision, EvidenceKind, Verification},
-    sandbox::{TestContext, TestMode, TestSpec},
+    profile::Language,
+    sandbox::{TestContext, TestSpec},
     store::Store,
 };
 use anyhow::{Result, bail};
@@ -46,7 +50,8 @@ pub struct LocalCheck {
     pub observed_at: Option<String>,
 }
 
-pub(super) fn finding_check(case: &Case, store: &Store) -> FindingCheck {
+pub(super) fn finding_check(case: &Case, store: &Store, language: Language) -> FindingCheck {
+    let words = text::text(language);
     let mut references: Vec<FindingReference> = case
         .upstream_events
         .iter()
@@ -65,6 +70,12 @@ pub(super) fn finding_check(case: &Case, store: &Store) -> FindingCheck {
             });
         }
     }
+    let advisory_ids: Vec<&str> = case
+        .claims
+        .iter()
+        .flat_map(|claim| std::iter::once(&claim.id).chain(&claim.aliases))
+        .map(String::as_str)
+        .collect();
     for evidence in &case.evidence {
         if let Some(url) = &evidence.url {
             references.push(FindingReference {
@@ -74,7 +85,7 @@ pub(super) fn finding_check(case: &Case, store: &Store) -> FindingCheck {
             });
         }
         if evidence.kind == EvidenceKind::Advisory {
-            references.extend(advisory_references(evidence, store));
+            references.extend(advisory_references(evidence, &advisory_ids, store));
         }
     }
     references.sort_by(|a, b| a.url.cmp(&b.url));
@@ -87,12 +98,9 @@ pub(super) fn finding_check(case: &Case, store: &Store) -> FindingCheck {
             result: LocalResult::NotRun,
             context: None,
             detail: if case.sandbox.available {
-                "No current local test is recorded. The scheduled reader cannot authorize or run active tests.".into()
+                words.check_no_test.into()
             } else {
-                format!(
-                    "No current local test is recorded. Sandbox: {}",
-                    case.sandbox.reason
-                )
+                fill(words.check_no_test_sandbox, &[&case.sandbox.reason])
             },
             attestation_path: None,
             output_path: None,
@@ -126,9 +134,7 @@ pub(super) fn finding_check(case: &Case, store: &Store) -> FindingCheck {
                     Ok(_) => continue,
                     Err(_) => {
                         check.result = LocalResult::InvalidEvidence;
-                        check.detail =
-                            "Recorded validation blocker is corrupt; inspect local evidence."
-                                .into();
+                        check.detail = words.check_blocker_corrupt.into();
                         break;
                     }
                 }
@@ -143,12 +149,13 @@ pub(super) fn finding_check(case: &Case, store: &Store) -> FindingCheck {
                         _ => LocalResult::Inconclusive,
                     };
                     check.detail = match check.result {
-                        LocalResult::Reproduced => "Reproduced only for the tested artifact and conditions; deployment exposure is not established.",
-                        LocalResult::NotReproduced => "The test did not reproduce the issue. This does not prove non-applicability.",
-                        LocalResult::NotApplicable => "A prerequisite was disproven only within the tested scope, with a contrasting control.",
-                        _ if attestation.timed_out => "Test timed out; no safety conclusion is supported.",
-                        _ => "Execution or oracle was inconclusive; inspect the recorded output and job status.",
-                    }.into();
+                        LocalResult::Reproduced => words.check_reproduced,
+                        LocalResult::NotReproduced => words.check_not_reproduced,
+                        LocalResult::NotApplicable => words.check_not_applicable,
+                        _ if attestation.timed_out => words.check_timed_out,
+                        _ => words.check_inconclusive,
+                    }
+                    .into();
                     check.context = read_context(store, &attestation.test_sha256);
                     check.attestation_path = Some(
                         store
@@ -172,7 +179,7 @@ pub(super) fn finding_check(case: &Case, store: &Store) -> FindingCheck {
                 Ok(_) => (),
                 Err(_) => {
                     check.result = LocalResult::InvalidEvidence;
-                    check.detail = "A recorded attestation is invalid, stale, or missing matching output/policy/status bytes. Rerun verification for the current case.".into();
+                    check.detail = words.check_invalid_attestation.into();
                     break;
                 }
             }
@@ -188,7 +195,11 @@ pub(super) fn finding_check(case: &Case, store: &Store) -> FindingCheck {
     }
 }
 
-fn advisory_references(evidence: &crate::model::Evidence, store: &Store) -> Vec<FindingReference> {
+fn advisory_references(
+    evidence: &crate::model::Evidence,
+    advisory_ids: &[&str],
+    store: &Store,
+) -> Vec<FindingReference> {
     if !store.evidence_exists(evidence).unwrap_or(false) {
         return Vec::new();
     }
@@ -202,7 +213,7 @@ fn advisory_references(evidence: &crate::model::Evidence, store: &Store) -> Vec<
         return Vec::new();
     };
     let mut urls = Vec::new();
-    collect_advisory_urls(&document, &mut urls);
+    collect_advisory_urls(&document, advisory_ids, &mut urls);
     urls.into_iter()
         .filter(|url| crate::profile::public_https_syntax(url).is_ok())
         .map(|url| FindingReference {
@@ -213,13 +224,16 @@ fn advisory_references(evidence: &crate::model::Evidence, store: &Store) -> Vec<
         .collect()
 }
 
-fn collect_advisory_urls(value: &serde_json::Value, urls: &mut Vec<String>) {
+/// A recorded page lists every advisory of a repository; only those the case claims contribute.
+fn collect_advisory_urls(value: &serde_json::Value, advisory_ids: &[&str], urls: &mut Vec<String>) {
     match value {
         serde_json::Value::Object(fields) => {
-            if let Some(url) = fields
-                .contains_key("ghsa_id")
-                .then(|| fields.get("html_url"))
-                .flatten()
+            let ghsa_id = fields.get("ghsa_id").and_then(serde_json::Value::as_str);
+            if ghsa_id.is_some_and(|id| !advisory_ids.is_empty() && !advisory_ids.contains(&id)) {
+                return;
+            }
+            if let Some(url) = ghsa_id
+                .and_then(|_| fields.get("html_url"))
                 .and_then(serde_json::Value::as_str)
             {
                 urls.push(url.into());
@@ -240,12 +254,12 @@ fn collect_advisory_urls(value: &serde_json::Value, urls: &mut Vec<String>) {
                 }
             }
             for nested in fields.values() {
-                collect_advisory_urls(nested, urls);
+                collect_advisory_urls(nested, advisory_ids, urls);
             }
         }
         serde_json::Value::Array(items) => {
             for item in items {
-                collect_advisory_urls(item, urls);
+                collect_advisory_urls(item, advisory_ids, urls);
             }
         }
         _ => {}
@@ -262,16 +276,22 @@ fn read_context(store: &Store, hash: &str) -> Option<TestContext> {
     test.context
 }
 
-pub(super) fn markdown(findings: &[FindingCheck]) -> String {
-    let mut text = "\n## Referencias y verificación local\n\nCada resultado corresponde al caso y al alcance probado; no valida automáticamente todos los reclamos de una referencia.\n\n".to_owned();
+/// Without `impact_answers` only verdicts are listed, because the case cards already show them.
+pub(super) fn markdown(
+    findings: &[&FindingCheck],
+    impact_answers: bool,
+    language: Language,
+) -> String {
+    let words = text::text(language);
+    let mut text = words.verification_intro.to_owned();
     for finding in findings {
         text.push_str(&format!(
-            "### {} — {:?}\n\n",
+            "### {} — {}\n\n",
             inline(&finding.case_id),
-            finding.decision
+            text::decision(language, finding.decision)
         ));
         if finding.references.is_empty() {
-            text.push_str("- Sin referencia pública registrada.\n");
+            text.push_str(words.no_reference);
         }
         for reference in &finding.references {
             if crate::profile::public_https_syntax(&reference.url).is_ok() {
@@ -279,139 +299,156 @@ pub(super) fn markdown(findings: &[FindingCheck]) -> String {
                     .url
                     .replace(['<', '>', '\n', '\r'], "")
                     .replace('|', "%7C");
-                text.push_str(&format!(
-                    "- **{} {}:** <{}>\n",
-                    inline(&reference.kind),
-                    inline(&reference.id),
-                    url
-                ));
+                let label = text::source_label(language, &reference.kind);
+                let label = if reference.id.starts_with("EV-") {
+                    label
+                } else {
+                    format!("{label} {}", reference.id)
+                };
+                text.push_str(&format!("- **{}:** <{}>\n", inline(&label), url));
             } else {
-                text.push_str("- Referencia inválida: consultar el JSON de auditoría.\n");
+                text.push_str(words.invalid_reference);
             }
         }
-        for check in &finding.local_checks {
-            let status = match check.result {
-                LocalResult::NotRun => "no ejecutada",
-                LocalResult::Blocked => "bloqueada",
-                LocalResult::Reproduced => "reproducido",
-                LocalResult::NotReproduced => "no reproducido; no descarta",
-                LocalResult::Inconclusive => "inconclusa",
-                LocalResult::NotApplicable => "no aplicable en el alcance probado",
-                LocalResult::InvalidEvidence => "evidencia inválida u obsoleta",
-            };
-            let scope = match check.context.as_ref().map(|context| context.mode) {
-                Some(TestMode::WorkspaceCopy) => "copia de workspace",
-                Some(TestMode::ArtifactReproducer) => "proyecto mínimo con artefacto",
-                None => "alcance no registrado",
-            };
-            text.push_str(&format!(
-                "- **Verificación local:** {} · {} · versión {}. {}\n",
-                status,
-                scope,
-                inline(check.artifact_version.as_deref().unwrap_or("desconocida")),
-                inline(&check.detail)
-            ));
+        let needs_evidence = finding
+            .impact
+            .as_ref()
+            .is_none_or(|impact| impact.verdict == ImpactVerdict::NeedsEvidence);
+        let mut checks: Vec<(String, String, usize)> = Vec::new();
+        for check in finding
+            .local_checks
+            .iter()
+            .filter(|check| needs_evidence || check.result != LocalResult::NotRun)
+        {
+            let status = text::local_result(language, &check.result);
+            let scope =
+                text::test_mode(language, check.context.as_ref().map(|context| context.mode));
+            let summary = fill(
+                words.check_summary,
+                &[
+                    &status,
+                    &scope,
+                    &inline(
+                        check
+                            .artifact_version
+                            .as_deref()
+                            .unwrap_or(words.unknown_version),
+                    ),
+                    &inline(&check.detail),
+                ],
+            );
+            let mut details = String::new();
             if let Some(context) = &check.context {
-                text.push_str(&format!("- **Prueba:** {}\n", inline(&context.description)));
+                details.push_str(&format!(
+                    "- **{}:** {}\n",
+                    words.test,
+                    inline(&context.description)
+                ));
             }
             if let Some(path) = &check.attestation_path {
-                text.push_str(&format!(
+                details.push_str(&format!(
                     "- **Attestation:** <{}>\n",
                     path.replace(['<', '>', '\n', '\r'], "")
                 ));
             }
             if let Some(path) = &check.output_path {
-                text.push_str(&format!(
-                    "- **Salida:** <{}>\n",
+                details.push_str(&format!(
+                    "- **{}:** <{}>\n",
+                    words.output,
                     path.replace(['<', '>', '\n', '\r'], "")
                 ));
             }
+            match checks
+                .iter_mut()
+                .find(|(known, known_details, _)| *known == summary && *known_details == details)
+            {
+                Some((_, _, count)) => *count += 1,
+                None => checks.push((summary, details, 1)),
+            }
+        }
+        for (summary, details, count) in checks {
+            let instances = if count > 1 {
+                fill(words.instances_count, &[&count])
+            } else {
+                String::new()
+            };
+            text.push_str(&format!(
+                "- **{}{instances}:** {summary}\n{details}",
+                words.local_check
+            ));
         }
         if let Some(impact) = &finding.impact {
-            text.push_str(&format!(
-                "- **Impacto en el proyecto:** {} · confianza {}.\n",
-                impact_label(impact.verdict),
-                confidence_label(impact.confidence)
+            text.push_str(&fill(
+                words.impact_line,
+                &[
+                    &text::impact_verdict(language, impact.verdict),
+                    &text::confidence(language, impact.confidence),
+                ],
             ));
+            let single = impact.instances.len() == 1;
+            let mut groups: Vec<(String, String, Vec<&str>)> = Vec::new();
             for instance in &impact.instances {
-                text.push_str(&format!(
-                    "  - **Instancia {}:** {} · confianza {}.\n",
-                    inline(&instance.instance_id),
-                    impact_label(instance.verdict),
-                    confidence_label(instance.confidence)
-                ));
-                for answer in impact
-                    .answers
-                    .iter()
-                    .filter(|answer| answer.instance_id == instance.instance_id)
-                {
-                    text.push_str(&format!(
-                        "    - {}: {}. {}\n",
-                        impact_question_label(answer.question),
-                        impact_answer_label(answer.answer),
-                        inline(&answer.rationale)
-                    ));
+                if single && !impact_answers {
+                    continue;
                 }
-                for reason in &instance.reasons {
-                    text.push_str(&format!("    - Criterio: {}\n", inline(reason)));
-                }
-                if !instance.open_questions.is_empty() {
-                    let questions = instance
-                        .open_questions
+                let verdict = fill(
+                    words.instance_verdict,
+                    &[
+                        &text::impact_verdict(language, instance.verdict),
+                        &text::confidence(language, instance.confidence),
+                    ],
+                );
+                let mut body = String::new();
+                if impact_answers {
+                    for answer in impact
+                        .answers
                         .iter()
-                        .map(|question| impact_question_label(*question))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    text.push_str(&format!(
-                        "    - Preguntas abiertas: {}.\n",
-                        inline(&questions)
-                    ));
+                        .filter(|answer| answer.instance_id == instance.instance_id)
+                    {
+                        body.push_str(&format!(
+                            "    - {}: {}. {}\n",
+                            text::impact_question(language, answer.question),
+                            text::impact_answer(language, answer.answer),
+                            inline(&answer.rationale)
+                        ));
+                    }
+                    for reason in &instance.reasons {
+                        body.push_str(&format!("    - {}: {}\n", words.criterion, inline(reason)));
+                    }
+                    if !instance.open_questions.is_empty() {
+                        let questions = instance
+                            .open_questions
+                            .iter()
+                            .map(|question| text::impact_question(language, *question))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        body.push_str(&format!(
+                            "    - {}: {}.\n",
+                            words.open_questions,
+                            inline(&questions)
+                        ));
+                    }
+                }
+                match groups
+                    .iter_mut()
+                    .find(|(known, known_body, _)| *known == verdict && *known_body == body)
+                {
+                    Some((_, _, ids)) => ids.push(&instance.instance_id),
+                    None => groups.push((verdict, body, vec![&instance.instance_id])),
                 }
             }
+            for (verdict, body, ids) in groups {
+                let label = match ids.as_slice() {
+                    [id] => fill(words.instance, &[&inline(id)]),
+                    [first, ..] => fill(words.instances_example, &[&ids.len(), &inline(first)]),
+                    [] => continue,
+                };
+                text.push_str(&format!("  - **{label}:** {verdict}\n{body}"));
+            }
         } else {
-            text.push_str("- **Impacto en el proyecto:** sin evaluar. Ejecute `vulnbell impact` para obtener las preguntas deterministas.\n");
+            text.push_str(words.impact_not_assessed_long);
         }
         text.push('\n');
     }
     text
-}
-
-fn impact_label(verdict: ImpactVerdict) -> &'static str {
-    match verdict {
-        ImpactVerdict::UrgentUpdate => "actualización urgente",
-        ImpactVerdict::PriorityUpdate => "actualización prioritaria",
-        ImpactVerdict::RoutineUpdate => "actualización planificada",
-        ImpactVerdict::Mitigated => "mitigado",
-        ImpactVerdict::NotAffected => "no afectado según el alcance probado",
-        ImpactVerdict::NeedsEvidence => "requiere evidencia del proyecto",
-    }
-}
-
-fn confidence_label(confidence: ImpactConfidence) -> &'static str {
-    match confidence {
-        ImpactConfidence::High => "alta",
-        ImpactConfidence::Medium => "media",
-        ImpactConfidence::Low => "baja",
-    }
-}
-
-fn impact_question_label(question: ImpactQuestionId) -> &'static str {
-    match question {
-        ImpactQuestionId::ArtifactDeployed => "artefacto desplegado",
-        ImpactQuestionId::AffectedFeatureUsed => "funcionalidad afectada en uso",
-        ImpactQuestionId::UntrustedInputReachesFeature => {
-            "entrada no confiable alcanza la funcionalidad"
-        }
-        ImpactQuestionId::RequiredConditionsPresent => "condiciones requeridas presentes",
-        ImpactQuestionId::FixOrMitigationApplied => "corrección o mitigación aplicada",
-    }
-}
-
-fn impact_answer_label(answer: ImpactAnswerValue) -> &'static str {
-    match answer {
-        ImpactAnswerValue::Yes => "sí",
-        ImpactAnswerValue::No => "no",
-        ImpactAnswerValue::Unknown => "desconocido",
-        ImpactAnswerValue::NotApplicable => "no aplica",
-    }
 }

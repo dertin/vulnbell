@@ -24,7 +24,7 @@ Runner configurations are stored in `<data directory>/runners/<id>.json`. `vulnb
 
 Examples are available in [`examples/runner-codex.json`](../examples/runner-codex.json) and [`examples/runner-opencode.json`](../examples/runner-opencode.json).
 
-Both adapters clear the inherited environment and verify the exact tested client version. Workspace extraction and reporting have no tools. Public discovery and research have public web search without workspace access. The CLI validates structured output separately from the role's permissions. `runners check` verifies the installed client and capability policy. Run `vulnbell run --project <profile> --now` to check provider access, credentials, research output, and report delivery together.
+Both adapters clear the inherited environment and verify the exact tested client version. Workspace extraction and reporting have no tools. Public discovery and research have public web search without workspace access. The CLI validates structured output separately from the role's permissions. `runners check` verifies the installed client and capability policy. `runners check <id> --live` also sends one public research request through the runner and reports `web_research: false` with the reason when the client's web tools do not work. Some clients exit successfully in that case. The probe uses the configured model. Run `vulnbell run --project <profile> --now` to check provider access, credentials, research output, and report delivery together.
 
 ## Project schedule
 

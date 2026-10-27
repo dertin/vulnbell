@@ -80,15 +80,16 @@ Each run writes a Markdown file below the schedule's absolute `report_dir`. `vul
 
 ```sh
 vulnbell status --json
-vulnbell scan --project radar.yaml --json
-vulnbell inbox --project radar.yaml --json
-vulnbell impact SIG-... --project radar.yaml
-vulnbell report --project radar.yaml --audience cyber
+vulnbell scan --project vulnbell.yaml --json
+vulnbell inbox --project vulnbell.yaml --json
+vulnbell impact SIG-... --project vulnbell.yaml
+vulnbell report --project vulnbell.yaml --audience cyber
+vulnbell tools pending --project vulnbell.yaml
 vulnbell runners list --json
-vulnbell run --project radar.yaml --now
+vulnbell run --project vulnbell.yaml --now
 ```
 
-`status` lists registered projects, profile availability, scan outcomes, scheduler health, skipped runs, agent failures, and the latest report. `impact` prints five fixed questions for each affected artifact. Save reviewed answers using `schema impact`; the CLI calculates update urgency from those answers and their registered evidence. `report` shows the verdict, confidence, answered conditions, rationales, and remaining questions. `run --now` runs a configured monitor and writes a fresh report. Reports show incomplete coverage; `scan` returns exit code 2 when coverage is partial. Generated CLI and scheduled reports currently use Spanish; the documentation and sample report use English.
+`status` lists registered projects, profile availability, scan outcomes, scheduler health, skipped runs, agent failures, and the latest report. `impact` prints five fixed questions for each affected artifact. Save reviewed answers using `schema impact`; the CLI calculates update urgency from those answers and their registered evidence. `report` shows the verdict, confidence, answered conditions, rationales, and remaining questions. `run --now` runs a configured monitor and writes a fresh report. Reports show incomplete coverage; `scan` returns exit code 2 when coverage is partial. Reports use the profile's `report.language`: `en` (default) or `es`. Technical terms that the language usually leaves untranslated, and quoted source text, stay as they are.
 
 With a workspace, the agent first reviews source, lockfiles, configuration, and reachable call paths without executing project code. If a dynamic check is still needed, only reviewed files are copied into Microsandbox. Without a workspace, VulnBell assesses the exact artifact and published conditions, may use a minimal isolated reproducer, and keeps project-specific deployment or reachability explicitly unknown.
 

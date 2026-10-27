@@ -48,15 +48,26 @@ pub struct VerificationBlocker {
     pub reason: String,
 }
 
+/// Without `instance_id` the blocker applies to every instance of the current case.
 pub fn record_blocker(
     store: &mut Store,
     id: &str,
-    instance_id: &str,
+    instance_id: Option<&str>,
     reason: &str,
 ) -> Result<Case> {
     let _lock = store.lock()?;
     let mut case = store.case(id)?;
-    append_blocker(&mut case, store, instance_id, reason)?;
+    let instance_ids: Vec<String> = match instance_id {
+        Some(instance_id) => vec![instance_id.to_owned()],
+        None => case
+            .instances
+            .iter()
+            .map(|instance| instance.id.clone())
+            .collect(),
+    };
+    for instance_id in &instance_ids {
+        append_blocker(&mut case, store, instance_id, reason)?;
+    }
     store.save_case(&case)?;
     Ok(case)
 }

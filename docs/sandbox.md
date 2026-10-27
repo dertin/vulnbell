@@ -4,7 +4,7 @@ Microsandbox **0.7.11** is the only backend for active tests. Tests never fall b
 
 ## Setup
 
-Install the runtime from its official distribution, then run:
+Install the runtime from its official [v0.7.11 release](https://github.com/superradcompany/microsandbox/releases/tag/v0.7.11). On Linux the user needs read/write access to `/dev/kvm`. Then run:
 
 ```sh
 msb --version
@@ -13,7 +13,11 @@ vulnbell sandbox prepare
 vulnbell sandbox status
 ```
 
-`prepare` checks the version and prerequisites. It uses a private VulnBell `MSB_HOME` and downloads and prepares an official OCI image pinned by digest. The base image is Alpine 3.22.7, index `sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f`. It also records the architecture-specific manifest digest and executable SHA-256. The global Microsandbox installation is not changed. Set `VULNBELL_MSB_EXECUTABLE` to select the executable during setup.
+`prepare` checks the version and prerequisites. It uses a private VulnBell `MSB_HOME` and downloads and prepares an official OCI image pinned by digest. The base image is Alpine 3.22.7, index `sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f`. It also records the architecture-specific manifest digest and executable SHA-256. The global Microsandbox installation is not changed. Set `VULNBELL_MSB_EXECUTABLE` to select the executable during setup. If `msb` is missing or has another version, `prepare` and `doctor` name the release to install. When `msb doctor` fails, they show its failing checks.
+
+Report JSON lists `verification_pending` for open cases that lack an impact assessment, or that have a `needs_evidence` verdict and no recorded local test or blocker. The Markdown report starts with an incomplete-report banner until those items are resolved. `case <id> --validation-blocker <reason>` records the blocker for every instance of the case; add `--instance <id>` to limit it to one.
+
+A current `lab_reproduced` attestation confirms the affected version only for the instance it tested. In a case with several instances, for example every artifact of one upstream release, `impact` can then derive an update priority from that instance while the others stay unconfirmed.
 
 For a local project, stage only the reviewed files needed by the test:
 

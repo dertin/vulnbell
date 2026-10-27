@@ -5,19 +5,93 @@ use crate::{
 };
 use anyhow::{Result, bail};
 use rusqlite::params;
-use std::path::Path;
+use std::{collections::BTreeSet, path::Path};
 
 pub(crate) mod automation;
 mod contracts;
 mod sources;
 mod workspace;
 pub use contracts::*;
+pub use sources::{RegistryFailure, RegistryRun};
+
+/// Discovery state is keyed by project and workspace roots only, so editing components,
+/// research topics or schedules keeps completed file reviews.
+fn roots(profile: &Profile, path: &Path) -> Result<Vec<String>> {
+    let profile_path = path.canonicalize()?;
+    let base = profile_path.parent().unwrap_or(Path::new("/"));
+    let mut roots: Vec<String> = profile
+        .workspaces
+        .iter()
+        .map(|workspace| {
+            let joined = base.join(workspace);
+            joined
+                .canonicalize()
+                .unwrap_or(joined)
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    roots.sort_unstable();
+    Ok(roots)
+}
 
 pub fn scope(profile: &Profile, path: &Path) -> Result<String> {
+    let roots = roots(profile, path)?;
     Ok(crate::digest(&serde_json::to_vec(&(
-        profile,
-        path.canonicalize()?,
+        "discovery-scope-v4",
+        profile.project_id,
+        roots,
     ))?))
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct RegistryMapping {
+    #[serde(flatten)]
+    pub run: RegistryRun,
+    pub summary: DiscoverySummary,
+}
+
+/// Maps pending components from their public registry records (crates.io, npm, PyPI,
+/// Maven Central) without agent tasks; unsupported ecosystems stay pending for the agent.
+pub fn map_registries(
+    profile: &Profile,
+    path: &Path,
+    store: &mut Store,
+    limit: usize,
+    offline: bool,
+) -> Result<RegistryMapping> {
+    if profile.discovery != DiscoveryMode::Agent {
+        bail!("agent discovery is not enabled in this profile");
+    }
+    if !(1..=500).contains(&limit) {
+        bail!("registry mapping limit must be 1..500 packages");
+    }
+    if store.meta("last_snapshot")?.is_none() {
+        bail!("run scan before mapping registry sources");
+    }
+    let _lock = store.lock()?;
+    let scope = scope(profile, path)?;
+    let mut http = crate::network::Http::new(store, offline);
+    let first_party = sources::first_party(&roots(profile, path)?);
+    let run = sources::map_registries(store, &scope, &first_party, &mut http, limit)?;
+    Ok(RegistryMapping {
+        run,
+        summary: summary(profile, path, store)?,
+    })
+}
+
+pub fn reopen(
+    profile: &Profile,
+    path: &Path,
+    store: &mut Store,
+    relative: &str,
+) -> Result<DiscoverySummary> {
+    if profile.discovery != DiscoveryMode::Agent {
+        bail!("agent discovery is not enabled in this profile");
+    }
+    let _lock = store.lock()?;
+    workspace::reopen(store, &scope(profile, path)?, relative)?;
+    summary(profile, path, store)
 }
 
 pub fn plan(profile: &Profile, path: &Path, store: &Store, limit: usize) -> Result<DiscoveryPlan> {
@@ -34,7 +108,13 @@ pub fn plan(profile: &Profile, path: &Path, store: &Store, limit: usize) -> Resu
         Vec::new()
     };
     let components = if profile.discovery == DiscoveryMode::Agent {
-        sources::targets(store, &scope, limit)?
+        sources::targets(
+            store,
+            &scope,
+            &sources::first_party(&roots(profile, path)?),
+            sources::Mapper::Agent,
+            limit,
+        )?
     } else {
         Vec::new()
     };
@@ -122,11 +202,14 @@ pub fn acquire(profile: &Profile, store: &Store, url: &str) -> Result<crate::mod
     sources::acquire(store, url)
 }
 
+/// Native inventory gaps that general discovery covers are replaced by the discovery row:
+/// unsupported manifests it already reviewed or excluded, and workspaces without lockfiles.
 pub fn augment(
     profile: &Profile,
     path: &Path,
     store: &Store,
     instances: &mut Vec<Instance>,
+    inventory_coverage: &mut Vec<Coverage>,
 ) -> Result<Vec<Coverage>> {
     if profile.discovery == DiscoveryMode::Off {
         return Ok(vec![Coverage::new(
@@ -138,9 +221,17 @@ pub fn augment(
     }
     let scope = scope(profile, path)?;
     let preparation = workspace::prepare(profile, path, store, &scope);
+    let settled = workspace::settled_paths(store, &scope)?;
+    inventory_coverage.retain(|row| {
+        row.source != "inventory"
+            || row.detail != crate::inventory::NO_NATIVE_INVENTORY
+                && !(row.detail == crate::inventory::UNSUPPORTED_MANIFEST
+                    && settled.contains(&row.scope))
+    });
     append_workspace_instances(store, &scope, instances)?;
     sources::apply(store, &scope, instances)?;
-    let summary = summary_for_instances(profile, store, &scope, instances)?;
+    let first_party = sources::first_party(&roots(profile, path)?);
+    let summary = summary_for_instances(profile, store, &scope, &first_party, instances)?;
     let mut coverage_rows = vec![coverage(&summary)];
     if let Err(error) = preparation {
         coverage_rows.push(Coverage::new(
@@ -194,13 +285,15 @@ pub fn summary(profile: &Profile, path: &Path, store: &Store) -> Result<Discover
     }
     let scope = scope(profile, path)?;
     append_workspace_instances(store, &scope, &mut instances)?;
-    summary_for_instances(profile, store, &scope, &instances)
+    let first_party = sources::first_party(&roots(profile, path)?);
+    summary_for_instances(profile, store, &scope, &first_party, &instances)
 }
 
 fn summary_for_instances(
     profile: &Profile,
     store: &Store,
     scope: &str,
+    first_party: &BTreeSet<String>,
     instances: &[Instance],
 ) -> Result<DiscoverySummary> {
     let count = |table: &str, state: &str| -> Result<usize> {
@@ -219,7 +312,8 @@ fn summary_for_instances(
     )?;
     let files_pending = count("discovery_files", "pending")?;
     let files_unavailable = count("discovery_files", "unavailable")?;
-    let (components_unmapped, sources_unavailable) = sources::counts(store, scope, instances)?;
+    let (components_unmapped, sources_unavailable) =
+        sources::counts(store, scope, first_party, instances)?;
     let complete = enabled
         && initialized_roots >= profile.workspaces.len()
         && directories_pending == 0
@@ -288,9 +382,11 @@ pub fn source_map(
         return Ok(Vec::new());
     }
     let snapshot = store.latest()?;
+    let first_party = sources::first_party(&roots(profile, path)?);
     let fingerprints: std::collections::BTreeMap<_, _> = snapshot
         .instances
         .iter()
+        .filter(|instance| !first_party.contains(&instance.reference))
         .map(|instance| (instance.id.as_str(), sources::fingerprint(instance)))
         .collect();
     Ok(sources::all(store, &scope(profile, path)?)?
@@ -312,22 +408,27 @@ pub fn gaps(
         bail!("gap page size must be 1..1000");
     }
     let scope = scope(profile, path)?;
-    let mut query=store.connection.prepare("SELECT id,path,state,reason FROM (SELECT id,path,state,reason FROM discovery_files WHERE scope=?1 AND state IN ('excluded','unavailable','removed') UNION ALL SELECT 'directory:'||root||':'||path AS id,path,state,stamp AS reason FROM discovery_walk WHERE scope=?1 AND state IN ('unavailable','removed')) WHERE id>?2 ORDER BY id LIMIT ?3")?;
-    let mut items: Vec<DiscoveryGap> = query
+    // Unavailable entries block completeness and come before removed and audited exclusions.
+    let mut query=store.connection.prepare("SELECT cursor,id,path,state,reason FROM (SELECT CASE state WHEN 'unavailable' THEN '0' WHEN 'removed' THEN '1' ELSE '2' END||':'||id AS cursor,id,path,state,reason FROM (SELECT id,path,state,reason FROM discovery_files WHERE scope=?1 AND state IN ('excluded','unavailable','removed') UNION ALL SELECT 'directory:'||root||':'||path AS id,path,state,stamp AS reason FROM discovery_walk WHERE scope=?1 AND state IN ('excluded','unavailable','removed'))) WHERE cursor>?2 ORDER BY cursor LIMIT ?3")?;
+    let mut rows: Vec<(String, DiscoveryGap)> = query
         .query_map(params![scope, after, limit + 1], |row| {
-            Ok(DiscoveryGap {
-                id: row.get(0)?,
-                path: row.get(1)?,
-                state: row.get(2)?,
-                reason: row.get(3)?,
-            })
+            Ok((
+                row.get(0)?,
+                DiscoveryGap {
+                    id: row.get(1)?,
+                    path: row.get(2)?,
+                    state: row.get(3)?,
+                    reason: row.get(4)?,
+                },
+            ))
         })?
         .collect::<rusqlite::Result<_>>()?;
-    let next_cursor = if items.len() > limit {
-        items.truncate(limit);
-        items.last().map(|item| item.id.clone())
+    let next_cursor = if rows.len() > limit {
+        rows.truncate(limit);
+        rows.last().map(|(cursor, _)| cursor.clone())
     } else {
         None
     };
+    let items = rows.into_iter().map(|(_, gap)| gap).collect();
     Ok(GapPage { items, next_cursor })
 }

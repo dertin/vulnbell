@@ -52,7 +52,7 @@ fn unavailable_guest_returns_inconclusive_without_executing_the_test_on_the_host
             [project_data.join("state.sqlite").to_str().unwrap()],
         )
         .unwrap();
-    let profile_path = directory.path().join("radar.yaml");
+    let profile_path = directory.path().join("vulnbell.yaml");
     fs::write(&profile_path,format!("schema: 1\nproject_id: {project}\nname: no-host-fallback\ncomponents:\n - ref: synthetic-no-host-fallback\n   version: '0.0.1'\n")).unwrap();
     let marker = directory.path().join("must-never-exist");
     let quoted = marker.to_string_lossy().replace('\'', "'\\''");

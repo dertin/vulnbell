@@ -74,7 +74,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
     let store = Store::open(&project).unwrap();
     let inventory = vulnbell::inventory::discover(
         &["workspace".into()],
-        &directory.path().join("radar.yaml"),
+        &directory.path().join("vulnbell.yaml"),
         &store,
         100,
     );
@@ -92,9 +92,11 @@ fn concurrent_scans_and_future_schema_versions_fail_closed() {
     let project = uuid::Uuid::new_v4().to_string();
     let store = Store::open(&project).unwrap();
     let lock = store.lock().unwrap();
-    assert!(store.lock().is_err());
+    let started = std::time::Instant::now();
+    assert!(store.lock_within(1).is_err());
+    assert!(started.elapsed() >= std::time::Duration::from_secs(1));
     drop(lock);
-    assert!(store.lock().is_ok());
+    assert!(store.lock_within(0).is_ok());
     store
         .connection
         .execute_batch("PRAGMA user_version=99")
@@ -168,7 +170,7 @@ fn a_trusted_agent_can_update_an_existing_large_state_file_while_guest_limits_re
 #[test]
 fn missing_supported_inventory_and_parser_failures_are_explicit_without_source_content() {
     let directory = tempfile::tempdir().unwrap();
-    let profile = directory.path().join("radar.yaml");
+    let profile = directory.path().join("vulnbell.yaml");
     let workspace = directory.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
     std::fs::write(workspace.join("go.mod"), "module synthetic\n").unwrap();
@@ -222,7 +224,7 @@ fn inventory_budget_is_shared_across_lockfiles_and_workspaces() {
     let store = vulnbell::store::Store::open(&project).unwrap();
     let inventory = vulnbell::inventory::discover(
         &["first".into(), "second".into()],
-        &directory.path().join("radar.yaml"),
+        &directory.path().join("vulnbell.yaml"),
         &store,
         1,
     );
@@ -236,7 +238,7 @@ fn inventory_budget_is_shared_across_lockfiles_and_workspaces() {
     );
     let empty = vulnbell::inventory::discover(
         &["first".into()],
-        &directory.path().join("radar.yaml"),
+        &directory.path().join("vulnbell.yaml"),
         &store,
         0,
     );

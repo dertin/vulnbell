@@ -22,6 +22,7 @@ pub struct DiscoverySummary {
     pub files_excluded: usize,
     pub files_unavailable: usize,
     pub components_unmapped: usize,
+    /// Mapped components without a repository, so upstream research cannot cover them.
     pub sources_unavailable: usize,
     pub complete: bool,
 }
@@ -94,6 +95,10 @@ pub struct FileReview {
 pub struct PackageObservation {
     pub component: Component,
     pub excerpt: String,
+    /// Literal version definition from the same chunk when `excerpt` references it through a
+    /// `${name}` placeholder (for example a Maven `<properties>` entry).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_excerpt: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]

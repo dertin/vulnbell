@@ -321,6 +321,27 @@ fn all_published_json_schemas_match_their_rust_contracts() {
             serde_json::to_value(schemars::schema_for!(vulnbell::operations::StatusReport))
                 .unwrap(),
         ),
+        (
+            "decisions",
+            serde_json::to_value(schemars::schema_for!(
+                vulnbell::tools::draft::ResearchDecisions
+            ))
+            .unwrap(),
+        ),
+        (
+            "impact-batch",
+            serde_json::to_value(schemars::schema_for!(vulnbell::tools::cases::ImpactBatch))
+                .unwrap(),
+        ),
+        (
+            "verdict-batch",
+            serde_json::to_value(schemars::schema_for!(vulnbell::tools::cases::VerdictBatch))
+                .unwrap(),
+        ),
+        (
+            "items",
+            serde_json::to_value(schemars::schema_for!(Vec<vulnbell::tools::Item>)).unwrap(),
+        ),
     ];
     for (name, schema) in generated {
         let committed: serde_json::Value =

@@ -5,6 +5,18 @@ use vulnbell::{
     profile::{self, Profile},
     store::Store,
 };
+/// The parallel `status` test opens every project read-only, and SQLite can recreate WAL side
+/// files while another test deletes its project directory.
+fn remove_project(project_id: &str) {
+    let directory = vulnbell::store::data_root().join(project_id);
+    for _ in 0..20 {
+        if fs::remove_dir_all(&directory).is_ok() || !directory.exists() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    fs::remove_dir_all(&directory).unwrap();
+}
 fn cache(
     store: &Store,
     method: &str,
@@ -36,7 +48,7 @@ fn manual_then_mixed_monitor_is_auditable_and_preserves_history() {
     let directory = tempfile::tempdir().unwrap();
     // Unique project UUID isolates state without mutating process environment in parallel tests.
     let project = uuid::Uuid::new_v4();
-    let path = directory.path().join("radar.yaml");
+    let path = directory.path().join("vulnbell.yaml");
     let yaml = format!(
         "schema: 1\nproject_id: {project}\nname: contract-fixture\ncomponents:\n  - ref: pkg:npm/lodash\n    version: '4.17.20'\nresearch:\n  web: agent\n"
     );
@@ -190,12 +202,12 @@ fn manual_then_mixed_monitor_is_auditable_and_preserves_history() {
     assert_eq!(research_reopened.decision, Decision::Review);
     assert_ne!(research_reopened.facts_sha256, research_case.facts_sha256);
     drop(store);
-    fs::remove_dir_all(vulnbell::store::data_root().join(project.to_string())).unwrap();
+    remove_project(&project.to_string());
 }
 #[test]
 fn cli_scaffold_is_valid_and_scan_rejects_empty_scope() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("radar.yaml");
+    let path = directory.path().join("vulnbell.yaml");
     let output = assert_cmd::Command::new(assert_cmd::cargo::cargo_bin!("vulnbell"))
         .args(["init", "--output"])
         .arg(&path)
@@ -218,16 +230,13 @@ fn cli_scaffold_is_valid_and_scan_rejects_empty_scope() {
         .assert()
         .failure();
     assert!(profile::load(Path::new(&path)).is_ok());
-    fs::remove_dir_all(
-        vulnbell::store::data_root().join(initialized["project_id"].as_str().unwrap()),
-    )
-    .unwrap();
+    remove_project(initialized["project_id"].as_str().unwrap());
 }
 
 #[test]
 fn status_lists_registered_projects_and_persisted_schedule_outcomes() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("radar.yaml");
+    let path = directory.path().join("vulnbell.yaml");
     let output = assert_cmd::Command::new(assert_cmd::cargo::cargo_bin!("vulnbell"))
         .args(["init", "--output"])
         .arg(&path)
@@ -346,7 +355,7 @@ fn status_lists_registered_projects_and_persisted_schedule_outcomes() {
             .contains("profile unavailable or invalid")
     );
 
-    fs::remove_dir_all(vulnbell::store::data_root().join(project_id)).unwrap();
+    remove_project(project_id);
     fs::remove_file(vulnbell::runners::config_path(&runner_id).unwrap()).unwrap();
 }
 
@@ -354,7 +363,7 @@ fn status_lists_registered_projects_and_persisted_schedule_outcomes() {
 fn offline_scan_skips_a_configured_notification_without_resolving_its_secret() {
     let directory = tempfile::tempdir().unwrap();
     let project = uuid::Uuid::new_v4().to_string();
-    let path = directory.path().join("radar.yaml");
+    let path = directory.path().join("vulnbell.yaml");
     fs::write(&path, format!("schema: 1\nproject_id: {project}\nname: offline-notifications\ncomponents:\n  - ref: unknown-product\n")).unwrap();
     let mut profile = profile::load(&path).unwrap();
     profile.alerts.webhook_env = Some("VULNBELL_TEST_ABSENT_WEBHOOK".into());
@@ -363,5 +372,143 @@ fn offline_scan_skips_a_configured_notification_without_resolving_its_secret() {
         snapshot.alert_status,
         "offline: notification delivery skipped"
     );
-    fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+    remove_project(&project);
+}
+
+#[test]
+fn a_repository_advisory_confirms_the_version_and_absorbs_the_research_case() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = uuid::Uuid::new_v4();
+    let path = directory.path().join("vulnbell.yaml");
+    fs::write(
+        &path,
+        format!(
+            "schema: 1\nproject_id: {project}\nname: repository-advisories\ncomponents:\n  - ref: pkg:cargo/synthetic-crate\n    version: '1.2.0'\n    upstream: https://github.com/synthetic-org/synthetic-crate\nresearch:\n  web: agent\n"
+        ),
+    )
+    .unwrap();
+    let profile = profile::load(&path).unwrap();
+    let mut store = Store::open(&project.to_string()).unwrap();
+    let advisories_url = "https://api.github.com/repos/synthetic-org/synthetic-crate/security-advisories?state=published&per_page=100&page=1";
+    cache(&store, "GET", advisories_url, None, json!([]));
+    let first = vulnbell::engine::scan(&profile, &path, true).unwrap();
+    assert!(first.cases.is_empty());
+    let instance = first.instances[0].clone();
+    let research = vulnbell::model::Case {
+        schema_version: 1,
+        case_id: "SIG-synthetic-research-advisory".into(),
+        project_id: project.to_string(),
+        snapshot_id: first.id.clone(),
+        instances: vec![instance.clone()],
+        claims: Vec::new(),
+        upstream_events: vec![vulnbell::model::UpstreamEvent {
+            provider: "github".into(),
+            kind: "advisory".into(),
+            id: "synthetic-org/synthetic-crate/GHSA-synt-hetc-0001".into(),
+            url: "https://github.com/synthetic-org/synthetic-crate/security/advisories/GHSA-synt-hetc-0001".into(),
+            title: "SYNTHETIC fixture".into(),
+            updated_at: None,
+            sha256: "0".repeat(64),
+            source_facts: Default::default(),
+        }],
+        evidence: Vec::new(),
+        coverage: Vec::new(),
+        applicability: Applicability::Unknown,
+        verification: Verification::Inconclusive,
+        decision: Decision::Review,
+        facts_sha256: "synthetic".into(),
+        open_questions: Vec::new(),
+        suggested_search_queries: Vec::new(),
+        sandbox: vulnbell::sandbox::availability(),
+        updated_at: vulnbell::now(),
+    };
+    store.save_case(&research).unwrap();
+    cache(
+        &store,
+        "GET",
+        advisories_url,
+        None,
+        json!([
+            {"ghsa_id":"GHSA-synt-hetc-0001","cve_id":null,"summary":"SYNTHETIC affected","withdrawn_at":null,
+             "vulnerabilities":[{"package":{"ecosystem":"rust","name":"synthetic-crate"},"vulnerable_version_range":">= 1.0.0, < 1.3.0","patched_versions":">= 1.3.0"}]},
+            {"ghsa_id":"GHSA-synt-hetc-0002","cve_id":null,"summary":"SYNTHETIC older line","withdrawn_at":null,
+             "html_url":"https://github.com/synthetic-org/synthetic-crate/security/advisories/GHSA-synt-hetc-0002",
+             "references":["https://github.com/synthetic-org/synthetic-crate/pull/2"],
+             "vulnerabilities":[{"package":{"ecosystem":"rust","name":"synthetic-crate"},"vulnerable_version_range":"< 1.0.0"}]},
+            {"ghsa_id":"GHSA-synt-hetc-0003","cve_id":null,"summary":"SYNTHETIC ambiguous","withdrawn_at":null,
+             "vulnerabilities":[{"package":{"ecosystem":"rust","name":"synthetic-crate"},"vulnerable_version_range":"< 0.5.16, >= 0.6.0 < 0.6.3"}]},
+            {"ghsa_id":"GHSA-synt-hetc-0004","cve_id":null,"summary":"SYNTHETIC fixed on the line","withdrawn_at":null,
+             "vulnerabilities":[{"package":{"ecosystem":"rust","name":"synthetic-crate"},"vulnerable_version_range":">= 0.9.0","patched_versions":"1.1.0"}]}
+        ]),
+    );
+    let second = vulnbell::engine::scan(&profile, &path, true).unwrap();
+    let affected = |snapshot: &vulnbell::model::Snapshot| {
+        snapshot
+            .cases
+            .iter()
+            .filter(|case| case.decision == Decision::Actionable)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let cases = affected(&second);
+    assert_eq!(cases.len(), 1);
+    assert_eq!(cases[0].case_id, research.case_id);
+    assert_eq!(cases[0].claims[0].source, "github_repository");
+    assert_eq!(cases[0].upstream_events.len(), 1);
+    let fixed: Vec<_> = second
+        .cases
+        .iter()
+        .filter(|case| {
+            case.claims
+                .iter()
+                .any(|claim| claim.id == "GHSA-synt-hetc-0004")
+        })
+        .collect();
+    assert_eq!(fixed.len(), 1);
+    assert_eq!(fixed[0].decision, Decision::Informational);
+    assert_eq!(second.cases.len(), 2);
+    let coverage = second
+        .coverage
+        .iter()
+        .find(|item| item.source == "repository_advisories" && item.scope == instance.id)
+        .unwrap();
+    assert!(coverage.detail.contains("GHSA-synt-hetc-0003"));
+    let report = vulnbell::output::morning_report(&second, &store, "cyber").unwrap();
+    assert_eq!(report.actionable.len(), 1);
+    assert_eq!(
+        report.actionable[0].advisory_details[0].fixed_versions,
+        ["1.3.0"]
+    );
+    let check = report
+        .finding_checks
+        .iter()
+        .find(|check| check.case_id == research.case_id)
+        .unwrap();
+    assert!(
+        check
+            .references
+            .iter()
+            .all(|reference| !reference.url.contains("GHSA-synt-hetc-0002")
+                && !reference.url.ends_with("/pull/2"))
+    );
+
+    let late_research = vulnbell::model::Case {
+        case_id: "SIG-0-late-research".into(),
+        snapshot_id: second.id.clone(),
+        ..research.clone()
+    };
+    store.save_case(&late_research).unwrap();
+    let third = vulnbell::engine::scan(&profile, &path, true).unwrap();
+    let cases = affected(&third);
+    assert_eq!(cases.len(), 1);
+    assert_eq!(cases[0].case_id, research.case_id);
+    assert_eq!(cases[0].upstream_events.len(), 1);
+    assert!(
+        third
+            .cases
+            .iter()
+            .all(|case| case.case_id != late_research.case_id)
+    );
+    drop(store);
+    remove_project(&project.to_string());
 }

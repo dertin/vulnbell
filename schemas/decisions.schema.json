@@ -1,0 +1,146 @@
+{
+  "$defs": {
+    "Assessment": {
+      "description": "`not_applicable`: a security claim that, per the cited source, does not affect the monitored\nversion or build. It requires `not_applicable_reason`, is counted and remembered, and opens no case.",
+      "enum": [
+        "review",
+        "informational",
+        "not_applicable",
+        "ignore"
+      ],
+      "type": "string"
+    },
+    "ItemDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "assessment": {
+          "$ref": "#/$defs/Assessment"
+        },
+        "instance_ids": {
+          "default": [],
+          "description": "Instances of the item's upstream the reading applies to; empty means all of them.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "key": {
+          "description": "Item key reported by `tools hits`.",
+          "type": "string"
+        },
+        "not_applicable_reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NotApplicableReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Required with `not_applicable`; forbidden otherwise."
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "source_facts": {
+          "$ref": "#/$defs/SourceFacts",
+          "default": {
+            "affected_versions": "",
+            "fix_reference": "",
+            "fixed_in": "",
+            "identifiers": [],
+            "required_feature": ""
+          }
+        },
+        "updated_at": {
+          "description": "The item's `updated_at` when it was reviewed; a later update lists the item again.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "updated_at",
+        "assessment",
+        "rationale"
+      ],
+      "type": "object"
+    },
+    "NotApplicableReason": {
+      "oneOf": [
+        {
+          "const": "fixed_in_monitored_version",
+          "description": "The monitored resolved version already contains the fix.",
+          "type": "string"
+        },
+        {
+          "const": "affects_other_version",
+          "description": "Only other release lines or unreleased branches are affected.",
+          "type": "string"
+        },
+        {
+          "const": "component_not_in_build",
+          "description": "The affected module, feature or platform is absent from the monitored build.",
+          "type": "string"
+        }
+      ]
+    },
+    "SourceFacts": {
+      "additionalProperties": false,
+      "description": "What an upstream item itself states, quoted or closely paraphrased; an empty field means the\nitem does not say. These are the item's statements, not the agent's conclusions.",
+      "properties": {
+        "affected_versions": {
+          "default": "",
+          "description": "Versions or release lines the item says are affected.",
+          "type": "string"
+        },
+        "fix_reference": {
+          "default": "",
+          "description": "Pull request, commit or release that carries the fix.",
+          "type": "string"
+        },
+        "fixed_in": {
+          "default": "",
+          "description": "Version, release or backport the item says contains the fix.",
+          "type": "string"
+        },
+        "identifiers": {
+          "default": [],
+          "description": "CVE, GHSA, RUSTSEC or other advisory IDs the item cites.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "required_feature": {
+          "default": "",
+          "description": "Feature, configuration or deployment condition the item says the issue requires.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The agent's reviewed readings of screened items, kept across runs.",
+  "properties": {
+    "decisions": {
+      "items": {
+        "$ref": "#/$defs/ItemDecision"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "decisions"
+  ],
+  "title": "ResearchDecisions",
+  "type": "object"
+}

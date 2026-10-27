@@ -238,6 +238,71 @@ fn actual_microsandbox_blocks_network_host_access_and_forged_status() {
     eprintln!("sandbox_project={project}");
 }
 
+#[test]
+#[ignore = "requires prepared Microsandbox 0.7.11 and host virtualization"]
+fn a_reproduction_confirms_only_its_instance_in_a_multi_instance_case() {
+    let project = uuid::Uuid::new_v4().to_string();
+    let mut store = Store::open(&project).unwrap();
+    let instances: Vec<_> = ["synthetic-sandbox-only", "synthetic-sandbox-sibling"]
+        .into_iter()
+        .map(|reference| {
+            vulnbell::model::Instance::declared(&vulnbell::profile::Component {
+                reference: reference.into(),
+                version: Some("0.0.1".into()),
+                usage: Default::default(),
+                upstream: None,
+                feeds: Vec::new(),
+            })
+        })
+        .collect();
+    let case = Case {
+        schema_version: 1,
+        case_id: "SIG-synthetic-multi-instance".into(),
+        project_id: project.clone(),
+        snapshot_id: "synthetic".into(),
+        instances,
+        claims: Vec::new(),
+        upstream_events: Vec::new(),
+        evidence: Vec::new(),
+        coverage: Vec::new(),
+        applicability: vulnbell::model::Applicability::Unknown,
+        verification: Verification::Inconclusive,
+        decision: vulnbell::model::Decision::Review,
+        facts_sha256: "synthetic".into(),
+        open_questions: Vec::new(),
+        suggested_search_queries: Vec::new(),
+        sandbox: vulnbell::sandbox::availability(),
+        updated_at: vulnbell::now(),
+    };
+    store.save_case(&case).unwrap();
+    assert!(!vulnbell::impact::plan(&case, &store).affected_version_confirmed);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("test.yaml");
+    let test = TestSpec {
+        schema_version: 1,
+        instance_id: case.instances[0].id.clone(),
+        artifact_version: "0.0.1".into(),
+        context: None,
+        script: "printf 'SYNTHETIC_ORACLE_OK\\n'\n".into(),
+        oracle: Oracle {
+            stdout_contains: "SYNTHETIC_ORACLE_OK".into(),
+            expected_exit: 0,
+            purpose: Default::default(),
+        },
+        control: None,
+        inputs: Vec::new(),
+        timeout_seconds: 30,
+        memory_mib: 256,
+    };
+    std::fs::write(&path, serde_saphyr::to_string(&test).unwrap()).unwrap();
+    let result = vulnbell::sandbox::verify(&mut store, &case.case_id, &path, true).unwrap();
+    assert_eq!(result.verification, Verification::LabReproduced);
+    let plan = vulnbell::impact::plan(&result, &store);
+    assert!(plan.targets[0].affected_version_confirmed);
+    assert!(!plan.targets[1].affected_version_confirmed);
+    eprintln!("sandbox_project={project}");
+}
+
 fn assert_report_result(case: &Case, store: &Store, expected: vulnbell::output::LocalResult) {
     let snapshot = vulnbell::model::Snapshot {
         schema_version: 1,

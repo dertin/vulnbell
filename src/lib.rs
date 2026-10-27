@@ -17,6 +17,7 @@ pub mod scheduler;
 pub mod skills;
 pub mod sources;
 pub mod store;
+pub mod tools;
 pub mod upstream;
 pub mod vendor;
 
@@ -30,6 +31,27 @@ use std::{
 
 pub fn digest(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
+}
+/// Compact JSON with recursively sorted object keys, or `None` when `bytes` is not JSON.
+/// Feeds may reorder keys between requests; hashing this form keeps identical content stable.
+pub fn canonical_json(bytes: &[u8]) -> Option<Vec<u8>> {
+    fn sorted(value: serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(map) => {
+                let ordered: std::collections::BTreeMap<String, serde_json::Value> = map
+                    .into_iter()
+                    .map(|(key, value)| (key, sorted(value)))
+                    .collect();
+                serde_json::Value::Object(ordered.into_iter().collect())
+            }
+            serde_json::Value::Array(items) => {
+                serde_json::Value::Array(items.into_iter().map(sorted).collect())
+            }
+            other => other,
+        }
+    }
+    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    serde_json::to_vec(&sorted(value)).ok()
 }
 pub fn now() -> String {
     chrono::Utc::now().to_rfc3339()

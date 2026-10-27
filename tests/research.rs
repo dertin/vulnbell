@@ -1,13 +1,143 @@
+use chrono::DateTime;
 use std::fs;
 use vulnbell::{
-    research::{Assessment, EventKind, ResearchBatch, ResearchEvent, ReviewCoverage, SourceReview},
+    model::Decision,
+    research::{
+        Assessment, EventKind, NotApplicableReason, ResearchBatch, ResearchEvent, ReviewCoverage,
+        SourceReview,
+    },
     store::Store,
 };
+
+#[test]
+fn shared_upstream_event_opens_one_case_and_not_applicable_needs_a_reason() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = uuid::Uuid::new_v4().to_string();
+    let path = directory.path().join("vulnbell.yaml");
+    fs::write(&path, format!("schema: 1\nproject_id: {project}\nname: shared-upstream-fixture\ncomponents:\n  - ref: example-core\n    version: '2.0.0'\n    upstream: https://launchpad.net/example\n  - ref: example-server\n    version: '2.0.0'\n    upstream: https://launchpad.net/example\n")).unwrap();
+    let profile = vulnbell::profile::load(&path).unwrap();
+    vulnbell::engine::scan(&profile, &path, true).unwrap();
+    let mut store = Store::open(&project).unwrap();
+    let plan = vulnbell::research::plan_page(&store, "", 20).unwrap();
+    let target = &plan.targets[0];
+    assert_eq!(target.instance_ids.len(), 2);
+    let event = |url: &str, assessment, reason| ResearchEvent {
+        upstream: target.upstream.clone(),
+        instance_ids: target.instance_ids.clone(),
+        provider: "launchpad".into(),
+        external_id: url.rsplit('/').next().unwrap().into(),
+        kind: EventKind::Issue,
+        url: url.into(),
+        title: "SYNTHETIC issue; not an actual finding".into(),
+        excerpt: "Synthetic report".into(),
+        updated_at: target.until.clone(),
+        assessment,
+        not_applicable_reason: reason,
+        rationale: "Synthetic rationale".into(),
+        source_facts: Default::default(),
+    };
+    let batch = |events| ResearchBatch {
+        schema_version: 1,
+        project_id: project.clone(),
+        snapshot_id: plan.snapshot_id.clone(),
+        sources: vec![SourceReview {
+            upstream: target.upstream.clone(),
+            from: target.from.clone(),
+            until: target.until.clone(),
+            coverage: ReviewCoverage::Partial,
+            detail: "Synthetic review".into(),
+            continuation: None,
+        }],
+        events,
+    };
+    let reported = "https://bugs.launchpad.net/example/+bug/1";
+    let imported = vulnbell::research::import(
+        &mut store,
+        batch(vec![event(reported, Assessment::Review, None)]),
+    )
+    .unwrap();
+    assert_eq!(imported["changed_cases"], 1);
+    let cases = store.cases().unwrap();
+    assert_eq!(cases.len(), 1);
+    assert_eq!(cases[0].instances.len(), 2);
+
+    let other_line = "https://bugs.launchpad.net/example/+bug/2";
+    assert!(
+        vulnbell::research::import(
+            &mut store,
+            batch(vec![event(other_line, Assessment::NotApplicable, None)])
+        )
+        .is_err()
+    );
+    assert!(
+        vulnbell::research::import(
+            &mut store,
+            batch(vec![event(
+                other_line,
+                Assessment::Review,
+                Some(NotApplicableReason::AffectsOtherVersion)
+            )])
+        )
+        .is_err()
+    );
+    let mut other_version = event(
+        other_line,
+        Assessment::NotApplicable,
+        Some(NotApplicableReason::AffectsOtherVersion),
+    );
+    assert!(vulnbell::research::import(&mut store, batch(vec![other_version.clone()])).is_err());
+    other_version.source_facts.affected_versions = "1.x only".into();
+    let counted = vulnbell::research::import(&mut store, batch(vec![other_version])).unwrap();
+    assert_eq!(counted["changed_cases"], 0);
+    assert_eq!(counted["assessments"]["not_applicable"], 1);
+    assert_eq!(store.cases().unwrap().len(), 1);
+
+    let mut reassessed = event(
+        reported,
+        Assessment::NotApplicable,
+        Some(NotApplicableReason::FixedInMonitoredVersion),
+    );
+    reassessed.excerpt.push_str(" Fixed before 2.0.0.");
+    assert!(vulnbell::research::import(&mut store, batch(vec![reassessed.clone()])).is_err());
+    reassessed.source_facts.fixed_in = "1.9.0".into();
+    reassessed.source_facts.identifiers = vec!["not an id".into()];
+    assert!(vulnbell::research::import(&mut store, batch(vec![reassessed.clone()])).is_err());
+    reassessed.source_facts.identifiers = vec!["CVE-2026-0001".into()];
+    vulnbell::research::import(&mut store, batch(vec![reassessed])).unwrap();
+    let seen = vulnbell::research::plan_page(&store, "", 20).unwrap();
+    let recorded = seen.targets[0]
+        .seen
+        .iter()
+        .find(|seen| seen.url == reported)
+        .unwrap();
+    assert_eq!(recorded.assessment, Some(Assessment::NotApplicable));
+    assert_eq!(
+        recorded.not_applicable_reason,
+        Some(NotApplicableReason::FixedInMonitoredVersion)
+    );
+    assert_eq!(recorded.rationale, "Synthetic rationale");
+    assert_eq!(
+        store.cases().unwrap()[0].upstream_events[0]
+            .source_facts
+            .fixed_in,
+        "1.9.0"
+    );
+    let cases = store.cases().unwrap();
+    assert_eq!(cases.len(), 1);
+    assert_eq!(cases[0].decision, Decision::Informational);
+    assert!(
+        cases[0].coverage[0]
+            .detail
+            .contains("FixedInMonitoredVersion")
+    );
+    drop(store);
+    fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+}
 #[test]
 fn agent_reviews_github_gitlab_launchpad_with_dedupe_and_failure_safe_checkpoints() {
     let directory = tempfile::tempdir().unwrap();
     let project = uuid::Uuid::new_v4().to_string();
-    let path = directory.path().join("radar.yaml");
+    let path = directory.path().join("vulnbell.yaml");
     fs::write(&path,format!("schema: 1\nproject_id: {project}\nname: research-fixture\ncomponents:\n  - ref: example\n    version: '1.0.0'\n    upstream: https://launchpad.net/example\n")).unwrap();
     let profile = vulnbell::profile::load(&path).unwrap();
     vulnbell::engine::scan(&profile, &path, true).unwrap();
@@ -44,8 +174,10 @@ fn agent_reviews_github_gitlab_launchpad_with_dedupe_and_failure_safe_checkpoint
         excerpt: "Synthetic report to test the agent import contract".into(),
         updated_at: target.until.clone(),
         assessment: Assessment::Review,
+        not_applicable_reason: None,
         rationale: "Check attack preconditions before classifying; third-party report is not proof"
             .into(),
+        source_facts: Default::default(),
     })
     .collect();
     let review = SourceReview {
@@ -124,6 +256,33 @@ fn agent_reviews_github_gitlab_launchpad_with_dedupe_and_failure_safe_checkpoint
         next.targets[0].last_complete_review.as_deref(),
         Some(target.until.as_str())
     );
+    assert!(
+        vulnbell::research::reopen(&mut store, "https://example.org/other", &target.from).is_err()
+    );
+    let reopened = vulnbell::research::reopen(&mut store, "all", &target.from).unwrap();
+    assert_eq!(reopened["reopened"].as_array().unwrap().len(), 1);
+    let again = vulnbell::research::plan_page(&store, "", 20).unwrap();
+    assert_eq!(
+        DateTime::parse_from_rfc3339(&again.targets[0].from).unwrap(),
+        DateTime::parse_from_rfc3339(&target.from).unwrap()
+    );
+    let repeated = ResearchBatch {
+        schema_version: 1,
+        project_id: project.clone(),
+        snapshot_id: plan.snapshot_id.clone(),
+        sources: vec![SourceReview {
+            from: again.targets[0].from.clone(),
+            until: again.targets[0].until.clone(),
+            coverage: ReviewCoverage::Complete,
+            ..review.clone()
+        }],
+        events: events.clone(),
+    };
+    assert_eq!(
+        vulnbell::research::import(&mut store, repeated).unwrap()["duplicates"],
+        3
+    );
+    let next = vulnbell::research::plan_page(&store, "", 20).unwrap();
     let mut changed = events;
     changed[0].excerpt.push_str(" Substantive new detail.");
     let review = SourceReview {

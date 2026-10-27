@@ -7,6 +7,8 @@ use std::{
 };
 
 const DATABASE_SCHEMA: u32 = 2;
+/// Default wait for another command on the same project (override: VULNBELL_LOCK_WAIT_SECONDS).
+const LOCK_WAIT_SECONDS: u64 = 120;
 
 pub fn data_root() -> PathBuf {
     if let Some(path) = std::env::var_os("VULNBELL_DATA_DIR") {
@@ -96,13 +98,33 @@ impl Store {
         self.set_meta("profile_path", &profile_path.to_string_lossy())
     }
     pub fn lock(&self) -> Result<fs::File> {
+        let wait = std::env::var("VULNBELL_LOCK_WAIT_SECONDS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(LOCK_WAIT_SECONDS);
+        self.lock_within(wait)
+    }
+    /// Waits up to `wait` seconds for the project lock held by another command.
+    pub fn lock_within(&self, wait: u64) -> Result<fs::File> {
         let lock = fs::OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
             .open(self.directory.join("scan.lock"))?;
-        fs2::FileExt::try_lock_exclusive(&lock).context("project is already running")?;
-        Ok(lock)
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait);
+        loop {
+            match fs2::FileExt::try_lock_exclusive(&lock) {
+                Ok(()) => return Ok(lock),
+                Err(_) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                Err(error) => {
+                    return Err(anyhow::Error::new(error).context(format!(
+                        "project is already running; waited {wait}s for the project lock"
+                    )));
+                }
+            }
+        }
     }
     pub fn record_evidence(
         &self,
@@ -111,6 +133,9 @@ impl Store {
         url: Option<String>,
         kind: crate::model::EvidenceKind,
     ) -> Result<crate::model::Evidence> {
+        // Remote JSON is stored canonically so a feed's key order cannot change case facts.
+        let canonical = url.as_ref().and_then(|_| crate::canonical_json(bytes));
+        let bytes = canonical.as_deref().unwrap_or(bytes);
         let hash = crate::digest(bytes);
         let path = self.directory.join("evidence").join(&hash);
         if !path.exists() {

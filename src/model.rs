@@ -47,6 +47,10 @@ pub struct Provenance {
     pub direct: Option<bool>,
     pub resolution: Option<String>,
     pub artifact_integrity: Option<String>,
+    /// 1-based line in `path` where the package entry or cited excerpt starts.
+    /// Display-only: excluded from the context fingerprint so unrelated edits do not reopen cases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<usize>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Instance {
@@ -95,6 +99,7 @@ impl Instance {
                 direct: Some(true),
                 resolution: None,
                 artifact_integrity: None,
+                line: None,
             },
             purl: None,
             cpe_product: None,
@@ -109,6 +114,8 @@ impl Instance {
             Origin::Locked => None,
             _ => Some(&self.provenance.sha256),
         };
+        // Upstream and CPE are source identity; mapping them later enriches the same artifact.
+        // `identity_replaced` detects a real change of an already mapped identity.
         let context = (
             &self.id,
             &self.reference,
@@ -120,11 +127,16 @@ impl Instance {
             &self.provenance.resolution,
             &self.provenance.artifact_integrity,
             &self.purl,
-            &self.cpe_product,
-            &self.upstream,
             declaration,
         );
         crate::digest(&serde_json::to_vec(&context).expect("instance context serializes"))
+    }
+
+    /// True when a previously mapped upstream or CPE now points elsewhere.
+    pub fn identity_replaced(&self, current: &Instance) -> bool {
+        let replaced = |old: &Option<String>, new: &Option<String>| old.is_some() && old != new;
+        replaced(&self.upstream, &current.upstream)
+            || replaced(&self.cpe_product, &current.cpe_product)
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -191,6 +203,34 @@ pub struct UpstreamEvent {
     pub title: String,
     pub updated_at: Option<String>,
     pub sha256: String,
+    #[serde(default, skip_serializing_if = "SourceFacts::is_empty")]
+    pub source_facts: SourceFacts,
+}
+/// What an upstream item itself states, quoted or closely paraphrased; an empty field means the
+/// item does not say. These are the item's statements, not the agent's conclusions.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SourceFacts {
+    /// CVE, GHSA, RUSTSEC or other advisory IDs the item cites.
+    #[serde(default)]
+    pub identifiers: Vec<String>,
+    /// Versions or release lines the item says are affected.
+    #[serde(default)]
+    pub affected_versions: String,
+    /// Version, release or backport the item says contains the fix.
+    #[serde(default)]
+    pub fixed_in: String,
+    /// Pull request, commit or release that carries the fix.
+    #[serde(default)]
+    pub fix_reference: String,
+    /// Feature, configuration or deployment condition the item says the issue requires.
+    #[serde(default)]
+    pub required_feature: String,
+}
+impl SourceFacts {
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Case {

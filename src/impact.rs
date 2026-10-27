@@ -114,7 +114,7 @@ pub struct ImpactResult {
     pub assessed_at: String,
 }
 
-pub fn plan(case: &Case) -> ImpactPlan {
+pub fn plan(case: &Case, store: &Store) -> ImpactPlan {
     ImpactPlan {
         schema_version: 1,
         case_id: case.case_id.clone(),
@@ -122,7 +122,7 @@ pub fn plan(case: &Case) -> ImpactPlan {
         affected_version_confirmed: case
             .instances
             .iter()
-            .any(|instance| affected_instance_confirmed(case, &instance.id)),
+            .any(|instance| affected_instance_confirmed(case, store, &instance.id)),
         targets: case
             .instances
             .iter()
@@ -131,7 +131,7 @@ pub fn plan(case: &Case) -> ImpactPlan {
                 component: instance.reference.clone(),
                 version: instance.resolved_version.clone(),
                 origin: instance.origin,
-                affected_version_confirmed: affected_instance_confirmed(case, &instance.id),
+                affected_version_confirmed: affected_instance_confirmed(case, store, &instance.id),
                 questions: questions(),
             })
             .collect(),
@@ -158,7 +158,7 @@ pub fn assess(store: &mut Store, id: &str, submission: ImpactSubmission) -> Resu
             &case,
             store,
             &instance.id,
-            affected_instance_confirmed(&case, &instance.id),
+            affected_instance_confirmed(&case, store, &instance.id),
             &answers,
         )?);
     }
@@ -222,11 +222,21 @@ fn questions() -> Vec<ImpactQuestion> {
     ]
 }
 
-fn affected_instance_confirmed(case: &Case, instance_id: &str) -> bool {
+/// An affected advisory claim or a current sandbox reproduction of this exact instance confirms it.
+fn affected_instance_confirmed(case: &Case, store: &Store, instance_id: &str) -> bool {
     case.claims.iter().any(|claim| {
         claim.instance_id == instance_id
             && claim.applicability == crate::model::Applicability::Affected
     }) || (case.instances.len() == 1 && case.verification == Verification::LabReproduced)
+        || case
+            .evidence
+            .iter()
+            .filter(|evidence| evidence.kind == EvidenceKind::Attestation)
+            .filter_map(|evidence| crate::sandbox::read_attestation(case, store, evidence).ok())
+            .any(|attestation| {
+                attestation.instance_id == instance_id
+                    && attestation.verification == Verification::LabReproduced
+            })
 }
 
 fn validate_submission(
@@ -350,12 +360,9 @@ fn assess_instance(
     let conditions = values.get(&ImpactQuestionId::RequiredConditionsPresent);
     let mitigated = values.get(&ImpactQuestionId::FixOrMitigationApplied);
 
-    let (verdict, reason) = if !source_confirmed {
-        (
-            ImpactVerdict::NeedsEvidence,
-            "The exact version is not confirmed affected by authoritative evidence or a successful local reproduction.",
-        )
-    } else if negative.is_some() {
+    // An absent project condition or a recorded mitigation settles exposure whether or not the
+    // version is confirmed affected; only an exposure claim needs that confirmation.
+    let (verdict, reason) = if negative.is_some() {
         (
             ImpactVerdict::NotAffected,
             if strong_negative {
@@ -368,6 +375,11 @@ fn assess_instance(
         (
             ImpactVerdict::Mitigated,
             "A fix or mitigation is recorded; keep the evidence and normal upgrade plan current.",
+        )
+    } else if !source_confirmed {
+        (
+            ImpactVerdict::NeedsEvidence,
+            "The exact version is not confirmed affected by authoritative evidence or a successful local reproduction.",
         )
     } else if deployed == Some(&ImpactAnswerValue::Yes)
         && used == Some(&ImpactAnswerValue::Yes)
@@ -489,7 +501,7 @@ fn aggregate_verdict(instances: &[InstanceImpact]) -> ImpactVerdict {
         .unwrap_or(ImpactVerdict::NeedsEvidence)
 }
 
-fn verdict_priority(verdict: ImpactVerdict) -> u8 {
+pub(crate) fn verdict_priority(verdict: ImpactVerdict) -> u8 {
     match verdict {
         ImpactVerdict::UrgentUpdate => 6,
         ImpactVerdict::PriorityUpdate => 5,

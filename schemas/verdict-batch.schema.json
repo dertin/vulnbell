@@ -1,0 +1,115 @@
+{
+  "$defs": {
+    "Applicability": {
+      "enum": [
+        "affected",
+        "not_affected",
+        "possible",
+        "unknown",
+        "conflict"
+      ],
+      "type": "string"
+    },
+    "BatchVerdict": {
+      "additionalProperties": false,
+      "properties": {
+        "applicability": {
+          "$ref": "#/$defs/Applicability"
+        },
+        "case_id": {
+          "type": "string"
+        },
+        "decision": {
+          "$ref": "#/$defs/Decision"
+        },
+        "evidence": {
+          "default": [],
+          "description": "Registered evidence to cite besides the notes; when both are empty the verdict cites\nevery evidence item of the case.",
+          "items": {
+            "$ref": "#/$defs/EvidenceReference"
+          },
+          "type": "array"
+        },
+        "notes": {
+          "default": [],
+          "description": "Reviewed notes registered on the case before the verdict and cited by it.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "verification": {
+          "$ref": "#/$defs/Verification"
+        }
+      },
+      "required": [
+        "case_id",
+        "decision",
+        "applicability",
+        "verification",
+        "rationale"
+      ],
+      "type": "object"
+    },
+    "Decision": {
+      "enum": [
+        "actionable",
+        "review",
+        "informational",
+        "dismissed"
+      ],
+      "type": "string"
+    },
+    "EvidenceReference": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "Verification": {
+      "enum": [
+        "source_confirmed",
+        "lab_reproduced",
+        "not_reproduced",
+        "inconclusive",
+        "disproven"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Verdicts for several cases. Note paths are relative to the batch file.",
+  "properties": {
+    "schema_version": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "verdicts": {
+      "items": {
+        "$ref": "#/$defs/BatchVerdict"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "verdicts"
+  ],
+  "title": "VerdictBatch",
+  "type": "object"
+}

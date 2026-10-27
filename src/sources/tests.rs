@@ -17,6 +17,127 @@ fn osv_and_ghsa_contracts_accept_aliases_and_withdrawals() {
     .unwrap();
 }
 #[test]
+fn repository_advisory_ranges_are_evaluated_only_without_guessing() {
+    let version = |value: &str| semver::Version::parse(value).unwrap();
+    let check = |range: &str, patched: Option<&str>, value: &str| {
+        github_range_match(range, patched, &version(value))
+    };
+    use RangeMatch::{Affected, FixedOnLine, Outside};
+    assert_eq!(
+        check(">= 3.0.0, < 3.6.0", Some("3.6.0"), "3.4.0"),
+        Some(Affected)
+    );
+    assert_eq!(check(">= 3.0.0, < 3.6.0", None, "3.6.0"), Some(Outside));
+    assert_eq!(check("<= 3.6.0", None, "3.6.0"), Some(Affected));
+    assert_eq!(check("= 1.54.0", None, "1.54.1"), Some(Outside));
+    assert_eq!(check("0.23.44,0.23.45", None, "0.23.45"), Some(Affected));
+    assert_eq!(check("0.23.44,0.23.45", None, "0.23.46"), Some(Outside));
+    assert_eq!(check("< 0.5.16, >= 0.6.0 < 0.6.3", None, "0.5.16"), None);
+    assert_eq!(check("", None, "1.0.0"), None);
+    assert_eq!(check(">= 2.0.0", None, "2.3.0"), Some(Affected));
+    assert_eq!(
+        check(">=0.10.50", Some("0.10.80"), "0.10.81"),
+        Some(FixedOnLine)
+    );
+    assert_eq!(
+        check(">=0.10.50", Some("0.10.80"), "0.10.79"),
+        Some(Affected)
+    );
+    assert_eq!(
+        check("> 0.7.0", Some(">= 0.11.18"), "0.11.19"),
+        Some(FixedOnLine)
+    );
+    assert_eq!(
+        check(">= 0.101.0", Some("0.104.0-alpha.5, 0.103.10"), "0.103.15"),
+        Some(FixedOnLine)
+    );
+    assert_eq!(
+        check(">= 0.101.0", Some("0.104.0-alpha.5, 0.103.10"), "0.102.8"),
+        None
+    );
+    assert_eq!(
+        check(
+            ">0.35.11",
+            Some("~0.35.15, ~0.36.16, ~0.37.25, ~0.38.19"),
+            "1.1.5"
+        ),
+        Some(FixedOnLine)
+    );
+    assert_eq!(check("<= 0.9.1", Some("0.10.0"), "0.9.1"), Some(Affected));
+    assert_eq!(check(">= 2.0.0", Some("<= 2.3.0"), "2.3.0"), None);
+    assert_eq!(
+        check("< 0.23.46, > 0.24.0-dev.1", Some(">= 0.23.46"), "0.23.45"),
+        None
+    );
+    assert_eq!(
+        check(">= 2.21.0, <= 2.22.0", Some("2.21.5"), "2.21.7"),
+        None
+    );
+    assert_eq!(check("< 26.37.1", Some("26.7.1"), "26.8.1"), None);
+    assert_eq!(
+        check(">= 2.19.0, <= 2.21.7", Some("2.21.8"), "2.21.7"),
+        Some(Affected)
+    );
+    assert_eq!(
+        check(">= 3.5.0, < 3.5.11", Some("3.5.11"), "3.5.10"),
+        Some(Affected)
+    );
+    assert_eq!(
+        check(">= 2.0.0, < 2.5.0", Some("1.9.0"), "2.3.0"),
+        Some(Affected)
+    );
+    assert_eq!(
+        github_repository("https://github.com/modelcontextprotocol/rust-sdk.git"),
+        Some("modelcontextprotocol/rust-sdk".into())
+    );
+    assert_eq!(github_repository("https://gitlab.com/group/project"), None);
+    assert!(same_package(
+        "maven",
+        "org.keycloak:keycloak-services",
+        "org.keycloak/keycloak-services"
+    ));
+    assert!(same_package("pip", "Zope.Interface", "zope_interface"));
+    assert!(!same_package("rust", "rmcp-macros", "rmcp"));
+    let advisory: RepositoryAdvisory = serde_json::from_str(
+        r#"{"ghsa_id":"GHSA-test","cve_id":null,"summary":"synthetic","withdrawn_at":null,
+            "vulnerabilities":[{"package":{"ecosystem":"rust","name":"rmcp"},"vulnerable_version_range":">= 3.0.0, < 3.6.0","patched_versions":"3.6.0"},
+                               {"package":null,"vulnerable_version_range":null}]}"#,
+    )
+    .unwrap();
+    assert_eq!(advisory.vulnerabilities.len(), 2);
+}
+#[test]
+fn open_ghsa_ranges_use_the_last_known_affected_bound() {
+    let purl = "pkg:maven/org.keycloak/keycloak-quarkus-server";
+    let advisory = serde_json::json!({"affected":[
+        {"package":{"purl":purl},"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"0"}]}],
+         "versions":["24.0.1","26.8.1"],
+         "database_specific":{"last_known_affected_version_range":"< 24.0.9"}},
+        {"package":{"purl":purl},"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"25.0.0"},{"fixed":"26.0.6"}]}]},
+        {"package":{"purl":"pkg:maven/org.keycloak/other"},"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"0"}]}]}
+    ]});
+    assert!(osv_ranges_exclude(
+        &advisory,
+        &format!("{purl}@26.8.1"),
+        "26.8.1"
+    ));
+    assert!(!osv_ranges_exclude(&advisory, purl, "24.0.1"));
+    assert!(!osv_ranges_exclude(&advisory, purl, "26.0.5"));
+    let unbounded = serde_json::json!({"affected":[
+        {"package":{"purl":purl},"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"0"}]}]}
+    ]});
+    assert!(!osv_ranges_exclude(&unbounded, purl, "26.8.1"));
+    let git = serde_json::json!({"affected":[
+        {"package":{"purl":purl},"ranges":[{"type":"GIT","events":[{"introduced":"0"},{"fixed":"abc"}]}]}
+    ]});
+    assert!(!osv_ranges_exclude(&git, purl, "26.8.1"));
+    let unrelated = serde_json::json!({"affected":[
+        {"package":{"purl":"pkg:maven/org.keycloak/other"},"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"0"}]}]}
+    ]});
+    assert!(!osv_ranges_exclude(&unrelated, purl, "26.8.1"));
+}
+
+#[test]
 fn cpe_range_boundaries_do_not_use_lexical_order() {
     let candidate: CpeMatch = serde_json::from_value(serde_json::json!({"vulnerable":true,"criteria":"cpe:2.3:a:redhat:keycloak:*:*:*:*:*:*:*:*","versionStartIncluding":"26.8.0","versionEndExcluding":"26.10.0"})).unwrap();
     assert_eq!(

@@ -171,6 +171,13 @@
         },
         "excerpt": {
           "type": "string"
+        },
+        "version_excerpt": {
+          "description": "Literal version definition from the same chunk when `excerpt` references it through a\n`${name}` placeholder (for example a Maven `<properties>` entry).",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

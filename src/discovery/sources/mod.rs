@@ -8,25 +8,78 @@ use rusqlite::{OptionalExtension, params};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::Read,
+    path::Path,
 };
 
+const INCOMPLETE_RETRY_DAYS: i64 = 7;
+
+/// Without a repository no upstream research is possible; other categories are enrichment.
+fn repository_unavailable(observation: &IdentityObservation) -> bool {
+    !observation.sources.iter().any(|source| {
+        source.kind == SourceKind::Repository && source.state != MappingState::Unavailable
+    })
+}
+
+/// Native Maven mappings from an earlier POM resolution revision are mapped again.
+fn outdated_maven_mapping(instance: &Instance, observation: &IdentityObservation) -> bool {
+    instance.reference.starts_with("pkg:maven/")
+        && observation
+            .rationale
+            .starts_with(registry::NATIVE_RATIONALE)
+        && !observation.rationale.contains(registry::MAVEN_MAPPER)
+}
+
+/// A lockfile or SBOM hash changes with unrelated packages; the instance id already carries the
+/// locked name, version and path, so only declared and observed provenance invalidates a mapping.
 pub(super) fn fingerprint(instance: &Instance) -> String {
+    let declaration: &str = match instance.origin {
+        crate::model::Origin::Locked => "",
+        _ => &instance.provenance.sha256,
+    };
     crate::digest(
         format!(
             "{}:{:?}:{:?}",
-            instance.id, instance.requested_version, instance.provenance.sha256
+            instance.id, instance.requested_version, declaration
         )
         .as_bytes(),
     )
 }
 
-pub(super) fn targets(store: &Store, scope: &str, limit: usize) -> Result<Vec<PublicTarget>> {
+/// Maven artifacts that a workspace root `pom.xml` builds; their source is the monitored workspace,
+/// so they need no public source mapping.
+pub(super) fn first_party(roots: &[String]) -> BTreeSet<String> {
+    roots
+        .iter()
+        .filter_map(|root| {
+            crate::read_limited(&Path::new(root).join("pom.xml"), 2 * 1024 * 1024).ok()
+        })
+        .filter_map(|pom| registry::maven_reference(&String::from_utf8_lossy(&pom)))
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Mapper {
+    Registry,
+    /// Also receives registry mappings without a repository, until it records its own observation.
+    Agent,
+}
+
+pub(super) fn targets(
+    store: &Store,
+    scope: &str,
+    first_party: &BTreeSet<String>,
+    mapper: Mapper,
+    limit: usize,
+) -> Result<Vec<PublicTarget>> {
     if store.meta("last_snapshot")?.is_none() {
         return Ok(Vec::new());
     }
     let snapshot = store.latest()?;
     let mut targets = Vec::new();
     for instance in &snapshot.instances {
+        if first_party.contains(&instance.reference) {
+            continue;
+        }
         let previous: Option<(String,String,String)> = store
             .connection
             .query_row(
@@ -38,12 +91,17 @@ pub(super) fn targets(store: &Store, scope: &str, limit: usize) -> Result<Vec<Pu
         let current = fingerprint(instance);
         if let Some((previous, checked_at, body)) = previous {
             let observation: IdentityObservation = serde_json::from_str(&body)?;
-            let incomplete = observation
-                .sources
-                .iter()
-                .any(|source| source.state == MappingState::Unavailable);
-            let refresh = (instance.requested_version.as_deref() == Some("latest") || incomplete)
-                && checked_at < snapshot.started_at;
+            let latest = instance.requested_version.as_deref() == Some("latest");
+            let retry_after =
+                (chrono::Utc::now() - chrono::Duration::days(INCOMPLETE_RETRY_DAYS)).to_rfc3339();
+            let refresh = (latest && checked_at < snapshot.started_at)
+                || (repository_unavailable(&observation) && checked_at < retry_after)
+                || outdated_maven_mapping(instance, &observation)
+                || (mapper == Mapper::Agent
+                    && repository_unavailable(&observation)
+                    && observation
+                        .rationale
+                        .starts_with(registry::NATIVE_RATIONALE));
             if previous == current && !refresh {
                 continue;
             }
@@ -286,13 +344,18 @@ pub(super) fn apply(store: &Store, scope: &str, instances: &mut [Instance]) -> R
                 && source.state == MappingState::Mapped
                 && instance.upstream.is_none()
             {
-                instance.upstream = source.url;
+                instance.upstream = source
+                    .url
+                    .as_deref()
+                    .and_then(crate::identity::canonical_repository);
             }
         }
     }
     Ok(())
 }
 
+/// Research targets per instance: places where security activity is published, never websites,
+/// documentation or registry records.
 pub(super) fn mapped(store: &Store, scope: &str) -> Result<Vec<(String, String)>> {
     let mut sources = Vec::new();
     if store.meta("last_snapshot")?.is_none() {
@@ -309,8 +372,22 @@ pub(super) fn mapped(store: &Store, scope: &str) -> Result<Vec<(String, String)>
             continue;
         }
         for source in observation.sources {
-            if source.state == MappingState::Mapped
-                && let Some(url) = source.url
+            let researched = matches!(
+                source.kind,
+                SourceKind::Repository
+                    | SourceKind::Issues
+                    | SourceKind::ProposedChanges
+                    | SourceKind::Discussions
+                    | SourceKind::Changelog
+                    | SourceKind::Advisories
+            );
+            if researched
+                && source.state == MappingState::Mapped
+                && let Some(url) = source
+                    .url
+                    .as_deref()
+                    .and_then(crate::identity::canonical_repository)
+                && !sources.contains(&(observation.instance_id.clone(), url.clone()))
             {
                 sources.push((observation.instance_id.clone(), url));
             }
@@ -319,7 +396,12 @@ pub(super) fn mapped(store: &Store, scope: &str) -> Result<Vec<(String, String)>
     Ok(sources)
 }
 
-pub(super) fn counts(store: &Store, scope: &str, instances: &[Instance]) -> Result<(usize, usize)> {
+pub(super) fn counts(
+    store: &Store,
+    scope: &str,
+    first_party: &BTreeSet<String>,
+    instances: &[Instance],
+) -> Result<(usize, usize)> {
     let observations = all(store, scope)?;
     let observations: BTreeMap<_, _> = observations
         .iter()
@@ -327,20 +409,23 @@ pub(super) fn counts(store: &Store, scope: &str, instances: &[Instance]) -> Resu
         .collect();
     let mut unmapped = 0;
     let mut unavailable = 0;
-    for instance in instances {
+    for instance in instances
+        .iter()
+        .filter(|instance| !first_party.contains(&instance.reference))
+    {
         match observations.get(instance.id.as_str()) {
             Some(observation) if observation.fingerprint == fingerprint(instance) => {
-                unavailable += observation
-                    .sources
-                    .iter()
-                    .filter(|source| source.state == MappingState::Unavailable)
-                    .count()
+                unavailable += usize::from(repository_unavailable(observation));
             }
             _ => unmapped += 1,
         }
     }
     Ok((unmapped, unavailable))
 }
+
+mod registry;
+pub(super) use registry::map as map_registries;
+pub use registry::{RegistryFailure, RegistryRun};
 
 #[cfg(test)]
 mod tests;
