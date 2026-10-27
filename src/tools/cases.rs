@@ -280,6 +280,18 @@ pub struct PendingReport {
     /// Open cases without an agent verdict for their current facts.
     pub verdict_missing: Vec<String>,
     pub research_open: Vec<ResearchOpen>,
+    /// General discovery work left to the agent; null when nothing remains.
+    pub discovery_open: Option<DiscoveryOpen>,
+}
+
+/// Unavailable files and components recorded without a repository are dispositions, not open
+/// work, so they do not appear here.
+#[derive(Debug, Serialize)]
+pub struct DiscoveryOpen {
+    pub directories_pending: usize,
+    pub files_pending: usize,
+    /// Components with neither a source mapping nor a recorded `unavailable` observation.
+    pub components_unmapped: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -330,14 +342,28 @@ pub fn pending(store: &Store) -> Result<PendingReport> {
             })
         })
         .collect();
+    let discovery_open = report
+        .discovery
+        .as_ref()
+        .filter(|summary| summary.enabled)
+        .map(|summary| DiscoveryOpen {
+            directories_pending: summary.directories_pending,
+            files_pending: summary.files_pending,
+            components_unmapped: summary.components_unmapped,
+        })
+        .filter(|open| {
+            open.directories_pending > 0 || open.files_pending > 0 || open.components_unmapped > 0
+        });
     Ok(PendingReport {
         schema_version: 1,
         deliverable: report.verification_pending.is_empty()
             && verdict_missing.is_empty()
-            && research_open.is_empty(),
+            && research_open.is_empty()
+            && discovery_open.is_none(),
         verification_pending: report.verification_pending,
         verdict_missing,
         research_open,
+        discovery_open,
     })
 }
 

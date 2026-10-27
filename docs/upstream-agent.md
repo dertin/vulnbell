@@ -11,7 +11,7 @@ For the daily run, the agent fetches tracker responses with `gh` and `curl` into
 - `tools hits` reads the responses for every research target and lists any missing file with the exact request to make. It screens items on title, labels, body and closed issues, and skips items already imported with the same update time. It resolves cited advisory IDs through the GitHub advisory database, OSV and cve.org, and matches them against the inventory.
 - `tools hits` settles structural items by rule: fix PRs whose closed issues carry the claim, dependency updates without an advisory that affects the build, repository advisories outside the monitored versions, and releases whose advisories are all published. The remaining items go into a review packet.
 - `tools draft` builds the research batch from those rules and the agent's decisions file (`schema decisions`). A decision is keyed by item and update time, so a later update lists the item again.
-- `tools impact` and `tools triage` apply impact answers and verdicts for many cases from one file. `tools pending` lists what still blocks the report.
+- `tools impact` and `tools triage` apply impact answers and verdicts for many cases from one file. `tools pending` lists what still blocks the report: open verifications, missing verdicts, open research windows and unfinished discovery.
 
 The [workspace layout](../skills/vulnbell/references/workspace.md) gives the folder structure and command sequence.
 

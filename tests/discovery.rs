@@ -1,9 +1,13 @@
 use std::fs;
 use vulnbell::{
-    discovery::{self, DiscoveryBatch, FileReview, PackageObservation},
+    discovery::{
+        self, DiscoveryBatch, FileReview, IdentityObservation, MappingState, PackageObservation,
+        SOURCE_KINDS, SourceMapping,
+    },
     profile::{self, DiscoveryMode, Profile},
     research::ReviewCoverage,
     store::Store,
+    tools::cases,
 };
 
 fn project() -> (tempfile::TempDir, std::path::PathBuf, Profile, Store) {
@@ -156,6 +160,76 @@ fn default_general_discovery_imports_python_with_provenance_and_invalidates_chan
     assert!(snapshot.instances.is_empty());
     let page = discovery::plan(&profile, &path, &store, 1).unwrap();
     assert!(page.workspace[0].content.contains("2.32.0"));
+    cleanup(store, &profile);
+}
+
+#[test]
+fn pending_blocks_the_report_until_files_are_reviewed_and_components_have_a_source_disposition() {
+    let (directory, path, profile, mut store) = project();
+    fs::write(
+        directory.path().join("workspace/requirements.txt"),
+        "requests==2.31.0\n",
+    )
+    .unwrap();
+    vulnbell::engine::scan(&profile, &path, true).unwrap();
+    let unreviewed = cases::pending(&store).unwrap();
+    assert!(!unreviewed.deliverable);
+    let open = unreviewed.discovery_open.unwrap();
+    assert!(open.directories_pending + open.files_pending > 0);
+
+    let page = discovery::plan(&profile, &path, &store, 1).unwrap();
+    discovery::import(&profile, &path, &mut store, review(&page, vec![package()])).unwrap();
+    vulnbell::engine::scan(&profile, &path, true).unwrap();
+    let unmapped = cases::pending(&store).unwrap();
+    assert!(!unmapped.deliverable);
+    let open = unmapped.discovery_open.unwrap();
+    assert_eq!(
+        (
+            open.directories_pending,
+            open.files_pending,
+            open.components_unmapped
+        ),
+        (0, 0, 1)
+    );
+
+    let page = discovery::plan(&profile, &path, &store, 1).unwrap();
+    let target = &page.components[0];
+    let observation = IdentityObservation {
+        instance_id: target.instance_id.clone(),
+        fingerprint: target.fingerprint.clone(),
+        version: None,
+        cpe_product: None,
+        rationale: "Synthetic fixture: no official source could be corroborated.".into(),
+        sources: SOURCE_KINDS
+            .iter()
+            .map(|kind| SourceMapping {
+                kind: *kind,
+                state: MappingState::Unavailable,
+                url: None,
+                detail: "Synthetic fixture without public evidence.".into(),
+                evidence: Vec::new(),
+            })
+            .collect(),
+    };
+    discovery::import(
+        &profile,
+        &path,
+        &mut store,
+        DiscoveryBatch::Sources {
+            schema_version: 1,
+            project_id: page.project_id.clone(),
+            scope_sha256: page.scope_sha256.clone(),
+            observations: vec![observation],
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        discovery::summary(&profile, &path, &store)
+            .unwrap()
+            .sources_unavailable,
+        1
+    );
+    assert!(cases::pending(&store).unwrap().discovery_open.is_none());
     cleanup(store, &profile);
 }
 
