@@ -171,6 +171,27 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
         1
     );
     assert!(cases::pending(&store).unwrap().verdict_missing.is_empty());
+
+    drop(store);
+    fs::write(&path, format!("schema: 1\nproject_id: {project}\nname: tools-fixture\ncomponents:\n  - ref: example\n    version: '1.1.0'\n    upstream: https://github.com/example/project\n")).unwrap();
+    let profile = vulnbell::profile::load(&path).unwrap();
+    vulnbell::engine::scan(&profile, &path, true).unwrap();
+    let store = Store::open(&project).unwrap();
+    let plan = vulnbell::research::plan_page(&store, "", 20).unwrap();
+    assert!(
+        plan.targets[0]
+            .seen
+            .iter()
+            .all(|seen| !seen.context_current)
+    );
+    let reassessed = hits::packet(&hits::prepare(&store, &raw, true).unwrap(), None);
+    assert_eq!(reassessed.summary.unchanged, 0);
+    let keys: Vec<&str> = reassessed
+        .review
+        .iter()
+        .map(|item| item.key.as_str())
+        .collect();
+    assert_eq!(keys, vec!["example/project#1"]);
     drop(store);
     fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
 }

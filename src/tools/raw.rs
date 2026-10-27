@@ -334,7 +334,7 @@ fn before(value: &str, limit: &str) -> bool {
 }
 
 fn relative(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
+    crate::slash_path(path)
 }
 
 /// `Ok(None)` when the agent has not written the file yet.
@@ -347,6 +347,9 @@ fn read_values(raw: &Path, relative: &Path) -> Result<Option<Vec<Value>>> {
     let mut values = Vec::new();
     for value in serde_json::Deserializer::from_slice(&bytes).into_iter::<Value>() {
         values.push(value.with_context(|| format!("{} is not JSON", relative.display()))?);
+    }
+    if values.is_empty() {
+        bail!("{} is an empty response file", relative.display());
     }
     Ok(Some(values))
 }

@@ -375,6 +375,13 @@ fn github_responses_are_parsed_and_missing_files_name_their_request() {
         r#"{"message": "Not Found", "status": "404"}"#,
     );
     assert!(!raw::read_target(raw_dir, &target).errors.is_empty());
+
+    write(raw_dir, "github/example/project/releases.json", " \n");
+    let truncated = raw::read_target(raw_dir, &target);
+    assert!(truncated.errors.iter().any(|error| {
+        error.contains("github/example/project/releases.json")
+            && error.contains("empty response file")
+    }));
 }
 
 #[test]

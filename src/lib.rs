@@ -56,6 +56,13 @@ pub fn canonical_json(bytes: &[u8]) -> Option<Vec<u8>> {
 pub fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
+/// Relative path with `/` separators on every platform, the form stored and reported.
+pub fn slash_path(path: &Path) -> String {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
 pub fn read_limited(path: &Path, limit: u64) -> Result<Vec<u8>> {
     let metadata = fs::symlink_metadata(path).context("cannot inspect input")?;
     if !metadata.is_file() || metadata.len() > limit {

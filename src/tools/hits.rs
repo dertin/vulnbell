@@ -107,7 +107,9 @@ pub fn prepare(store: &Store, raw: &Path, offline: bool) -> Result<Prepared> {
                 continue;
             };
             let unchanged = target.seen.iter().any(|seen| {
-                seen.url == item.url && super::same_instant(&seen.updated_at, &item.updated_at)
+                seen.context_current
+                    && seen.url == item.url
+                    && super::same_instant(&seen.updated_at, &item.updated_at)
             });
             if !unchanged {
                 cited.extend(screen.identifiers.iter().cloned());

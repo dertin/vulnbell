@@ -188,17 +188,18 @@ fn exclude_subtree(
     child: &str,
     reason: &str,
 ) -> Result<()> {
-    let prefix = format!("{child}/%");
+    // A literal, case-sensitive prefix: LIKE would treat `_` and `%` in names as wildcards.
+    let prefix = format!("{child}/");
     store.connection.execute(
-        "DELETE FROM discovery_packages WHERE file_id IN (SELECT id FROM discovery_files WHERE scope=?1 AND root=?2 AND path LIKE ?3)",
+        "DELETE FROM discovery_packages WHERE file_id IN (SELECT id FROM discovery_files WHERE scope=?1 AND root=?2 AND substr(path,1,length(?3))=?3)",
         params![scope, root, prefix],
     )?;
     store.connection.execute(
-        "UPDATE discovery_files SET state='excluded',reason=?4 WHERE scope=?1 AND root=?2 AND path LIKE ?3",
+        "UPDATE discovery_files SET state='excluded',reason=?4 WHERE scope=?1 AND root=?2 AND substr(path,1,length(?3))=?3",
         params![scope, root, prefix, reason],
     )?;
     store.connection.execute(
-        "UPDATE discovery_walk SET state='excluded',stamp=?4 WHERE scope=?1 AND root=?2 AND path LIKE ?3",
+        "UPDATE discovery_walk SET state='excluded',stamp=?4 WHERE scope=?1 AND root=?2 AND substr(path,1,length(?3))=?3",
         params![scope, root, prefix, reason],
     )?;
     Ok(())
@@ -517,8 +518,12 @@ fn expand(store: &Store, scope: &str) -> Result<bool> {
         let rules = ignore_rules(&root, &relative);
         let count = names.len();
         for name in names {
-            let child = Path::new(&relative).join(&name);
-            let child = child.to_str().context("invalid child path")?;
+            let child = if relative.is_empty() {
+                name.clone()
+            } else {
+                format!("{relative}/{name}")
+            };
+            let child = child.as_str();
             let entry = path.join(&name);
             let metadata = fs::symlink_metadata(&entry)?;
             let private = private_name(&name) || name.chars().any(char::is_control) || metadata.is_symlink();

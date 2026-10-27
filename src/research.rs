@@ -1,7 +1,7 @@
 use crate::{
     model::{
-        Applicability, Case, Coverage, CoverageState, Decision, EvidenceKind, SourceFacts,
-        UpstreamEvent, Verification,
+        Applicability, Case, Coverage, CoverageState, Decision, EvidenceKind, Instance,
+        SourceFacts, UpstreamEvent, Verification,
     },
     store::Store,
 };
@@ -134,6 +134,10 @@ pub struct SeenEvent {
     pub url: String,
     pub content_sha256: String,
     pub updated_at: String,
+    /// False when the monitored instances changed since the recorded assessment or the target
+    /// gained instances the event does not cover; the event then needs a new review even with the
+    /// same `updated_at`.
+    pub context_current: bool,
     pub assessment: Option<Assessment>,
     pub not_applicable_reason: Option<NotApplicableReason>,
     /// First 300 characters of the recorded rationale.
@@ -264,6 +268,7 @@ fn build_plan(
                         url: row.get(1)?,
                         content_sha256: row.get(2)?,
                         updated_at: row.get(3)?,
+                        context_current: false,
                         assessment: None,
                         not_applicable_reason: None,
                         rationale: String::new(),
@@ -278,6 +283,22 @@ fn build_plan(
                     event.not_applicable_reason = recorded.not_applicable_reason;
                     event.rationale = recorded.rationale.chars().take(300).collect();
                 }
+                event.context_current = serde_json::from_str::<ResearchEvent>(&body)
+                    .ok()
+                    .is_some_and(|recorded| {
+                        instance_ids
+                            .iter()
+                            .all(|id| recorded.instance_ids.contains(id))
+                            && event_content(&recorded)
+                                .and_then(|content| {
+                                    event_hash(
+                                        &content,
+                                        &recorded.instance_ids,
+                                        &snapshot.instances,
+                                    )
+                                })
+                                .is_ok_and(|hash| hash == event.content_sha256)
+                    });
                 seen_bytes += serde_json::to_vec(&event)?.len();
                 if seen_bytes > 512 * 1024 {
                     seen_truncated = true;
@@ -309,8 +330,39 @@ fn build_plan(
             continuation,
         });
     }
-    Ok(ResearchPlan {schema_version:1,project_id:snapshot.project_id,snapshot_id:snapshot.id,targets,next_cursor,required_agent_sites:vec!["github.com".into(),"gitlab.com".into(),"launchpad.net (bugs and merge proposals)".into()],policy:"Review issues, proposed changes, discussions, documentation, changelogs, releases and advisories at each mapped source. Exhaust relevant pages and linked context in the supplied window. Screen each item on its title, labels and body (up to the 8000-character excerpt limit), not the title alone; for a proposed change also read the issue it closes. For every item with a security claim, answer from the item in source_facts: which advisory IDs it cites, which versions it says are affected, where it says the fix is (version, release or backport) and through which change, and which feature or configuration it requires; leave a field empty when the item does not say, never infer it. Then judge it against the monitored version. A seen event whose updated_at is unchanged keeps its recorded assessment and needs no new review; resend an event only when it changed. Only complete reviews advance source checkpoints. Follow next_cursor for remaining targets. seen_truncated means the prompt contains only a sample; the CLI still deduplicates all imported events. Initial window is 30 days; later windows overlap the last completed review by 5 minutes.".into()})
+    Ok(ResearchPlan {schema_version:1,project_id:snapshot.project_id,snapshot_id:snapshot.id,targets,next_cursor,required_agent_sites:vec!["github.com".into(),"gitlab.com".into(),"launchpad.net (bugs and merge proposals)".into()],policy:"Review issues, proposed changes, discussions, documentation, changelogs, releases and advisories at each mapped source. Exhaust relevant pages and linked context in the supplied window. Screen each item on its title, labels and body (up to the 8000-character excerpt limit), not the title alone; for a proposed change also read the issue it closes. For every item with a security claim, answer from the item in source_facts: which advisory IDs it cites, which versions it says are affected, where it says the fix is (version, release or backport) and through which change, and which feature or configuration it requires; leave a field empty when the item does not say, never infer it. Then judge it against the monitored version. A seen event whose updated_at is unchanged and whose context_current is true keeps its recorded assessment and needs no new review; resend an event when it changed or its context_current is false. Only complete reviews advance source checkpoints. Follow next_cursor for remaining targets. seen_truncated means the prompt contains only a sample; the CLI still deduplicates all imported events. Initial window is 30 days; later windows overlap the last completed review by 5 minutes.".into()})
 }
+/// Observation recorded as evidence for an event.
+fn event_content(event: &ResearchEvent) -> Result<Vec<u8>> {
+    let event_url = crate::profile::public_https_syntax(&event.url)?;
+    let observed = (
+        &event.kind,
+        event_url.as_str(),
+        event.title.as_str(),
+        event.excerpt.as_str(),
+        event.updated_at.as_str(),
+    );
+    // Events without source facts keep the content hash they had before facts existed.
+    Ok(if event.source_facts.is_empty() {
+        serde_json::to_vec(&observed)?
+    } else {
+        serde_json::to_vec(&(observed, &event.source_facts))?
+    })
+}
+
+/// Hash of an event reading: its observation plus the context of the instances it was assessed for.
+fn event_hash(content: &[u8], instance_ids: &[String], instances: &[Instance]) -> Result<String> {
+    let target_facts: Vec<_> = instances
+        .iter()
+        .filter(|instance| instance_ids.contains(&instance.id))
+        .map(|instance| (&instance.id, instance.context_fingerprint()))
+        .collect();
+    Ok(crate::digest(&serde_json::to_vec(&(
+        content,
+        target_facts,
+    ))?))
+}
+
 pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json::Value> {
     use rusqlite::{OptionalExtension, params};
     let _lock = store.lock()?;
@@ -454,26 +506,8 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
         if !in_window {
             bail!("event timestamp is outside review window");
         }
-        let observed = (
-            &event.kind,
-            event_url.as_str(),
-            event.title.as_str(),
-            event.excerpt.as_str(),
-            event.updated_at.as_str(),
-        );
-        // Events without source facts keep the content hash they had before facts existed.
-        let content = if event.source_facts.is_empty() {
-            serde_json::to_vec(&observed)?
-        } else {
-            serde_json::to_vec(&(observed, &event.source_facts))?
-        };
-        let target_facts: Vec<_> = snapshot
-            .instances
-            .iter()
-            .filter(|instance| event.instance_ids.contains(&instance.id))
-            .map(|instance| (&instance.id, instance.context_fingerprint()))
-            .collect();
-        let hash = crate::digest(&serde_json::to_vec(&(&content, target_facts))?);
+        let content = event_content(event)?;
+        let hash = event_hash(&content, &event.instance_ids, &snapshot.instances)?;
         // The original permalink identifies the event; agent/provider ID formatting may vary.
         let key = crate::digest(format!("{}:{}", event.upstream, event_url).as_bytes());
         let previous: Option<String> = store

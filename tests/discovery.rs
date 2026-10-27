@@ -256,6 +256,49 @@ fn adding_a_workspace_keeps_reviews_of_the_existing_workspace() {
 }
 
 #[test]
+fn excluding_a_directory_leaves_siblings_whose_names_differ_only_by_wildcard_characters() {
+    let (directory, path, profile, store) = project();
+    let workspace = directory.path().join("workspace");
+    for sibling in ["build-cache", "build_cache"] {
+        fs::create_dir(workspace.join(sibling)).unwrap();
+        fs::write(
+            workspace.join(sibling).join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\n",
+        )
+        .unwrap();
+    }
+    discovery::plan(&profile, &path, &store, 20).unwrap();
+    fs::write(workspace.join(".gitignore"), "/build_cache/\n").unwrap();
+    store
+        .connection
+        .execute(
+            "UPDATE discovery_walk SET state='pending',cursor='' WHERE path=''",
+            [],
+        )
+        .unwrap();
+    let page = discovery::plan(&profile, &path, &store, 20).unwrap();
+    let pending: Vec<&str> = page
+        .workspace
+        .iter()
+        .map(|chunk| chunk.path.as_str())
+        .collect();
+    assert!(pending.contains(&"build-cache/Cargo.toml"), "{pending:?}");
+    assert!(!pending.contains(&"build_cache/Cargo.toml"), "{pending:?}");
+    let gaps = discovery::gaps(&profile, &path, &store, "", 100).unwrap();
+    assert!(
+        gaps.items
+            .iter()
+            .any(|gap| gap.path == "build_cache" && gap.state == "excluded")
+    );
+    assert!(
+        gaps.items
+            .iter()
+            .all(|gap| !gap.path.starts_with("build-cache"))
+    );
+    cleanup(store, &profile);
+}
+
+#[test]
 fn new_classification_rules_reclassify_walked_entries_and_keep_other_reviews() {
     let (directory, path, profile, mut store) = project();
     let workspace = directory.path().join("workspace");

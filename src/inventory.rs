@@ -510,11 +510,9 @@ pub fn discover(
                 {
                     inventory.coverage.push(Coverage::new(
                         "inventory",
-                        &entry
-                            .path()
-                            .strip_prefix(&root)
-                            .unwrap_or(entry.path())
-                            .to_string_lossy(),
+                        &crate::slash_path(
+                            entry.path().strip_prefix(&root).unwrap_or(entry.path()),
+                        ),
                         CoverageState::Unsupported,
                         UNSUPPORTED_MANIFEST,
                     ));
@@ -525,12 +523,8 @@ pub fn discover(
             if !visited.insert(entry.path().to_owned()) {
                 continue;
             }
-            let relative = entry
-                .path()
-                .strip_prefix(&root)
-                .unwrap_or(entry.path())
-                .to_string_lossy()
-                .to_string();
+            let relative =
+                crate::slash_path(entry.path().strip_prefix(&root).unwrap_or(entry.path()));
             let result = crate::read_limited(entry.path(), 32 * 1024 * 1024).and_then(|bytes| {
                 total_bytes += bytes.len();
                 if total_bytes > 128 * 1024 * 1024 {
