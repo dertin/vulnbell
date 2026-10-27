@@ -149,7 +149,8 @@ pub struct MorningReport {
 pub enum PendingReason {
     /// `vulnbell impact` has not been answered for the current case facts.
     ImpactNotAssessed,
-    /// Impact needs evidence and no sandbox attestation or recorded blocker exists.
+    /// An instance needs a sandbox check (see `LocalCheck::sandbox_needed`) and has neither a
+    /// result nor a blocker with a kind.
     SandboxCheckMissing,
 }
 #[derive(serde::Serialize, schemars::JsonSchema)]
@@ -161,15 +162,18 @@ fn pending_verification(check: &FindingCheck) -> Option<PendingReason> {
     if !matches!(check.decision, Decision::Actionable | Decision::Review) {
         return None;
     }
-    let Some(impact) = &check.impact else {
+    if check.impact.is_none() {
         return Some(PendingReason::ImpactNotAssessed);
-    };
-    let checked = check
-        .local_checks
-        .iter()
-        .all(|local| local.result != LocalResult::NotRun);
-    (impact.verdict == crate::impact::ImpactVerdict::NeedsEvidence && !checked)
-        .then_some(PendingReason::SandboxCheckMissing)
+    }
+    let unsettled = check.local_checks.iter().any(|local| {
+        local.sandbox_needed
+            && match local.result {
+                LocalResult::NotRun => true,
+                LocalResult::Blocked => local.blocker.is_none(),
+                _ => false,
+            }
+    });
+    unsettled.then_some(PendingReason::SandboxCheckMissing)
 }
 #[derive(serde::Serialize, schemars::JsonSchema)]
 pub struct MonitoredComponent {

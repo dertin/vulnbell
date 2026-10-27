@@ -7,7 +7,7 @@ use crate::{
     model::{Applicability, CoverageState, Decision, Origin, Verification},
     output::LocalResult,
     profile::Language,
-    sandbox::TestMode,
+    sandbox::{BlockerKind, TestMode},
     store::Store,
 };
 use std::fmt::Display;
@@ -605,6 +605,21 @@ pub(crate) fn local_result(language: Language, result: &LocalResult) -> &'static
         (Language::Es, LocalResult::Inconclusive) => "inconclusa",
         (Language::Es, LocalResult::NotApplicable) => "no aplicable en el alcance probado",
         (Language::Es, LocalResult::InvalidEvidence) => "evidencia inválida u obsoleta",
+    }
+}
+
+pub(crate) fn blocker_kind(language: Language, kind: BlockerKind) -> &'static str {
+    match (language, kind) {
+        (Language::En, BlockerKind::DetailsUndisclosed) => "details not disclosed",
+        (Language::En, BlockerKind::ArtifactUnavailable) => "artifact unavailable",
+        (Language::En, BlockerKind::SandboxLimits) => "exceeds the sandbox limits",
+        (Language::En, BlockerKind::RuntimeUnavailable) => "sandbox unavailable",
+        (Language::En, BlockerKind::AuthorizationDeclined) => "authorization declined",
+        (Language::Es, BlockerKind::DetailsUndisclosed) => "detalles no publicados",
+        (Language::Es, BlockerKind::ArtifactUnavailable) => "artefacto no disponible",
+        (Language::Es, BlockerKind::SandboxLimits) => "excede los límites del sandbox",
+        (Language::Es, BlockerKind::RuntimeUnavailable) => "sandbox no disponible",
+        (Language::Es, BlockerKind::AuthorizationDeclined) => "autorización denegada",
     }
 }
 

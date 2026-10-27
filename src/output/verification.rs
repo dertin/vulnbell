@@ -6,7 +6,7 @@ use crate::{
     impact::{ImpactResult, ImpactVerdict},
     model::{Case, Decision, EvidenceKind, Verification},
     profile::Language,
-    sandbox::{TestContext, TestSpec},
+    sandbox::{BlockerKind, TestContext, TestSpec},
     store::Store,
 };
 use anyhow::{Result, bail};
@@ -42,7 +42,12 @@ pub enum LocalResult {
 pub struct LocalCheck {
     pub instance_id: String,
     pub artifact_version: Option<String>,
+    /// The impact needs evidence and nothing confirms this exact version is affected, so only a
+    /// sandbox result or a categorized blocker settles it. Missing deployment facts never set it.
+    pub sandbox_needed: bool,
     pub result: LocalResult,
+    /// Set for a `blocked` result; absent for blockers recorded without a kind.
+    pub blocker: Option<BlockerKind>,
     pub context: Option<TestContext>,
     pub detail: String,
     pub attestation_path: Option<String>,
@@ -90,12 +95,22 @@ pub(super) fn finding_check(case: &Case, store: &Store, language: Language) -> F
     }
     references.sort_by(|a, b| a.url.cmp(&b.url));
     references.dedup_by(|a, b| a.url == b.url);
+    let impact = crate::impact::latest(case, store);
     let mut local_checks = Vec::new();
     for instance in &case.instances {
+        let needs_evidence = impact.as_ref().is_some_and(|impact| {
+            impact.instances.iter().any(|assessed| {
+                assessed.instance_id == instance.id
+                    && assessed.verdict == ImpactVerdict::NeedsEvidence
+            })
+        });
         let mut check = LocalCheck {
             instance_id: instance.id.clone(),
             artifact_version: instance.resolved_version.clone(),
+            sandbox_needed: needs_evidence
+                && !crate::impact::affected_instance_confirmed(case, store, &instance.id),
             result: LocalResult::NotRun,
+            blocker: None,
             context: None,
             detail: if case.sandbox.available {
                 words.check_no_test.into()
@@ -127,7 +142,17 @@ pub(super) fn finding_check(case: &Case, store: &Store, language: Language) -> F
                             && blocker.instance_id == instance.id =>
                     {
                         check.result = LocalResult::Blocked;
-                        check.detail = blocker.reason;
+                        check.blocker = blocker.kind;
+                        check.detail = match blocker.kind {
+                            Some(kind) => {
+                                format!(
+                                    "{}: {}",
+                                    text::blocker_kind(language, kind),
+                                    blocker.reason
+                                )
+                            }
+                            None => blocker.reason,
+                        };
                         check.observed_at = Some(evidence.observed_at.clone());
                         break;
                     }
@@ -191,7 +216,7 @@ pub(super) fn finding_check(case: &Case, store: &Store, language: Language) -> F
         decision: case.decision,
         references,
         local_checks,
-        impact: crate::impact::latest(case, store),
+        impact,
     }
 }
 
@@ -310,16 +335,10 @@ pub(super) fn markdown(
                 text.push_str(words.invalid_reference);
             }
         }
-        let needs_evidence = finding
-            .impact
-            .as_ref()
-            .is_none_or(|impact| impact.verdict == ImpactVerdict::NeedsEvidence);
         let mut checks: Vec<(String, String, usize)> = Vec::new();
-        for check in finding
-            .local_checks
-            .iter()
-            .filter(|check| needs_evidence || check.result != LocalResult::NotRun)
-        {
+        for check in finding.local_checks.iter().filter(|check| {
+            finding.impact.is_none() || check.sandbox_needed || check.result != LocalResult::NotRun
+        }) {
             let status = text::local_result(language, &check.result);
             let scope =
                 text::test_mode(language, check.context.as_ref().map(|context| context.mode));

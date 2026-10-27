@@ -118,6 +118,42 @@
       },
       "type": "object"
     },
+    "SandboxLimits": {
+      "additionalProperties": false,
+      "description": "Upper bounds a sandbox test may request. Isolation (no network, no host mounts, one CPU,\nunprivileged user, official digest-pinned images) is not configurable.",
+      "properties": {
+        "max_input_file_mib": {
+          "default": 16,
+          "format": "uint32",
+          "maximum": 512,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_inputs_mib": {
+          "default": 64,
+          "description": "Sum of all inputs of one test; the guest root disk is 2 GiB.",
+          "format": "uint32",
+          "maximum": 1024,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_memory_mib": {
+          "default": 512,
+          "format": "uint32",
+          "maximum": 4096,
+          "minimum": 128,
+          "type": "integer"
+        },
+        "max_timeout_seconds": {
+          "default": 120,
+          "format": "uint64",
+          "maximum": 600,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "Schedule": {
       "enum": [
         "daily",
@@ -180,6 +216,9 @@
         "topics": [],
         "web": "off"
       }
+    },
+    "sandbox": {
+      "$ref": "#/$defs/SandboxLimits"
     },
     "schedule": {
       "anyOf": [

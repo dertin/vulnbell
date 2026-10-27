@@ -96,6 +96,31 @@ fn unavailable_guest_returns_inconclusive_without_executing_the_test_on_the_host
             .iter()
             .all(|evidence| evidence.kind != EvidenceKind::Attestation)
     );
+
+    let larger = TestSpec {
+        memory_mib: 1024,
+        timeout_seconds: 300,
+        ..spec
+    };
+    fs::write(&spec_path, serde_saphyr::to_string(&larger).unwrap()).unwrap();
+    let verify = || {
+        let mut command = assert_cmd::Command::new(assert_cmd::cargo::cargo_bin!("vulnbell"));
+        command
+            .env("VULNBELL_DATA_DIR", &isolated)
+            .args(["verify", &case.case_id, "--project"])
+            .arg(&profile_path)
+            .arg("--case")
+            .arg(&spec_path)
+            .arg("--authorize");
+        command
+    };
+    let rejected = verify().assert().failure().get_output().stderr.clone();
+    assert!(String::from_utf8_lossy(&rejected).contains("profile sandbox limits"));
+    let mut raised = fs::read_to_string(&profile_path).unwrap();
+    raised.push_str("sandbox:\n  max_memory_mib: 1024\n  max_timeout_seconds: 300\n");
+    fs::write(&profile_path, raised).unwrap();
+    verify().assert().success();
+    assert!(!marker.exists());
     drop(store);
     fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
 }

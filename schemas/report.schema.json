@@ -48,6 +48,36 @@
       ],
       "type": "string"
     },
+    "BlockerKind": {
+      "description": "Why a sandbox check the case needs cannot run. Missing deployment facts are not a kind: the\nsandbox cannot establish them, so they never require a check.",
+      "oneOf": [
+        {
+          "const": "details_undisclosed",
+          "description": "The advisory or report does not disclose enough to build an oracle.",
+          "type": "string"
+        },
+        {
+          "const": "artifact_unavailable",
+          "description": "The exact artifact cannot be obtained from an official source with a checksum.",
+          "type": "string"
+        },
+        {
+          "const": "sandbox_limits",
+          "description": "The artifact or workload exceeds the profile's sandbox limits or their caps.",
+          "type": "string"
+        },
+        {
+          "const": "runtime_unavailable",
+          "description": "Microsandbox cannot run on this host.",
+          "type": "string"
+        },
+        {
+          "const": "authorization_declined",
+          "description": "The operator declined to authorize the test.",
+          "type": "string"
+        }
+      ]
+    },
     "Coverage": {
       "properties": {
         "detail": {
@@ -535,6 +565,17 @@
             "null"
           ]
         },
+        "blocker": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BlockerKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Set for a `blocked` result; absent for blockers recorded without a kind."
+        },
         "context": {
           "anyOf": [
             {
@@ -565,10 +606,15 @@
         },
         "result": {
           "$ref": "#/$defs/LocalResult"
+        },
+        "sandbox_needed": {
+          "description": "The impact needs evidence and nothing confirms this exact version is affected, so only a\nsandbox result or a categorized blocker settles it. Missing deployment facts never set it.",
+          "type": "boolean"
         }
       },
       "required": [
         "instance_id",
+        "sandbox_needed",
         "result",
         "detail"
       ],
@@ -670,7 +716,7 @@
         },
         {
           "const": "sandbox_check_missing",
-          "description": "Impact needs evidence and no sandbox attestation or recorded blocker exists.",
+          "description": "An instance needs a sandbox check (see `LocalCheck::sandbox_needed`) and has neither a\nresult nor a blocker with a kind.",
           "type": "string"
         }
       ]

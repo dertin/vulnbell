@@ -116,6 +116,55 @@ fn profiles_reject_unknown_duplicate_and_versioned_purl_fields() {
     );
 }
 #[test]
+fn sandbox_limits_default_to_the_fixed_policy_and_stay_under_their_caps() {
+    let raw = "schema: 1\nproject_id: 11111111-1111-4111-8111-111111111111\nname: test\n";
+    let plain: Profile = serde_saphyr::from_str(raw).unwrap();
+    assert_eq!(plain.sandbox, profile::SandboxLimits::default());
+    assert!(
+        !serde_json::to_string(&plain)
+            .unwrap()
+            .contains("\"sandbox\"")
+    );
+    let raised: Profile = serde_saphyr::from_str(&format!(
+        "{raw}sandbox:\n  max_input_file_mib: 256\n  max_inputs_mib: 512\n  max_memory_mib: 2048\n  max_timeout_seconds: 300\n"
+    ))
+    .unwrap();
+    assert!(profile::validate(&raised).valid);
+    assert_eq!(raised.sandbox.max_memory_mib, 2048);
+    let partial: Profile =
+        serde_saphyr::from_str(&format!("{raw}sandbox:\n  max_memory_mib: 1024\n")).unwrap();
+    assert_eq!(partial.sandbox.max_timeout_seconds, 120);
+    let excessive: Profile = serde_saphyr::from_str(&format!(
+        "{raw}sandbox:\n  max_input_file_mib: 600\n  max_inputs_mib: 2048\n  max_memory_mib: 8192\n  max_timeout_seconds: 3600\n"
+    ))
+    .unwrap();
+    let pointers: Vec<String> = profile::validate(&excessive)
+        .errors
+        .into_iter()
+        .map(|error| error.pointer)
+        .collect();
+    assert_eq!(
+        pointers,
+        [
+            "/sandbox/max_input_file_mib",
+            "/sandbox/max_inputs_mib",
+            "/sandbox/max_memory_mib",
+            "/sandbox/max_timeout_seconds"
+        ]
+    );
+    let inverted: Profile = serde_saphyr::from_str(&format!(
+        "{raw}sandbox:\n  max_input_file_mib: 128\n  max_inputs_mib: 64\n"
+    ))
+    .unwrap();
+    assert_eq!(
+        profile::validate(&inverted).errors[0].pointer,
+        "/sandbox/max_inputs_mib"
+    );
+    assert!(
+        serde_saphyr::from_str::<Profile>(&format!("{raw}sandbox:\n  network: true\n")).is_err()
+    );
+}
+#[test]
 fn lockfile_corpus_preserves_distinct_versions_and_namespaces() {
     let expected = [
         ("rust/Cargo.lock", 1),

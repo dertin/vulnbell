@@ -1,5 +1,6 @@
 use crate::{
     model::{Case, EvidenceKind, Verification},
+    profile::SandboxLimits,
     store::Store,
 };
 use anyhow::{Context, Result, bail};
@@ -38,6 +39,22 @@ pub enum TestMode {
     WorkspaceCopy,
     ArtifactReproducer,
 }
+/// Why a sandbox check the case needs cannot run. Missing deployment facts are not a kind: the
+/// sandbox cannot establish them, so they never require a check.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockerKind {
+    /// The advisory or report does not disclose enough to build an oracle.
+    DetailsUndisclosed,
+    /// The exact artifact cannot be obtained from an official source with a checksum.
+    ArtifactUnavailable,
+    /// The artifact or workload exceeds the profile's sandbox limits or their caps.
+    SandboxLimits,
+    /// Microsandbox cannot run on this host.
+    RuntimeUnavailable,
+    /// The operator declined to authorize the test.
+    AuthorizationDeclined,
+}
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VerificationBlocker {
@@ -45,6 +62,10 @@ pub struct VerificationBlocker {
     pub case_id: String,
     pub facts_sha256: String,
     pub instance_id: String,
+    /// Absent for failed runs and for blockers recorded before kinds existed; neither settles a
+    /// needed check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<BlockerKind>,
     pub reason: String,
 }
 
@@ -53,6 +74,7 @@ pub fn record_blocker(
     store: &mut Store,
     id: &str,
     instance_id: Option<&str>,
+    kind: BlockerKind,
     reason: &str,
 ) -> Result<Case> {
     let _lock = store.lock()?;
@@ -66,13 +88,19 @@ pub fn record_blocker(
             .collect(),
     };
     for instance_id in &instance_ids {
-        append_blocker(&mut case, store, instance_id, reason)?;
+        append_blocker(&mut case, store, instance_id, Some(kind), reason)?;
     }
     store.save_case(&case)?;
     Ok(case)
 }
 
-fn append_blocker(case: &mut Case, store: &Store, instance_id: &str, reason: &str) -> Result<()> {
+fn append_blocker(
+    case: &mut Case,
+    store: &Store,
+    instance_id: &str,
+    kind: Option<BlockerKind>,
+    reason: &str,
+) -> Result<()> {
     if reason.trim().is_empty()
         || reason.len() > 2000
         || !case
@@ -87,6 +115,7 @@ fn append_blocker(case: &mut Case, store: &Store, instance_id: &str, reason: &st
         case_id: case.case_id.clone(),
         facts_sha256: case.facts_sha256.clone(),
         instance_id: instance_id.into(),
+        kind,
         reason: reason.into(),
     };
     let evidence = store.record_evidence(
@@ -260,7 +289,13 @@ pub fn read_attestation(
     Ok(attestation)
 }
 
-pub fn verify(store: &mut Store, id: &str, spec_path: &Path, authorized: bool) -> Result<Case> {
+pub fn verify(
+    store: &mut Store,
+    id: &str,
+    spec_path: &Path,
+    authorized: bool,
+    limits: &SandboxLimits,
+) -> Result<Case> {
     if !authorized {
         bail!(
             "active verification requires explicit --authorize after reviewing the test and inputs"
@@ -271,15 +306,21 @@ pub fn verify(store: &mut Store, id: &str, spec_path: &Path, authorized: bool) -
     let test_bytes = crate::read_limited(spec_path, 1024 * 1024)?;
     let test: TestSpec = crate::parse_yaml(&test_bytes)?;
     if test.schema_version != 1
-        || test.timeout_seconds == 0
-        || test.timeout_seconds > 120
-        || !(128..=512).contains(&test.memory_mib)
         || test.inputs.len() > 20
         || test.script.len() > 65536
         || test.oracle.stdout_contains.is_empty()
         || !(0..=255).contains(&test.oracle.expected_exit)
     {
-        bail!("invalid test limits/version/oracle");
+        bail!("invalid test version/oracle or more than 20 inputs");
+    }
+    if !(1..=limits.max_timeout_seconds).contains(&test.timeout_seconds)
+        || !(128..=limits.max_memory_mib).contains(&test.memory_mib)
+    {
+        bail!(
+            "test requests timeout_seconds 1..{} and memory_mib 128..{} (profile sandbox limits)",
+            limits.max_timeout_seconds,
+            limits.max_memory_mib
+        );
     }
     if let Some(context) = &test.context
         && (context.description.trim().is_empty() || context.description.len() > 2000)
@@ -307,7 +348,13 @@ pub fn verify(store: &mut Store, id: &str, spec_path: &Path, authorized: bool) -
         }
         case.sandbox = availability();
         let reason = case.sandbox.reason.clone();
-        append_blocker(&mut case, store, &test.instance_id, &reason)?;
+        append_blocker(
+            &mut case,
+            store,
+            &test.instance_id,
+            Some(BlockerKind::RuntimeUnavailable),
+            &reason,
+        )?;
         case.updated_at = crate::now();
         store.save_case(&case)?;
         return Ok(case);
@@ -365,10 +412,17 @@ pub fn verify(store: &mut Store, id: &str, spec_path: &Path, authorized: bool) -
     }
     case.updated_at = crate::now();
     store.save_case(&case)?;
-    let observation = match execute_guest(store, &image, &test, &input_root) {
+    let observation = match execute_guest(store, &image, &test, &input_root, limits) {
         Ok(observation) => observation,
         Err(error) => {
-            append_blocker(&mut case, store, &test.instance_id, &error.to_string())?;
+            // A failed run may come from the test itself, so it does not settle the check.
+            append_blocker(
+                &mut case,
+                store,
+                &test.instance_id,
+                None,
+                &error.to_string(),
+            )?;
             store.save_case(&case)?;
             return Err(error);
         }
@@ -394,7 +448,7 @@ pub fn verify(store: &mut Store, id: &str, spec_path: &Path, authorized: bool) -
             purpose: OraclePurpose::Reproduction,
         };
         control_test.control = None;
-        let observed = execute_guest(store, &image, &control_test, &input_root)?;
+        let observed = execute_guest(store, &image, &control_test, &input_root, limits)?;
         let control_output = store.record_evidence(
             &observed.process.stdout,
             "microsandbox_control_output",

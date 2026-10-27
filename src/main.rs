@@ -83,9 +83,12 @@ enum Commands {
         /// Register a reviewed local note or result as evidence; do not include secrets or raw workspaces.
         #[arg(long)]
         evidence_file: Option<PathBuf>,
-        /// Record why local validation is blocked; this is context, never proof of safety.
-        #[arg(long)]
+        /// Record why a needed sandbox check cannot run; this is context, never proof of safety.
+        #[arg(long, requires = "blocker_kind")]
         validation_blocker: Option<String>,
+        /// Category of the validation blocker. Missing deployment facts are not a blocker.
+        #[arg(long, requires = "validation_blocker", value_parser = ["details_undisclosed", "artifact_unavailable", "sandbox_limits", "runtime_unavailable", "authorization_declined"])]
+        blocker_kind: Option<String>,
         /// Limit the validation blocker to one instance; by default it applies to every instance.
         #[arg(long, requires = "validation_blocker")]
         instance: Option<String>,
@@ -388,6 +391,7 @@ fn run() -> Result<i32> {
                 schedule: None,
                 alerts: Default::default(),
                 report: Default::default(),
+                sandbox: Default::default(),
             };
             if let Some(parent) = output.parent() {
                 fs::create_dir_all(parent)?;
@@ -498,6 +502,7 @@ fn run() -> Result<i32> {
             evidence_url,
             evidence_file,
             validation_blocker,
+            blocker_kind,
             instance,
             ..
         } => {
@@ -546,11 +551,14 @@ fn run() -> Result<i32> {
                 case.updated_at = vulnbell::now();
                 store.save_case(&case)?;
             }
-            if let Some(reason) = validation_blocker {
+            if let (Some(reason), Some(kind)) = (validation_blocker, blocker_kind) {
+                let kind: vulnbell::sandbox::BlockerKind =
+                    serde_json::from_value(serde_json::Value::String(kind))?;
                 case = vulnbell::sandbox::record_blocker(
                     &mut store,
                     &id,
                     instance.as_deref(),
+                    kind,
                     &reason,
                 )?;
             }
@@ -573,9 +581,13 @@ fn run() -> Result<i32> {
             test,
             authorize,
         } => {
-            let (_, mut store) = store_for(&project)?;
+            let (profile, mut store) = store_for(&project)?;
             emit(&vulnbell::sandbox::verify(
-                &mut store, &id, &test, authorize,
+                &mut store,
+                &id,
+                &test,
+                authorize,
+                &profile.sandbox,
             )?)?;
         }
         Commands::Impact { id, project, from } => {

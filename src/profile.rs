@@ -26,6 +26,58 @@ pub struct Profile {
     pub alerts: Alerts,
     #[serde(default)]
     pub report: Report,
+    #[serde(default, skip_serializing_if = "SandboxLimits::is_default")]
+    pub sandbox: SandboxLimits,
+}
+/// Upper bounds a sandbox test may request. Isolation (no network, no host mounts, one CPU,
+/// unprivileged user, official digest-pinned images) is not configurable.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxLimits {
+    #[serde(default = "SandboxLimits::default_input_file_mib")]
+    #[schemars(range(min = 1, max = 512))]
+    pub max_input_file_mib: u32,
+    /// Sum of all inputs of one test; the guest root disk is 2 GiB.
+    #[serde(default = "SandboxLimits::default_inputs_mib")]
+    #[schemars(range(min = 1, max = 1024))]
+    pub max_inputs_mib: u32,
+    #[serde(default = "SandboxLimits::default_memory_mib")]
+    #[schemars(range(min = 128, max = 4096))]
+    pub max_memory_mib: u32,
+    #[serde(default = "SandboxLimits::default_timeout_seconds")]
+    #[schemars(range(min = 1, max = 600))]
+    pub max_timeout_seconds: u64,
+}
+impl SandboxLimits {
+    pub const CAP_INPUT_FILE_MIB: u32 = 512;
+    pub const CAP_INPUTS_MIB: u32 = 1024;
+    pub const CAP_MEMORY_MIB: u32 = 4096;
+    pub const CAP_TIMEOUT_SECONDS: u64 = 600;
+    fn default_input_file_mib() -> u32 {
+        16
+    }
+    fn default_inputs_mib() -> u32 {
+        64
+    }
+    fn default_memory_mib() -> u32 {
+        512
+    }
+    fn default_timeout_seconds() -> u64 {
+        120
+    }
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+impl Default for SandboxLimits {
+    fn default() -> Self {
+        Self {
+            max_input_file_mib: Self::default_input_file_mib(),
+            max_inputs_mib: Self::default_inputs_mib(),
+            max_memory_mib: Self::default_memory_mib(),
+            max_timeout_seconds: Self::default_timeout_seconds(),
+        }
+    }
 }
 #[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -290,6 +342,36 @@ pub fn validate(profile: &Profile) -> Validation {
                 "Use unique public topics (1..120 bytes), without paths or secrets",
             );
         }
+    }
+    let limits = &profile.sandbox;
+    if !(1..=SandboxLimits::CAP_INPUT_FILE_MIB).contains(&limits.max_input_file_mib) {
+        push(
+            "/sandbox/max_input_file_mib".into(),
+            "limit",
+            "Use 1..512 MiB",
+        );
+    }
+    if !(limits.max_input_file_mib..=SandboxLimits::CAP_INPUTS_MIB).contains(&limits.max_inputs_mib)
+    {
+        push(
+            "/sandbox/max_inputs_mib".into(),
+            "limit",
+            "Use max_input_file_mib..1024 MiB",
+        );
+    }
+    if !(128..=SandboxLimits::CAP_MEMORY_MIB).contains(&limits.max_memory_mib) {
+        push(
+            "/sandbox/max_memory_mib".into(),
+            "limit",
+            "Use 128..4096 MiB",
+        );
+    }
+    if !(1..=SandboxLimits::CAP_TIMEOUT_SECONDS).contains(&limits.max_timeout_seconds) {
+        push(
+            "/sandbox/max_timeout_seconds".into(),
+            "limit",
+            "Use 1..600 seconds",
+        );
     }
     let warnings = if profile.workspaces.is_empty() && profile.components.is_empty() {
         vec![Diagnostic {

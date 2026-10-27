@@ -15,7 +15,19 @@ vulnbell sandbox status
 
 `prepare` checks the version and prerequisites. It uses a private VulnBell `MSB_HOME` and downloads and prepares an official OCI image pinned by digest. The base image is Alpine 3.22.7, index `sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f`. It also records the architecture-specific manifest digest and executable SHA-256. The global Microsandbox installation is not changed. Set `VULNBELL_MSB_EXECUTABLE` to select the executable during setup. If `msb` is missing or has another version, `prepare` and `doctor` name the release to install. When `msb doctor` fails, they show its failing checks.
 
-Report JSON lists `verification_pending` for open cases that lack an impact assessment, or that have a `needs_evidence` verdict and no recorded local test or blocker. The Markdown report starts with an incomplete-report banner until those items are resolved. `case <id> --validation-blocker <reason>` records the blocker for every instance of the case; add `--instance <id>` to limit it to one.
+Report JSON lists `verification_pending` for open cases that lack an impact assessment, or that have an instance with `sandbox_needed`: its impact is `needs_evidence` and no advisory claim or lab reproduction confirms that exact version is affected. Such an instance needs a local test result or a blocker with a kind. Missing deployment facts (whether the artifact is deployed, how the edge is configured) do not require a test, because the sandbox cannot establish them; they stay as open impact questions in the report. The Markdown report starts with an incomplete-report banner until the pending items are resolved.
+
+`case <id> --validation-blocker <reason> --blocker-kind <kind>` records the blocker for every instance of the case; add `--instance <id>` to limit it to one. Kinds:
+
+| Kind | Use when |
+|---|---|
+| `details_undisclosed` | The advisory or report withholds what is needed to build an oracle. |
+| `artifact_unavailable` | The exact artifact cannot be obtained from an official source with a checksum. |
+| `sandbox_limits` | The artifact or workload exceeds the profile limits even at their caps. |
+| `runtime_unavailable` | Microsandbox cannot run on this host. `verify` records it when the runtime is missing. |
+| `authorization_declined` | The operator declined to authorize the test. |
+
+A test that fails to run records a blocker without a kind. It does not settle the check: fix the test or record a blocker with a kind. Blockers recorded before kinds existed do not settle it either.
 
 A current `lab_reproduced` attestation confirms the affected version only for the instance it tested. In a case with several instances, for example every artifact of one upstream release, `impact` can then derive an update priority from that instance while the others stay unconfirmed.
 
@@ -34,8 +46,19 @@ If a test needs Node, PHP, Rust, or other tools, prepare an official image with 
 ## Execution and limits
 
 - Approve the script, test oracle, and inputs with `verify --authorize`. This flag represents the local operator's authority. It does not identify a person or provide cryptographic approval. The scheduled researcher cannot call it.
-- Inputs must be in `inputs/` beside the test file. That folder cannot redirect elsewhere. Names must be unique and hashes must match. Limits: 20 files, 16 MiB per file, 64 MiB total. Validated bytes are copied; the folder is not mounted.
-- Tests use UID/GID 65534, the `restricted` profile, `multi-tenant` deployment, 1 CPU, 128–512 MiB RAM, and 1–120 seconds. Each VM has a private 2 GiB disk, a maximum lifetime, and forced removal after the test.
+- Inputs must be in `inputs/` beside the test file. That folder cannot redirect elsewhere. Names must be unique and hashes must match. At most 20 files; by default 16 MiB per file and 64 MiB total. Validated bytes are copied; the folder is not mounted.
+- Tests use UID/GID 65534, the `restricted` profile, `multi-tenant` deployment, and 1 CPU. By default they may request 128–512 MiB RAM and 1–120 seconds. Each VM has a private 2 GiB disk, a maximum lifetime, and forced removal after the test.
+- A profile can raise those defaults for workloads such as an application server, up to fixed caps. Raising them is part of the operator's authorization; isolation settings are not configurable.
+
+  ```yaml
+  sandbox:
+    max_input_file_mib: 256   # cap 512
+    max_inputs_mib: 512       # cap 1024, at least max_input_file_mib
+    max_memory_mib: 2048      # cap 4096
+    max_timeout_seconds: 300  # cap 600
+  ```
+
+  `sandbox stage` keeps its 16 MiB archive limit: a workspace copy holds reviewed source files, not distributions.
 - Traffic is denied in both directions. There are no network exceptions, published ports, secrets, host certificates, or external mounts. `--no-net` keeps a network device with a deny policy; it does not remove the device. The runtime checks that policy before running the test.
 - Test specifications accept only the script and inputs. They cannot add runtime flags, mounts, secrets, or network settings. The **active** policy returned by the runtime is checked before execution.
 - Tests use managed Microsandbox jobs. Job identity and final status come from control JSON. Workload logs are fetched separately. Stdout/stderr cannot set the trusted exit code or timeout. Log capture and host processes have their own limits.

@@ -383,6 +383,7 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
         &mut store,
         &case.case_id,
         Some(&case.instances[0].id),
+        vulnbell::sandbox::BlockerKind::ArtifactUnavailable,
         "Required proprietary binary is unavailable; no substitute was tested.",
     )
     .unwrap();
@@ -403,6 +404,7 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
             &mut store,
             &case.case_id,
             Some("unknown-instance"),
+            vulnbell::sandbox::BlockerKind::DetailsUndisclosed,
             "not valid"
         )
         .is_err()
@@ -420,6 +422,7 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
         &mut store,
         &case.case_id,
         None,
+        vulnbell::sandbox::BlockerKind::SandboxLimits,
         "The server distribution exceeds the sandbox input limits.",
     )
     .unwrap();
@@ -661,6 +664,193 @@ fn contained_advisories_collapse_into_one_row_and_exposed_cases_keep_their_card(
     assert!(!markdown.contains("Generic case question."));
     assert!(!markdown.contains("**Local verification:** not run"));
     assert!(!markdown.contains("**Instance "));
+    drop(store);
+    std::fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+}
+
+#[test]
+fn a_sandbox_check_is_pending_only_while_the_affected_version_is_unconfirmed() {
+    let project = uuid::Uuid::new_v4().to_string();
+    let mut store = Store::open(&project).unwrap();
+    let instance = Instance::declared(&vulnbell::profile::Component {
+        reference: "pkg:cargo/hyper-util".into(),
+        version: Some("0.1.21".into()),
+        usage: Default::default(),
+        upstream: None,
+        feeds: Vec::new(),
+    });
+    let context = store
+        .record_evidence(
+            b"Reviewed listener setup.",
+            "local_impact_evidence",
+            None,
+            EvidenceKind::Context,
+        )
+        .unwrap();
+    let advisory = store
+        .record_evidence(
+            b"{\"id\":\"RUSTSEC-0003\"}",
+            "osv",
+            None,
+            EvidenceKind::Advisory,
+        )
+        .unwrap();
+    let mut cases = Vec::new();
+    for (case_id, claims) in [
+        ("SIG-issue", Vec::new()),
+        (
+            "SIG-advisory",
+            vec![Claim {
+                id: "RUSTSEC-0003".into(),
+                source: "osv".into(),
+                aliases: Vec::new(),
+                instance_id: instance.id.clone(),
+                summary: "SYNTHETIC RUSTSEC-0003".into(),
+                applicability: Applicability::Affected,
+                evidence: advisory.clone(),
+                known_exploited: false,
+            }],
+        ),
+    ] {
+        let case = Case {
+            schema_version: 1,
+            case_id: case_id.into(),
+            project_id: project.clone(),
+            snapshot_id: "snapshot".into(),
+            instances: vec![instance.clone()],
+            claims,
+            upstream_events: Vec::new(),
+            evidence: vec![context.clone()],
+            coverage: Vec::new(),
+            applicability: Applicability::Unknown,
+            verification: Verification::Inconclusive,
+            decision: Decision::Review,
+            facts_sha256: "facts".into(),
+            open_questions: Vec::new(),
+            suggested_search_queries: Vec::new(),
+            sandbox: SandboxAvailability {
+                available: true,
+                reason: "synthetic".into(),
+            },
+            updated_at: vulnbell::now(),
+        };
+        store.save_case(&case).unwrap();
+        let answer = |question, value: &str| vulnbell::impact::ImpactAnswer {
+            instance_id: instance.id.clone(),
+            question,
+            answer: serde_json::from_value(json!(value)).unwrap(),
+            rationale: "Deployment edge is not documented.".into(),
+            evidence: vec![EvidenceReference {
+                id: context.id.clone(),
+                sha256: context.sha256.clone(),
+            }],
+        };
+        use vulnbell::impact::ImpactQuestionId::*;
+        let result = vulnbell::impact::assess(
+            &mut store,
+            case_id,
+            vulnbell::impact::ImpactSubmission {
+                schema_version: 1,
+                case_id: case_id.into(),
+                facts_sha256: "facts".into(),
+                answers: vec![
+                    answer(ArtifactDeployed, "unknown"),
+                    answer(AffectedFeatureUsed, "yes"),
+                    answer(UntrustedInputReachesFeature, "unknown"),
+                    answer(RequiredConditionsPresent, "unknown"),
+                    answer(FixOrMitigationApplied, "no"),
+                ],
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            result.verdict,
+            vulnbell::impact::ImpactVerdict::NeedsEvidence
+        );
+        cases.push(store.case(case_id).unwrap());
+    }
+    let mut snapshot = Snapshot {
+        schema_version: 1,
+        id: "snapshot".into(),
+        project_id: project.clone(),
+        profile_sha256: "profile".into(),
+        started_at: vulnbell::now(),
+        finished_at: vulnbell::now(),
+        instances: vec![instance.clone()],
+        cases,
+        coverage: Vec::new(),
+        partial: false,
+        alert_status: "local".into(),
+    };
+    let pending = |snapshot: &Snapshot, store: &Store| {
+        let report = vulnbell::output::morning_report(snapshot, store, "cyber").unwrap();
+        let needed: Vec<(String, bool)> = report
+            .finding_checks
+            .iter()
+            .map(|check| (check.case_id.clone(), check.local_checks[0].sandbox_needed))
+            .collect();
+        let pending: Vec<String> = report
+            .verification_pending
+            .iter()
+            .map(|item| {
+                assert_eq!(
+                    item.reason,
+                    vulnbell::output::PendingReason::SandboxCheckMissing
+                );
+                item.case_id.clone()
+            })
+            .collect();
+        (needed, pending)
+    };
+    let (needed, open) = pending(&snapshot, &store);
+    assert!(needed.contains(&("SIG-issue".into(), true)));
+    assert!(needed.contains(&("SIG-advisory".into(), false)));
+    assert_eq!(open, ["SIG-issue"]);
+
+    let legacy = store
+        .record_evidence(
+            &serde_json::to_vec(&json!({
+                "schema_version": 1,
+                "case_id": "SIG-issue",
+                "facts_sha256": "facts",
+                "instance_id": instance.id,
+                "reason": "Deployment configuration is unavailable.",
+            }))
+            .unwrap(),
+            "local_validation_blocker",
+            None,
+            EvidenceKind::Context,
+        )
+        .unwrap();
+    let mut issue = store.case("SIG-issue").unwrap();
+    issue.evidence.push(legacy);
+    store.save_case(&issue).unwrap();
+    snapshot.cases[0] = issue;
+    let (_, open) = pending(&snapshot, &store);
+    assert_eq!(open, ["SIG-issue"]);
+
+    snapshot.cases[0] = vulnbell::sandbox::record_blocker(
+        &mut store,
+        "SIG-issue",
+        None,
+        vulnbell::sandbox::BlockerKind::DetailsUndisclosed,
+        "The report withholds the trigger until a fix ships.",
+    )
+    .unwrap();
+    let (_, open) = pending(&snapshot, &store);
+    assert!(open.is_empty());
+    let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    let check = &report
+        .finding_checks
+        .iter()
+        .find(|check| check.case_id == "SIG-issue")
+        .unwrap()
+        .local_checks[0];
+    assert_eq!(
+        check.blocker,
+        Some(vulnbell::sandbox::BlockerKind::DetailsUndisclosed)
+    );
+    assert!(check.detail.starts_with("details not disclosed: "));
     drop(store);
     std::fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
 }

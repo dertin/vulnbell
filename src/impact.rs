@@ -223,7 +223,7 @@ fn questions() -> Vec<ImpactQuestion> {
 }
 
 /// An affected advisory claim or a current sandbox reproduction of this exact instance confirms it.
-fn affected_instance_confirmed(case: &Case, store: &Store, instance_id: &str) -> bool {
+pub(crate) fn affected_instance_confirmed(case: &Case, store: &Store, instance_id: &str) -> bool {
     case.claims.iter().any(|claim| {
         claim.instance_id == instance_id
             && claim.applicability == crate::model::Applicability::Affected
