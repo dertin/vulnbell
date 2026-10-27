@@ -70,6 +70,8 @@ done
 
 - Rerun `tools hits` after each round: paged GitLab, Forgejo and Jira sources list the next page only after reading the previous one.
 - When a provider answers 404 or 410 for a unit the repository does not have (issues or discussions disabled, no releases), write `[]` to that path. Any other failure (rate limit, 5xx, authentication) leaves the file absent; retry later or accept the source as partial with `tools draft --partial`.
+- A response that `hits` reports as not JSON usually holds a redirect or an HTML page: `curl -f` does not fail on 3xx. Delete it, do not follow the redirect on your own, and tell the user the tracker moved so the mapping can be fixed.
+- Jira Cloud answers a search on an unknown or hidden project with an empty 200. When a Jira source never returns issues, check `<base>/rest/api/3/project/<KEY>`; a 404 means the tracker is not covered. Report it as a coverage gap and cover the component through its current tracker.
 - Keep the token out of files and logs: `gh` uses its own credential store, and `GITHUB_TOKEN=$(gh auth token)` is set inline only for the `vulnbell` commands that query GitHub advisories.
 
 Primary docs:

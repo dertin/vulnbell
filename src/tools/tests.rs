@@ -303,7 +303,7 @@ fn providers_map_to_their_raw_directories() {
     assert!(matches!(
         raw::provider_for("https://issues.jboss.org/browse/WFLY"),
         Provider::Jira { api: JiraApi::SearchJqlV3, ref host, ref project, .. }
-            if host == "issues.redhat.com" && project == "WFLY"
+            if host == "redhat.atlassian.net" && project == "WFLY"
     ));
     assert!(matches!(
         raw::provider_for("https://gitlab.com/group/sub/project/-/issues"),

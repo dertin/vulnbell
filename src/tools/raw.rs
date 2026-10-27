@@ -193,8 +193,8 @@ pub fn provider_for(upstream: &str) -> Provider {
         ),
         "issues.redhat.com" | "issues.jboss.org" | "jira.jboss.org" => jira(
             JiraApi::SearchJqlV3,
-            "https://issues.redhat.com",
-            "issues.redhat.com",
+            "https://redhat.atlassian.net",
+            "redhat.atlassian.net",
             &segments,
         ),
         _ if host.ends_with(".atlassian.net") => {
