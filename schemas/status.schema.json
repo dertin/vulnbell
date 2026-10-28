@@ -10,6 +10,17 @@
           "minimum": 0,
           "type": "integer"
         },
+        "deferred_transitive": {
+          "description": "Inventory instances outside the selected tracker-mapping scope.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "deferred_unknown_depth": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
         "directories_pending": {
           "format": "uint",
           "minimum": 0,
@@ -53,6 +64,8 @@
         "files_excluded",
         "files_unavailable",
         "components_unmapped",
+        "deferred_transitive",
+        "deferred_unknown_depth",
         "sources_unavailable",
         "complete"
       ],

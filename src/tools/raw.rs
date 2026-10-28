@@ -1,7 +1,7 @@
 //! Layout and parsing of the provider responses the agent fetches with `gh` and `curl` into a
 //! run's raw directory. Each research target maps to one provider directory; a missing or
 //! incomplete response is reported with the file and API resource still needed.
-use super::{AdvisoryPackage, BODY_LIMIT, Item, ItemKind, RepositoryAdvisory};
+use super::{AdvisoryPackage, Item, ItemKind, RepositoryAdvisory};
 use crate::research::ResearchTarget;
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Duration, Utc};
@@ -67,8 +67,10 @@ pub enum Provider {
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FetchTool {
-    /// `gh api --paginate --slurp <request>`.
+    /// `gh api <request>` for one numbered REST page.
     GhRest,
+    /// `gh api <request>` for one identified issue, without pagination.
+    GhRestSingle,
     /// `gh api graphql --paginate --slurp` with the discussion search query in `request`.
     GhGraphqlDiscussions,
     /// `curl -fsS <request>`.
@@ -94,6 +96,8 @@ pub struct TargetItems {
     pub errors: Vec<String>,
     /// Items updated inside the target window.
     pub items: Vec<Item>,
+    /// Linked issues outside the activity window, used as context only.
+    pub linked_issues: Vec<Item>,
     /// Advisory IDs and CVEs of every advisory the repository has published, inside the window or not.
     pub published_identifiers: BTreeSet<String>,
 }
@@ -288,6 +292,7 @@ pub fn read_target(raw: &Path, target: &ResearchTarget) -> TargetItems {
         missing: Vec::new(),
         errors: Vec::new(),
         items: Vec::new(),
+        linked_issues: Vec::new(),
         published_identifiers: BTreeSet::new(),
     };
     match &provider {
@@ -310,7 +315,134 @@ pub fn read_target(raw: &Path, target: &ResearchTarget) -> TargetItems {
     result
         .items
         .retain(|item| super::in_window(&item.updated_at, &target.from, &target.until));
+    read_linked_issues(raw, target, &provider, &mut result);
     result
+}
+
+fn read_linked_issues(
+    raw: &Path,
+    target: &ResearchTarget,
+    provider: &Provider,
+    result: &mut TargetItems,
+) {
+    let (prefix, web_base, api_base, tool) = match provider {
+        Provider::GitHub {
+            owner, repository, ..
+        } => {
+            let prefix = format!("{owner}/{repository}");
+            (
+                prefix.clone(),
+                format!("https://github.com/{prefix}/"),
+                format!("repos/{prefix}/issues"),
+                FetchTool::GhRestSingle,
+            )
+        }
+        Provider::GitLab { host, project } => (
+            project.clone(),
+            format!("https://{host}/{project}/"),
+            format!(
+                "https://{host}/api/v4/projects/{}/issues",
+                crate::sources::encode(project)
+            ),
+            FetchTool::Curl,
+        ),
+        Provider::Forgejo {
+            host,
+            owner,
+            repository,
+        } => {
+            let prefix = format!("{owner}/{repository}");
+            (
+                prefix.clone(),
+                format!("https://{host}/{prefix}/"),
+                format!("https://{host}/api/v1/repos/{prefix}/issues"),
+                FetchTool::Curl,
+            )
+        }
+        Provider::Jira { .. } | Provider::Manual { .. } => return,
+    };
+    let present: BTreeSet<String> = result
+        .items
+        .iter()
+        .filter(|item| item.kind == super::ItemKind::Issue)
+        .map(|item| item.key.clone())
+        .collect();
+    let links: BTreeSet<String> = result
+        .items
+        .iter()
+        .filter(|item| item.kind.is_proposed_change())
+        .flat_map(|item| item.closes.iter().cloned())
+        .filter(|key| !present.contains(key))
+        .collect();
+    for key in links {
+        let Some(number) = key.strip_prefix(&format!("{prefix}#")).filter(|number| {
+            !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+        }) else {
+            result.errors.push("invalid linked issue identifier".into());
+            continue;
+        };
+        let path = result
+            .provider
+            .directory()
+            .join("linked-issues")
+            .join(format!("{number}.json"));
+        let values = match read_values(raw, &path) {
+            Ok(Some(values)) => values,
+            Ok(None) => {
+                result.missing.push(MissingFetch {
+                    upstream: target.upstream.clone(),
+                    path: relative(&path),
+                    tool,
+                    request: format!("{api_base}/{number}"),
+                });
+                continue;
+            }
+            Err(error) => {
+                result.errors.push(format!("{}: {error}", relative(&path)));
+                continue;
+            }
+        };
+        let parsed = if matches!(provider, Provider::GitLab { .. }) {
+            rest_records(values).and_then(|records| {
+                records
+                    .into_iter()
+                    .map(|record| {
+                        let issue: GitLabIssue = serde_json::from_value(record)?;
+                        let updated_at = time(Some(&issue.updated_at))
+                            .context("linked issue has an invalid timestamp")?;
+                        Ok(Item {
+                            key: format!("{prefix}#{}", issue.iid),
+                            kind: ItemKind::Issue,
+                            url: issue.web_url,
+                            title: issue.title,
+                            state: issue.state,
+                            labels: issue.labels,
+                            updated_at,
+                            body: body(issue.description),
+                            closes: Vec::new(),
+                            advisory: None,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+        } else {
+            github_issues(values, &prefix, &web_base)
+        };
+        match parsed {
+            Ok(mut issues)
+                if issues.len() == 1
+                    && issues[0].key == key
+                    && issues[0].kind == super::ItemKind::Issue =>
+            {
+                result.linked_issues.push(issues.remove(0))
+            }
+            Ok(_) => result.errors.push(format!(
+                "{}: linked response does not identify the requested issue",
+                relative(&path)
+            )),
+            Err(error) => result.errors.push(format!("{}: {error}", relative(&path))),
+        }
+    }
 }
 
 fn utc_z(value: &str) -> String {
@@ -389,7 +521,7 @@ fn rest_records(values: Vec<Value>) -> Result<Vec<Value>> {
 }
 
 fn body(text: Option<String>) -> String {
-    super::truncate_chars(text.as_deref().unwrap_or_default(), BODY_LIMIT)
+    text.unwrap_or_default()
 }
 
 fn time(value: Option<&str>) -> Option<String> {
@@ -430,52 +562,98 @@ fn read_github(
     let since = utc_z(&target.from);
     let requests = [
         (
-            "issues.json",
-            FetchTool::GhRest,
+            "issues",
             format!(
                 "repos/{prefix}/issues?state=all&since={since}&per_page=100&sort=updated&direction=desc"
             ),
         ),
+        ("releases", format!("repos/{prefix}/releases?per_page=100")),
         (
-            "releases.json",
-            FetchTool::GhRest,
-            format!("repos/{prefix}/releases?per_page=100"),
-        ),
-        (
-            "security-advisories.json",
-            FetchTool::GhRest,
+            "security-advisories",
             format!("repos/{prefix}/security-advisories?per_page=100"),
         ),
-        (
-            "discussions.json",
-            FetchTool::GhGraphqlDiscussions,
-            format!("repo:{prefix} updated:>={since}"),
-        ),
     ];
-    for (file, tool, request) in requests {
-        let path = directory.join(file);
+    for (name, request) in requests {
+        let mut records = Vec::new();
+        let mut complete = false;
+        for page in 1..=MAX_PAGES {
+            let path = directory.join(format!("{name}.page-{page}.json"));
+            let values = match read_values(raw, &path) {
+                Ok(Some(values)) => values,
+                Ok(None) => {
+                    result.missing.push(MissingFetch {
+                        upstream: target.upstream.clone(),
+                        path: relative(&path),
+                        tool: FetchTool::GhRest,
+                        request: format!("{request}&page={page}"),
+                    });
+                    break;
+                }
+                Err(error) => {
+                    result.errors.push(format!("{}: {error}", relative(&path)));
+                    break;
+                }
+            };
+            match rest_records(values) {
+                Ok(page_records) if page_records.len() <= 100 => {
+                    let last_page = page_records.len() < 100;
+                    records.extend(page_records);
+                    if last_page {
+                        complete = true;
+                        break;
+                    }
+                    if page == MAX_PAGES {
+                        result
+                            .errors
+                            .push(format!("{name}: more than {MAX_PAGES} pages"));
+                    }
+                }
+                Ok(_) => {
+                    result.errors.push(format!(
+                        "{}: REST page exceeds 100 records",
+                        relative(&path)
+                    ));
+                    break;
+                }
+                Err(error) => {
+                    result.errors.push(format!("{}: {error}", relative(&path)));
+                    break;
+                }
+            }
+        }
+        if !complete {
+            continue;
+        }
+        let parsed = match name {
+            "issues" => github_issues(records, &prefix, &web_base),
+            "releases" => github_releases(records, &prefix),
+            _ => github_advisories(records, &prefix, result),
+        };
+        match parsed {
+            Ok(items) => result.items.extend(items),
+            Err(error) => result.errors.push(format!("{name}: {error}")),
+        }
+    }
+    {
+        let path = directory.join("discussions.json");
+        let request = format!("repo:{prefix} updated:>={since}");
         let values = match read_values(raw, &path) {
             Ok(Some(values)) => values,
             Ok(None) => {
                 result.missing.push(MissingFetch {
                     upstream: target.upstream.clone(),
                     path: relative(&path),
-                    tool,
+                    tool: FetchTool::GhGraphqlDiscussions,
                     request,
                 });
-                continue;
+                return;
             }
             Err(error) => {
                 result.errors.push(format!("{}: {error}", relative(&path)));
-                continue;
+                return;
             }
         };
-        let parsed = match file {
-            "issues.json" => github_issues(values, &prefix, &web_base),
-            "releases.json" => github_releases(values, &prefix),
-            "security-advisories.json" => github_advisories(values, &prefix, result),
-            _ => github_discussions(values, &prefix),
-        };
+        let parsed = github_discussions(values, &prefix);
         match parsed {
             Ok(items) => result.items.extend(items),
             Err(error) => result.errors.push(format!("{}: {error}", relative(&path))),
@@ -505,7 +683,7 @@ fn github_issues(values: Vec<Value>, prefix: &str, web_base: &str) -> Result<Vec
     for record in rest_records(values)? {
         let issue: GitHubIssue = serde_json::from_value(record)?;
         let Some(updated_at) = time(Some(&issue.updated_at)) else {
-            continue;
+            bail!("GitHub issue has an invalid update timestamp");
         };
         let text = issue.body.unwrap_or_default();
         items.push(Item {
@@ -552,7 +730,7 @@ fn github_releases(values: Vec<Value>, prefix: &str) -> Result<Vec<Item>> {
             .as_deref()
             .or(release.created_at.as_deref());
         let Some(updated_at) = time(moment) else {
-            continue;
+            bail!("GitHub release has no valid publication timestamp");
         };
         items.push(Item {
             key: format!("{prefix}@{}", release.tag_name),
@@ -615,7 +793,7 @@ fn github_advisories(
             result.published_identifiers.insert(cve.clone());
         }
         let Some(updated_at) = time(Some(&advisory.updated_at)) else {
-            continue;
+            bail!("GitHub advisory has an invalid update timestamp");
         };
         let packages = advisory
             .vulnerabilities
@@ -679,7 +857,10 @@ fn github_discussions(values: Vec<Value>, prefix: &str) -> Result<Vec<Item>> {
         }
     }
     let mut items = Vec::new();
-    for page in pages {
+    let page_count = pages.len();
+    let mut cursors = BTreeSet::new();
+    let mut expected_discussions = 0_u64;
+    for (index, page) in pages.into_iter().enumerate() {
         if let Some(errors) = page.get("errors") {
             bail!(
                 "GraphQL errors: {}",
@@ -690,13 +871,34 @@ fn github_discussions(values: Vec<Value>, prefix: &str) -> Result<Vec<Item>> {
             .pointer("/data/search/nodes")
             .and_then(Value::as_array)
             .context("GraphQL page without data.search.nodes")?;
+        let count = page
+            .pointer("/data/search/discussionCount")
+            .and_then(Value::as_u64)
+            .context("GraphQL page without discussionCount; refetch using the current query")?;
+        expected_discussions = expected_discussions.max(count);
+        let more = page
+            .pointer("/data/search/pageInfo/hasNextPage")
+            .and_then(Value::as_bool)
+            .context("GraphQL page without pageInfo.hasNextPage; pagination is unverified")?;
+        if more {
+            let cursor = page
+                .pointer("/data/search/pageInfo/endCursor")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .context("GraphQL continuation has no cursor")?;
+            if !cursors.insert(cursor.to_owned()) || index + 1 == page_count {
+                bail!("GraphQL discussion pagination is incomplete or repeats a cursor");
+            }
+        } else if index + 1 != page_count {
+            bail!("GraphQL discussion pages continue after the terminal page");
+        }
         for node in nodes {
             if node.get("number").is_none() {
                 continue;
             }
             let discussion: Discussion = serde_json::from_value(node.clone())?;
             let Some(updated_at) = time(Some(&discussion.updated_at)) else {
-                continue;
+                bail!("GitHub discussion has an invalid update timestamp");
             };
             items.push(Item {
                 key: format!("{prefix}/discussions/{}", discussion.number),
@@ -714,6 +916,12 @@ fn github_discussions(values: Vec<Value>, prefix: &str) -> Result<Vec<Item>> {
                 advisory: None,
             });
         }
+    }
+    if u64::try_from(items.len()).unwrap_or(u64::MAX) < expected_discussions {
+        bail!(
+            "GraphQL discussion results are incomplete: {} of {expected_discussions}; narrow the time window and refetch",
+            items.len()
+        );
     }
     Ok(items)
 }
@@ -845,6 +1053,9 @@ fn read_gitlab(
                 }
             };
             let Some(updated_at) = time(Some(&issue.updated_at)) else {
+                result
+                    .errors
+                    .push(format!("{name}: invalid update timestamp"));
                 continue;
             };
             let text = issue.description.unwrap_or_default();
@@ -893,6 +1104,9 @@ fn read_gitlab(
             .as_deref()
             .or(release.created_at.as_deref());
         let Some(updated_at) = time(moment) else {
+            result
+                .errors
+                .push("GitLab release has no valid publication timestamp".into());
             continue;
         };
         result.items.push(Item {
@@ -961,6 +1175,9 @@ fn read_forgejo(
                 }
             };
             let Some(updated_at) = time(Some(&issue.updated_at)) else {
+                result
+                    .errors
+                    .push("Forgejo issue has an invalid update timestamp".into());
                 continue;
             };
             let text = issue.body.unwrap_or_default();
@@ -1013,6 +1230,9 @@ fn read_forgejo(
             .as_deref()
             .or(release.created_at.as_deref());
         let Some(updated_at) = time(moment) else {
+            result
+                .errors
+                .push("Forgejo release has no valid publication timestamp".into());
             continue;
         };
         result.items.push(Item {
@@ -1181,6 +1401,10 @@ fn read_jira(
         let read = parsed.issues.len();
         for issue in parsed.issues {
             let Some(updated_at) = time(issue.fields.updated.as_deref()) else {
+                result.errors.push(format!(
+                    "{}: Jira item has an invalid update timestamp",
+                    relative(&path)
+                ));
                 continue;
             };
             let mut labels = issue.fields.labels;
@@ -1267,7 +1491,6 @@ fn read_manual(raw: &Path, target: &ResearchTarget, result: &mut TargetItems) {
             continue;
         };
         item.updated_at = updated_at;
-        item.body = super::truncate_chars(&item.body, BODY_LIMIT);
         item.advisory = None;
         result.items.push(item);
     }

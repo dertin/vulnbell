@@ -61,6 +61,11 @@ fn mapping_upstream_enriches_identity_but_replacing_it_is_a_context_change() {
     moved.upstream = Some("https://github.com/example/rustls-fork".into());
     assert!(mapped.identity_replaced(&moved));
     assert!(mapped.identity_replaced(&unmapped));
+    let mut direct = unmapped.clone();
+    direct.provenance.direct = Some(true);
+    assert_eq!(unmapped.context_fingerprint(), direct.context_fingerprint());
+    direct.provenance.direct = Some(false);
+    assert_eq!(unmapped.context_fingerprint(), direct.context_fingerprint());
 }
 
 const ADVISORY: &str = "https://api.osv.dev/v1/vulns/GHSA-synthetic-order";

@@ -5,7 +5,9 @@
 pub mod advisories;
 pub mod cases;
 pub mod draft;
+pub mod evaluate;
 pub mod hits;
+pub mod queue;
 pub mod raw;
 pub mod screen;
 #[cfg(test)]
@@ -15,9 +17,6 @@ pub mod workspace;
 use chrono::{DateTime, FixedOffset, NaiveDateTime, SecondsFormat};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-
-/// Characters of an item body kept for screening and review.
-pub const BODY_LIMIT: usize = 8000;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -67,7 +66,7 @@ pub struct Item {
     pub labels: Vec<String>,
     /// The source's RFC3339 update time (publication time for releases and commit time for commits).
     pub updated_at: String,
-    /// Up to 8000 characters of the description, release notes or commit message.
+    /// Complete description, release notes or commit message within the raw-file budget.
     #[serde(default)]
     pub body: String,
     /// Keys of the issues a proposed change says it closes.

@@ -511,6 +511,7 @@ fn cards_cite_the_lockfile_line_and_the_inventory_is_summarized_per_lockfile() {
         alert_status: "local".into(),
     };
     let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    assert_eq!(report.schema_version, 1);
     assert_eq!(
         report.needs_review[0].provenance,
         ["pkg:cargo/rustls 0.23.46 — ../service/Cargo.lock:9"]
@@ -520,7 +521,7 @@ fn cards_cite_the_lockfile_line_and_the_inventory_is_summarized_per_lockfile() {
         vulnbell::output::PendingReason::ImpactNotAssessed
     );
     let markdown = vulnbell::output::morning_markdown(&report);
-    assert!(markdown.contains("**Incomplete report:** 1 open cases without impact assessment"));
+    assert!(markdown.contains("**Incomplete report:** 1 cases without impact assessment"));
     assert!(markdown.contains("| ../service/Cargo.lock | 2 |"));
     assert!(markdown.contains("../service/Cargo.lock:9"));
     assert!(!markdown.contains("pkg:cargo/other"));
@@ -669,7 +670,7 @@ fn contained_advisories_collapse_into_one_row_and_exposed_cases_keep_their_card(
 }
 
 #[test]
-fn a_sandbox_check_is_pending_only_while_the_affected_version_is_unconfirmed() {
+fn unconfirmed_versions_need_a_review_disposition_without_requiring_a_test() {
     let project = uuid::Uuid::new_v4().to_string();
     let mut store = Store::open(&project).unwrap();
     let instance = Instance::declared(&vulnbell::profile::Component {
@@ -787,7 +788,13 @@ fn a_sandbox_check_is_pending_only_while_the_affected_version_is_unconfirmed() {
         let needed: Vec<(String, bool)> = report
             .finding_checks
             .iter()
-            .map(|check| (check.case_id.clone(), check.local_checks[0].sandbox_needed))
+            .map(|check| {
+                assert!(!check.local_checks[0].sandbox_needed);
+                (
+                    check.case_id.clone(),
+                    check.local_checks[0].sandbox_candidate,
+                )
+            })
             .collect();
         let pending: Vec<String> = report
             .verification_pending
@@ -795,7 +802,7 @@ fn a_sandbox_check_is_pending_only_while_the_affected_version_is_unconfirmed() {
             .map(|item| {
                 assert_eq!(
                     item.reason,
-                    vulnbell::output::PendingReason::SandboxCheckMissing
+                    vulnbell::output::PendingReason::ReviewDispositionMissing
                 );
                 item.case_id.clone()
             })
@@ -851,6 +858,43 @@ fn a_sandbox_check_is_pending_only_while_the_affected_version_is_unconfirmed() {
         Some(vulnbell::sandbox::BlockerKind::DetailsUndisclosed)
     );
     assert!(check.detail.starts_with("details not disclosed: "));
+    let old_evidence_count = snapshot.cases[0].evidence.len();
+    snapshot.cases[0] = vulnbell::sandbox::clear_blocker(
+        &mut store,
+        "SIG-issue",
+        None,
+        "The previous blocker was misclassified; verification is still required.",
+    )
+    .unwrap();
+    assert!(snapshot.cases[0].evidence.len() > old_evidence_count);
+    let (_, open) = pending(&snapshot, &store);
+    assert_eq!(open, ["SIG-issue"]);
+    let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    let check = &report
+        .finding_checks
+        .iter()
+        .find(|check| check.case_id == "SIG-issue")
+        .unwrap()
+        .local_checks[0];
+    assert_eq!(check.result, vulnbell::output::LocalResult::NotRun);
+    assert!(check.detail.contains("misclassified"));
+    let invalid = store
+        .record_evidence(
+            b"not a valid blocker",
+            "local_validation_blocker",
+            None,
+            EvidenceKind::Context,
+        )
+        .unwrap();
+    let mut issue = store.case("SIG-issue").unwrap();
+    issue.evidence.push(invalid);
+    store.save_case(&issue).unwrap();
+    snapshot.cases[0] = issue;
+    let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    assert_eq!(
+        report.verification_pending[0].reason,
+        vulnbell::output::PendingReason::InvalidVerificationEvidence
+    );
     drop(store);
     std::fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
 }

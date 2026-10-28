@@ -15,6 +15,145 @@ fn persisted_hashes_keep_the_sha256_wire_format() {
 }
 
 #[test]
+fn cargo_lock_records_direct_dependencies_without_guessing_ambiguous_names() {
+    let lock = br#"version = 4
+[[package]]
+name = "app"
+version = "1.0.0"
+dependencies = ["direct 1.0.0", "ambiguous"]
+[[package]]
+name = "direct"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = ["deep"]
+[[package]]
+name = "deep"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+[[package]]
+name = "ambiguous"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+[[package]]
+name = "ambiguous"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#;
+    let packages = parse_lock("Cargo.lock", lock).unwrap();
+    assert_eq!(
+        packages
+            .iter()
+            .find(|item| item.name == "direct")
+            .unwrap()
+            .direct,
+        Some(true)
+    );
+    assert_eq!(
+        packages
+            .iter()
+            .find(|item| item.name == "deep")
+            .unwrap()
+            .direct,
+        Some(false)
+    );
+    assert!(
+        packages
+            .iter()
+            .filter(|item| item.name == "ambiguous")
+            .all(|item| item.direct.is_none())
+    );
+}
+
+#[test]
+fn cargo_lock_with_unresolved_root_reference_does_not_guess_transitive_depth() {
+    let lock = br#"version = 4
+[[package]]
+name = "app"
+version = "1.0.0"
+dependencies = ["missing", "direct"]
+[[package]]
+name = "direct"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+[[package]]
+name = "unknown"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#;
+    let packages = parse_lock("Cargo.lock", lock).unwrap();
+    assert_eq!(
+        packages
+            .iter()
+            .find(|item| item.name == "direct")
+            .unwrap()
+            .direct,
+        Some(true)
+    );
+    assert_eq!(
+        packages
+            .iter()
+            .find(|item| item.name == "unknown")
+            .unwrap()
+            .direct,
+        None
+    );
+}
+
+#[test]
+fn pnpm_importers_identify_exact_direct_versions_and_keep_ambiguous_aliases_unknown() {
+    let lock = br#"lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      foo:
+        specifier: ^1
+        version: 1.2.3
+    devDependencies:
+      bar:
+        specifier: ^2
+        version: 2.0.0(peer@1.0.0)
+packages:
+  foo@1.2.3: {}
+  bar@2.0.0: {}
+  deep@1.0.0: {}
+"#;
+    let packages = parse_lock("pnpm-lock.yaml", lock).unwrap();
+    assert_eq!(
+        packages.iter().find(|p| p.name == "foo").unwrap().direct,
+        Some(true)
+    );
+    assert_eq!(
+        packages.iter().find(|p| p.name == "bar").unwrap().direct,
+        Some(true)
+    );
+    assert_eq!(
+        packages.iter().find(|p| p.name == "deep").unwrap().direct,
+        Some(false)
+    );
+    let incomplete = br#"lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      alias: {specifier: 'npm:other@1', version: 'npm:other@1.0.0'}
+packages:
+  other@1.0.0: {}
+"#;
+    assert_eq!(
+        parse_lock("pnpm-lock.yaml", incomplete).unwrap()[0].direct,
+        None
+    );
+}
+
+#[test]
+fn npm_missing_root_does_not_make_packages_transitive() {
+    let lock = br#"{"lockfileVersion":3,"packages":{"node_modules/foo":{"version":"1.0.0"}}}"#;
+    assert_eq!(
+        parse_lock("package-lock.json", lock).unwrap()[0].direct,
+        None
+    );
+}
+
+#[test]
 fn sqlite_unsigned_values_reject_negative_reads_and_overflowing_writes() {
     let connection = rusqlite::Connection::open_in_memory().unwrap();
     connection
@@ -49,6 +188,27 @@ fn generated_profile_schema_matches_committed_contract() {
     let committed: serde_json::Value =
         serde_json::from_slice(&fs::read("schemas/profile.schema.json").unwrap()).unwrap();
     assert_eq!(profile::schema(), committed);
+}
+
+#[test]
+fn review_budget_is_optional_and_rejects_out_of_range_values() {
+    let base = "schema: 1\nproject_id: 11111111-1111-4111-8111-111111111111\nname: budget\n";
+    for (value, valid) in [
+        ("1", true),
+        ("60", true),
+        ("120", true),
+        ("0", false),
+        ("121", false),
+    ] {
+        let profile: Profile = serde_saphyr::from_str(&format!(
+            "{base}research:\n  review_budget_minutes: {value}\n"
+        ))
+        .unwrap();
+        assert_eq!(profile::validate(&profile).valid, valid, "budget {value}");
+    }
+    let profile: Profile = serde_saphyr::from_str(base).unwrap();
+    assert!(profile.research.review_budget_minutes.is_none());
+    assert!(profile::validate(&profile).valid);
 }
 #[test]
 fn examples_and_empty_scaffold_validate_offline() {
@@ -385,6 +545,16 @@ fn all_published_json_schemas_match_their_rust_contracts() {
         (
             "verdict-batch",
             serde_json::to_value(schemars::schema_for!(vulnbell::tools::cases::VerdictBatch))
+                .unwrap(),
+        ),
+        (
+            "scope-batch",
+            serde_json::to_value(schemars::schema_for!(vulnbell::tools::cases::ScopeBatch))
+                .unwrap(),
+        ),
+        (
+            "handoff-batch",
+            serde_json::to_value(schemars::schema_for!(vulnbell::tools::cases::HandoffBatch))
                 .unwrap(),
         ),
         (

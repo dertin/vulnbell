@@ -103,6 +103,36 @@
     "Research": {
       "additionalProperties": false,
       "properties": {
+        "follow": {
+          "description": "Exact inventory references explicitly selected for deeper tracker research.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 500,
+          "type": "array"
+        },
+        "initial_since": {
+          "description": "Optional initial activity window (RFC3339), for example a verified monitored release date.\nAdvisory scans remain independent of this window.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "release_windows": {
+          "default": false,
+          "description": "Acquire exact-version release dates from supported official registries for initial windows.",
+          "type": "boolean"
+        },
+        "review_budget_minutes": {
+          "description": "Per-monitor review budget. Host agents must stop at the deadline and preserve open work.",
+          "format": "uint16",
+          "maximum": 120,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "topics": {
           "default": [],
           "items": {
@@ -110,6 +140,11 @@
           },
           "maxItems": 30,
           "type": "array"
+        },
+        "tracker_scope": {
+          "$ref": "#/$defs/TrackerScope",
+          "default": "direct",
+          "description": "Tracker exploration scope; advisory checks continue across the full inventory."
         },
         "web": {
           "$ref": "#/$defs/WebResearch",
@@ -159,6 +194,13 @@
         "daily",
         "weekdays",
         "weekly"
+      ],
+      "type": "string"
+    },
+    "TrackerScope": {
+      "enum": [
+        "direct",
+        "all"
       ],
       "type": "string"
     },
@@ -213,7 +255,9 @@
     "research": {
       "$ref": "#/$defs/Research",
       "default": {
+        "release_windows": false,
         "topics": [],
+        "tracker_scope": "direct",
         "web": "off"
       }
     },

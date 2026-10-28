@@ -1,5 +1,7 @@
 use crate::{
-    model::{Applicability, Claim, Coverage, CoverageState, EvidenceKind, Instance},
+    model::{
+        Applicability, Case, Claim, Coverage, CoverageState, Evidence, EvidenceKind, Instance,
+    },
     network::Http,
 };
 use anyhow::{Context, Result, bail};
@@ -115,10 +117,15 @@ struct CveMetadata {
     state: String,
 }
 
-pub fn scan(instances: &[Instance], http: &mut Http<'_>) -> Intelligence {
+pub fn scan(
+    instances: &[Instance],
+    http: &mut Http<'_>,
+    research: &crate::profile::Research,
+    previous_cases: &[Case],
+) -> Intelligence {
     let mut intelligence = Intelligence::default();
     osv(instances, http, &mut intelligence);
-    repository_advisories(instances, http, &mut intelligence);
+    repository_advisories(instances, http, &mut intelligence, research, previous_cases);
     for instance in instances {
         if instance.resolved_version.is_none() {
             intelligence.coverage.push(Coverage::new(
@@ -401,16 +408,135 @@ struct RepositoryPackage {
     name: Option<String>,
 }
 
+/// Match an official published GitHub repository advisory to an existing case's exact instances.
+/// Arbitrary web documents and advisory links to other repositories remain context only.
+pub fn case_repository_advisory(
+    case: &Case,
+    url: &str,
+    bytes: &[u8],
+    evidence: &Evidence,
+) -> Option<(String, Vec<Claim>)> {
+    let Ok(url) = url::Url::parse(url) else {
+        return None;
+    };
+    if url.scheme() != "https"
+        || url.host_str() != Some("api.github.com")
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.port().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return None;
+    }
+    let segments: Vec<&str> = url.path_segments().into_iter().flatten().collect();
+    let ["repos", owner, repository, "security-advisories", id] = segments.as_slice() else {
+        return None;
+    };
+    let expected = format!("https://github.com/{owner}/{repository}/security/advisories/{id}");
+    if !case
+        .upstream_events
+        .iter()
+        .any(|event| event.url == expected)
+    {
+        return None;
+    }
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return None;
+    };
+    let state = value.get("state").and_then(serde_json::Value::as_str)?;
+    if state != "published" && state != "withdrawn" {
+        return None;
+    }
+    let withdrawn = state == "withdrawn";
+    let Ok(advisory) = serde_json::from_value::<RepositoryAdvisory>(value) else {
+        return None;
+    };
+    if advisory.ghsa_id != *id {
+        return None;
+    }
+    if withdrawn || advisory.withdrawn_at.is_some() {
+        return Some((id.to_string(), Vec::new()));
+    }
+    let expected_repository = format!("{owner}/{repository}");
+    let mut claims = Vec::new();
+    for instance in &case.instances {
+        if instance
+            .upstream
+            .as_deref()
+            .and_then(github_repository)
+            .as_deref()
+            != Some(expected_repository.as_str())
+        {
+            continue;
+        }
+        let Some(version) = instance
+            .resolved_version
+            .as_deref()
+            .and_then(|value| crate::identity::normalized_version(value).ok())
+        else {
+            continue;
+        };
+        let affected = advisory.vulnerabilities.iter().any(|vulnerability| {
+            let Some(package) = &vulnerability.package else {
+                return false;
+            };
+            package
+                .name
+                .as_deref()
+                .is_some_and(|name| repository_package_is(instance, &package.ecosystem, name))
+                && vulnerability
+                    .vulnerable_version_range
+                    .as_deref()
+                    .and_then(|range| {
+                        github_range_match(
+                            range,
+                            vulnerability.patched_versions.as_deref(),
+                            &version,
+                        )
+                    })
+                    == Some(RangeMatch::Affected)
+        });
+        if affected {
+            let mut evidence = evidence.clone();
+            evidence.kind = EvidenceKind::Advisory;
+            claims.push(Claim {
+                id: advisory.ghsa_id.clone(),
+                source: "github_repository".into(),
+                aliases: advisory.cve_id.iter().cloned().collect(),
+                instance_id: instance.id.clone(),
+                summary: advisory.summary.clone(),
+                applicability: Applicability::Affected,
+                evidence,
+                known_exploited: false,
+            });
+        }
+    }
+    Some((id.to_string(), claims))
+}
+
 /// Advisories that maintainers publish in their repository reach the global GitHub database
 /// and OSV only after GitHub reviews them; until then the repository is the vendor's statement.
 fn repository_advisories(
     instances: &[Instance],
     http: &mut Http<'_>,
     intelligence: &mut Intelligence,
+    research: &crate::profile::Research,
+    previous_cases: &[Case],
 ) {
+    // A previously observed repository advisory is a concrete reason to refresh that source
+    // even for a deferred dependency; this does not expand its issues/PR tracker scope.
+    let previously_claimed: std::collections::HashSet<&str> = previous_cases
+        .iter()
+        .flat_map(|case| &case.claims)
+        .filter(|claim| claim.source == "github_repository")
+        .map(|claim| claim.instance_id.as_str())
+        .collect();
     let mut by_repository: BTreeMap<String, Vec<(&Instance, &'static str, String)>> =
         BTreeMap::new();
-    for instance in instances {
+    for instance in instances.iter().filter(|instance| {
+        research.tracks(instance) || previously_claimed.contains(instance.id.as_str())
+    }) {
         if instance.resolved_version.is_none() {
             continue;
         }

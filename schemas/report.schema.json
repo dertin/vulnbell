@@ -131,6 +131,17 @@
           "minimum": 0,
           "type": "integer"
         },
+        "deferred_transitive": {
+          "description": "Inventory instances outside the selected tracker-mapping scope.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "deferred_unknown_depth": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
         "directories_pending": {
           "format": "uint",
           "minimum": 0,
@@ -174,6 +185,8 @@
         "files_excluded",
         "files_unavailable",
         "components_unmapped",
+        "deferred_transitive",
+        "deferred_unknown_depth",
         "sources_unavailable",
         "complete"
       ],
@@ -224,13 +237,29 @@
             "$ref": "#/$defs/FindingReference"
           },
           "type": "array"
+        },
+        "review_handoff": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReviewHandoff"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Evidence-bound review disposition; it never represents a sandbox attestation."
+        },
+        "review_handoff_stale": {
+          "description": "A prior disposition is no longer current or its evidence cannot be validated.",
+          "type": "boolean"
         }
       },
       "required": [
         "case_id",
         "decision",
         "references",
-        "local_checks"
+        "local_checks",
+        "review_handoff_stale"
       ],
       "type": "object"
     },
@@ -607,13 +636,18 @@
         "result": {
           "$ref": "#/$defs/LocalResult"
         },
+        "sandbox_candidate": {
+          "description": "An unconfirmed version warrants a review decision; it does not mandate a test.",
+          "type": "boolean"
+        },
         "sandbox_needed": {
-          "description": "The impact needs evidence and nothing confirms this exact version is affected, so only a\nsandbox result or a categorized blocker settles it. Missing deployment facts never set it.",
+          "description": "A current review disposition explicitly requires a test for this instance.",
           "type": "boolean"
         }
       },
       "required": [
         "instance_id",
+        "sandbox_candidate",
         "sandbox_needed",
         "result",
         "detail"
@@ -715,8 +749,18 @@
           "type": "string"
         },
         {
+          "const": "review_disposition_missing",
+          "description": "An unconfirmed signal needs an explicit review disposition, not necessarily a test.",
+          "type": "string"
+        },
+        {
           "const": "sandbox_check_missing",
-          "description": "An instance needs a sandbox check (see `LocalCheck::sandbox_needed`) and has neither a\nresult nor a blocker with a kind.",
+          "description": "A test was explicitly required and has neither a result nor a categorized blocker.",
+          "type": "string"
+        },
+        {
+          "const": "invalid_verification_evidence",
+          "description": "Recorded verification evidence could not be validated.",
           "type": "string"
         }
       ]
@@ -733,6 +777,51 @@
       "required": [
         "case_id",
         "reason"
+      ],
+      "type": "object"
+    },
+    "ReviewHandoff": {
+      "additionalProperties": false,
+      "description": "A reviewed case may be handed off with open uncertainty without requiring a laboratory test.",
+      "properties": {
+        "case_id": {
+          "type": "string"
+        },
+        "facts_sha256": {
+          "type": "string"
+        },
+        "next_step": {
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sandbox_instance_ids": {
+          "description": "Explicit test targets; empty only when no sandbox test is required.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "sandbox_required": {
+          "type": "boolean"
+        },
+        "uncertainty": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "case_id",
+        "facts_sha256",
+        "rationale",
+        "uncertainty",
+        "next_step",
+        "sandbox_required",
+        "sandbox_instance_ids",
+        "note"
       ],
       "type": "object"
     },
@@ -951,8 +1040,10 @@
       ]
     },
     "schema_version": {
+      "description": "Current report contract distinguishes candidates from explicitly required checks.",
       "format": "uint32",
-      "minimum": 0,
+      "maximum": 1,
+      "minimum": 1,
       "type": "integer"
     },
     "source_map": {

@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "items": [
+    {
+      "item": {
+        "key": "synthetic/1",
+        "kind": "issue",
+        "url": "https://example.org/issues/1",
+        "title": "CVE-2026-12345 in parser",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "body": "An affected version is reported."
+      },
+      "relevant": true,
+      "rationale": "Synthetic known security advisory."
+    },
+    {
+      "item": {
+        "key": "synthetic/2",
+        "kind": "issue",
+        "url": "https://example.org/issues/2",
+        "title": "Authentication handling",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "body": "An attacker can bypass the check."
+      },
+      "relevant": true,
+      "rationale": "Synthetic explicit security claim in body."
+    },
+    {
+      "item": {
+        "key": "synthetic/3",
+        "kind": "issue",
+        "url": "https://example.org/issues/3",
+        "title": "Handle malformed input",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "body": "A crash occurs in the parser."
+      },
+      "relevant": true,
+      "rationale": "Synthetic security-relevant bug without explicit security wording."
+    },
+    {
+      "item": {
+        "key": "synthetic/4",
+        "kind": "issue",
+        "url": "https://example.org/issues/4",
+        "title": "Parser crash",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "body": "A test-only crash in an example."
+      },
+      "relevant": false,
+      "rationale": "Synthetic false positive with a bug-class title."
+    },
+    {
+      "item": {
+        "key": "synthetic/6",
+        "kind": "issue",
+        "url": "https://example.org/issues/6",
+        "title": "Handle a malformed packet",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "body": "The process stops making progress."
+      },
+      "relevant": true,
+      "rationale": "Synthetic relevant issue without the current rule's bug terms."
+    },
+    {
+      "item": {
+        "key": "synthetic/5",
+        "kind": "issue",
+        "url": "https://example.org/issues/5",
+        "title": "Fix wording",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "body": "Documentation only."
+      },
+      "relevant": false,
+      "rationale": "Synthetic unrelated change."
+    }
+  ]
+}

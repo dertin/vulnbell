@@ -12,12 +12,262 @@ use anyhow::{Context, Result, bail};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
 };
 
 const NOTE_LIMIT: u64 = 1024 * 1024;
 const BATCH_LIMIT: u64 = 16 * 1024 * 1024;
+
+/// A reviewed case may be handed off with open uncertainty without requiring a laboratory test.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewHandoff {
+    pub case_id: String,
+    pub facts_sha256: String,
+    pub rationale: String,
+    pub uncertainty: String,
+    pub next_step: String,
+    pub sandbox_required: bool,
+    /// Explicit test targets; empty only when no sandbox test is required.
+    pub sandbox_instance_ids: Vec<String>,
+    pub note: PathBuf,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HandoffBatch {
+    #[schemars(range(min = 1, max = 1))]
+    pub schema_version: u32,
+    pub cases: Vec<ReviewHandoff>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RecordedHandoff {
+    schema_version: u32,
+    handoff: ReviewHandoff,
+    impact_sha256: String,
+    verdict_sha256: String,
+    note_sha256: String,
+}
+
+fn current_review_hashes(case: &Case) -> Option<(String, String)> {
+    let latest = |source: &str| {
+        case.evidence
+            .iter()
+            .rev()
+            .find(|e| e.source == source)
+            .map(|e| e.sha256.clone())
+    };
+    Some((latest("impact_assessment")?, latest("agent_verdict")?))
+}
+
+pub fn load_handoff(path: &Path) -> Result<HandoffBatch> {
+    let batch: HandoffBatch = load(path)?;
+    if batch.schema_version != 1 {
+        bail!("handoff batch schema_version must be 1");
+    }
+    Ok(batch)
+}
+
+pub fn apply_handoff(store: &mut Store, batch: &HandoffBatch, base: &Path) -> Vec<CaseOutcome> {
+    batch
+        .cases
+        .iter()
+        .map(|entry| {
+            let result = if batch.schema_version == 1 {
+                handoff_case(store, entry, base)
+            } else {
+                Err(anyhow::anyhow!("handoff batch schema_version must be 1"))
+            };
+            CaseOutcome::from(&entry.case_id, result)
+        })
+        .collect()
+}
+
+fn validate_handoff_selection(entry: &ReviewHandoff, case: &Case) -> Result<()> {
+    let selected: HashSet<&str> = entry
+        .sandbox_instance_ids
+        .iter()
+        .map(String::as_str)
+        .collect();
+    if selected.len() != entry.sandbox_instance_ids.len()
+        || selected
+            .iter()
+            .any(|id| !case.instances.iter().any(|instance| instance.id == *id))
+        || (!entry.sandbox_required && !selected.is_empty())
+        || (entry.sandbox_required && selected.is_empty())
+    {
+        bail!("sandbox instance selection must be unique, current, and explicit for tests");
+    }
+    Ok(())
+}
+
+fn handoff_case(
+    store: &mut Store,
+    entry: &ReviewHandoff,
+    base: &Path,
+) -> Result<serde_json::Value> {
+    let _lock = store.lock()?;
+    let mut case = store.case(&entry.case_id)?;
+    if case.facts_sha256 != entry.facts_sha256 || case.decision != Decision::Review {
+        bail!("handoff requires a review case with current facts");
+    }
+    if impact::latest(&case, store).is_none() || !has_current_verdict(&case, store) {
+        bail!("handoff requires a current impact assessment and verdict");
+    }
+    validate_handoff_selection(entry, &case)?;
+    for value in [&entry.rationale, &entry.uncertainty, &entry.next_step] {
+        if value.trim().is_empty() || value.len() > 4000 {
+            bail!("handoff rationale, uncertainty and next step must be 1..4000 bytes");
+        }
+    }
+    let note = crate::read_limited(&base.join(&entry.note), NOTE_LIMIT)?;
+    if note.is_empty() {
+        bail!("handoff note is empty");
+    }
+    let note_evidence =
+        store.record_evidence(&note, "review_handoff_note", None, EvidenceKind::Context)?;
+    let note_sha256 = note_evidence.sha256.clone();
+    case.evidence.push(note_evidence);
+    let (impact_sha256, verdict_sha256) =
+        current_review_hashes(&case).context("missing current review evidence")?;
+    let record = RecordedHandoff {
+        schema_version: 1,
+        handoff: entry.clone(),
+        impact_sha256,
+        verdict_sha256,
+        note_sha256,
+    };
+    let evidence = store.record_evidence(
+        &serde_json::to_vec(&record)?,
+        "review_handoff",
+        None,
+        EvidenceKind::Context,
+    )?;
+    case.evidence.push(evidence);
+    case.updated_at = crate::now();
+    store.save_case(&case)?;
+    Ok(serde_json::json!({"sandbox_required": entry.sandbox_required}))
+}
+
+pub fn current_handoff(case: &Case, store: &Store) -> Option<ReviewHandoff> {
+    let evidence = case
+        .evidence
+        .iter()
+        .rev()
+        .find(|e| e.source == "review_handoff")?;
+    if !store.evidence_exists(evidence).ok()? {
+        return None;
+    }
+    let bytes = crate::read_limited(
+        &store.directory.join("evidence").join(&evidence.sha256),
+        NOTE_LIMIT,
+    )
+    .ok()?;
+    let record: RecordedHandoff = serde_json::from_slice(&bytes).ok()?;
+    let (impact, verdict) = current_review_hashes(case)?;
+    let note = case
+        .evidence
+        .iter()
+        .find(|e| e.source == "review_handoff_note" && e.sha256 == record.note_sha256)?;
+    (record.schema_version == 1
+        && validate_handoff_selection(&record.handoff, case).is_ok()
+        && store.evidence_exists(note).ok()?
+        && record.handoff.case_id == case.case_id
+        && record.handoff.facts_sha256 == case.facts_sha256
+        && record.impact_sha256 == impact
+        && record.verdict_sha256 == verdict)
+        .then_some(record.handoff)
+}
+
+/// Evidence-backed narrowing of previously over-broad research cases. This does not settle impact.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ScopeBatch {
+    pub schema_version: u32,
+    pub cases: Vec<CaseScope>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CaseScope {
+    pub case_id: String,
+    pub facts_sha256: String,
+    pub instance_ids: Vec<String>,
+    pub rationale: String,
+    /// A reviewed evidence note; relative to the batch file.
+    pub note: PathBuf,
+}
+
+pub fn load_scope(path: &Path) -> Result<ScopeBatch> {
+    let batch: ScopeBatch = load(path)?;
+    if batch.schema_version != 1 {
+        bail!("scope batch schema_version must be 1");
+    }
+    Ok(batch)
+}
+
+pub fn apply_scope(store: &mut Store, batch: &ScopeBatch, base: &Path) -> Vec<CaseOutcome> {
+    batch
+        .cases
+        .iter()
+        .map(|entry| CaseOutcome::from(&entry.case_id, scope_case(store, entry, base)))
+        .collect()
+}
+
+fn scope_case(store: &mut Store, entry: &CaseScope, base: &Path) -> Result<serde_json::Value> {
+    let _lock = store.lock()?;
+    let mut case = store.case(&entry.case_id)?;
+    if case.facts_sha256 != entry.facts_sha256 {
+        bail!("case facts changed; inspect the current case before narrowing scope");
+    }
+    if case.decision != Decision::Review
+        || !case.claims.is_empty()
+        || case.upstream_events.len() != 1
+    {
+        bail!("scope narrowing accepts one-event research review cases without advisory claims");
+    }
+    if entry.rationale.trim().is_empty() || entry.rationale.len() > 4000 {
+        bail!("scope rationale must be 1..4000 bytes");
+    }
+    let requested: HashSet<&str> = entry.instance_ids.iter().map(String::as_str).collect();
+    if requested.is_empty()
+        || requested.len() != entry.instance_ids.len()
+        || requested.len() >= case.instances.len()
+        || requested
+            .iter()
+            .any(|id| !case.instances.iter().any(|instance| instance.id == *id))
+    {
+        bail!("scope must be a unique, nonempty, strict subset of the current instances");
+    }
+    let note = crate::read_limited(&base.join(&entry.note), NOTE_LIMIT)
+        .with_context(|| format!("cannot read scope note {}", entry.note.display()))?;
+    if note.is_empty() {
+        bail!("scope note is empty");
+    }
+    let previous_count = case.instances.len();
+    let evidence =
+        store.record_evidence(&note, "local_scope_evidence", None, EvidenceKind::Context)?;
+    case.instances
+        .retain(|instance| requested.contains(instance.id.as_str()));
+    case.facts_sha256 = crate::digest(&serde_json::to_vec(&(
+        &case.facts_sha256,
+        &entry.instance_ids,
+        &entry.rationale,
+        &evidence.sha256,
+    ))?);
+    case.evidence.push(evidence);
+    case.applicability = Applicability::Possible;
+    case.verification = Verification::Inconclusive;
+    case.open_questions.push(format!("Scope reassessed: {}. Reassess impact for the retained instances; excluded instances are not certified safe.", entry.rationale));
+    case.updated_at = crate::now();
+    store.save_case(&case)?;
+    Ok(
+        serde_json::json!({"previous_instances": previous_count, "retained_instances": case.instances.len(), "facts_sha256": case.facts_sha256}),
+    )
+}
 
 /// Impact answers for several cases. Note paths are relative to the batch file.
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -45,6 +295,9 @@ pub struct BatchAnswer {
     pub rationale: String,
     #[serde(default)]
     pub notes: Vec<PathBuf>,
+    /// Evidence already registered on this case; checked for type and integrity by impact.
+    #[serde(default)]
+    pub evidence: Vec<EvidenceReference>,
     /// Case instances the answer covers; empty means all of them.
     #[serde(default)]
     pub instance_ids: Vec<String>,
@@ -155,10 +408,11 @@ fn case_impact(store: &mut Store, entry: &CaseImpact, base: &Path) -> Result<ser
         } else {
             &answer.notes
         };
-        let evidence: Vec<EvidenceReference> = cited
+        let mut evidence: Vec<EvidenceReference> = cited
             .iter()
             .filter_map(|path| notes.get(path.as_path()).cloned())
             .collect();
+        evidence.extend(answer.evidence.iter().cloned());
         for instance_id in covered_instances(&case, &answer.instance_ids)? {
             answers.push(ImpactAnswer {
                 instance_id,
@@ -282,6 +536,8 @@ pub struct PendingReport {
     pub research_open: Vec<ResearchOpen>,
     /// General discovery work left to the agent; null when nothing remains.
     pub discovery_open: Option<DiscoveryOpen>,
+    /// Inventory exists, but no product or dependency was selected for tracker research.
+    pub tracker_scope_unresolved: bool,
 }
 
 /// Unavailable files and components recorded without a repository are dispositions, not open
@@ -300,6 +556,14 @@ pub struct ResearchOpen {
     pub from: String,
     pub until: String,
     pub reason: ResearchOpenReason,
+    /// Previous partial source details and safe pagination data, when recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<crate::research::SourceReview>,
+    /// Prior partial work retained for reference when its context can no longer be resumed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stale_progress: Option<crate::research::SourceReview>,
+    /// Static guidance; source details are data, never commands.
+    pub next_step: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -308,6 +572,7 @@ pub enum ResearchOpenReason {
     NeverReviewed,
     PartialReview,
     WindowOpen,
+    ContextChanged,
 }
 
 pub fn pending(store: &Store) -> Result<PendingReport> {
@@ -322,12 +587,14 @@ pub fn pending(store: &Store) -> Result<PendingReport> {
         .map(|case| case.case_id.clone())
         .collect();
     let plan = crate::research::full_plan(store)?;
+    let tracker_scope_unresolved = plan.scope_unselected;
     let research_open: Vec<ResearchOpen> = plan
         .targets
         .into_iter()
         .filter_map(|target| {
             let reason = match &target.last_complete_review {
-                _ if target.continuation.is_some() => ResearchOpenReason::PartialReview,
+                _ if target.progress.is_some() => ResearchOpenReason::PartialReview,
+                _ if target.context_reopened => ResearchOpenReason::ContextChanged,
                 None => ResearchOpenReason::NeverReviewed,
                 Some(checkpoint) if super::same_instant(checkpoint, &target.until) => {
                     return None;
@@ -339,6 +606,14 @@ pub fn pending(store: &Store) -> Result<PendingReport> {
                 from: target.from,
                 until: target.until,
                 reason,
+                progress: target.progress,
+                stale_progress: target.stale_progress,
+                next_step: match reason {
+                    ResearchOpenReason::NeverReviewed => "Run research, then fetch missing sources with tools hits and record decisions.",
+                    ResearchOpenReason::PartialReview => "Resolve the recorded source gap and resume the pinned window; run tools hits again.",
+                    ResearchOpenReason::WindowOpen => "Review the current window and import the completed source review.",
+                    ResearchOpenReason::ContextChanged => "The monitored context changed or lacks a checkpoint fingerprint; review the reopened window.",
+                },
             })
         })
         .collect();
@@ -359,11 +634,13 @@ pub fn pending(store: &Store) -> Result<PendingReport> {
         deliverable: report.verification_pending.is_empty()
             && verdict_missing.is_empty()
             && research_open.is_empty()
+            && !tracker_scope_unresolved
             && discovery_open.is_none(),
         verification_pending: report.verification_pending,
         verdict_missing,
         research_open,
         discovery_open,
+        tracker_scope_unresolved,
     })
 }
 

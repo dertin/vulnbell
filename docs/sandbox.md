@@ -15,7 +15,7 @@ vulnbell sandbox status
 
 `prepare` checks the version and prerequisites. It uses a private VulnBell `MSB_HOME` and downloads and prepares an official OCI image pinned by digest. The base image is Alpine 3.22.7, index `sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f`. It also records the architecture-specific manifest digest and executable SHA-256. The global Microsandbox installation is not changed. Set `VULNBELL_MSB_EXECUTABLE` to select the executable during setup. If `msb` is missing or has another version, `prepare` and `doctor` name the release to install. When `msb doctor` fails, they show its failing checks.
 
-Report JSON lists `verification_pending` for open cases that lack an impact assessment, or that have an instance with `sandbox_needed`: its impact is `needs_evidence` and no advisory claim or lab reproduction confirms that exact version is affected. Such an instance needs a local test result or a blocker with a kind. Missing deployment facts (whether the artifact is deployed, how the edge is configured) do not require a test, because the sandbox cannot establish them; they stay as open impact questions in the report. The Markdown report starts with an incomplete-report banner until the pending items are resolved.
+Report and pending JSON use schema version 1. Report JSON distinguishes `sandbox_candidate` (the version is unconfirmed and needs a review disposition) from `sandbox_needed` (a current handoff explicitly requires testing that instance). An unresolved candidate without a handoff is `review_disposition_missing`; it does not by itself require a sandbox. Handoff schema 1 requires `sandbox_instance_ids`: an empty list with `sandbox_required: false`, or explicit target IDs with `true`. Earlier handoff formats are unsupported. Missing deployment facts do not require a test because the sandbox cannot establish them. Invalid verification evidence remains pending. The Markdown report starts with an incomplete banner while any of these decisions remain open.
 
 `case <id> --validation-blocker <reason> --blocker-kind <kind>` records the blocker for every instance of the case; add `--instance <id>` to limit it to one. Kinds:
 
@@ -31,7 +31,9 @@ A test that fails to run records a blocker without a kind. It does not settle th
 
 A current `lab_reproduced` attestation confirms the affected version only for the instance it tested. In a case with several instances, for example every artifact of one upstream release, `impact` can then derive an update priority from that instance while the others stay unconfirmed.
 
-For a local project, stage only the reviewed files needed by the test:
+Run `vulnbell sandbox capabilities --project vulnbell.yaml` to inspect the configured resource limits, staging ceiling and required isolation policy before planning a test. This does not prepare or start a VM, and it does not attest the effective runtime policy. Without `--project`, it reports the defaults.
+
+For a local project, first verify that a representative offline test is practical; stage only the reviewed files needed by that test:
 
 ```sh
 vulnbell sandbox stage --source /path/to/project --file package-lock.json --file src/affected.ts --directory /private/test

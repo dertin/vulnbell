@@ -560,6 +560,7 @@ pub(in crate::discovery) fn map(
     store: &Store,
     scope: &str,
     first_party: &BTreeSet<String>,
+    research: &crate::profile::Research,
     http: &mut Http<'_>,
     limit: usize,
 ) -> Result<RegistryRun> {
@@ -569,6 +570,7 @@ pub(in crate::discovery) fn map(
         store,
         scope,
         first_party,
+        research,
         super::Mapper::Registry,
         usize::MAX,
     )? {

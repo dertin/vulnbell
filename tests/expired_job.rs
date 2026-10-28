@@ -4,7 +4,7 @@ fn an_expired_job_never_scans_or_starts_the_missing_agent() {
     let directory = tempfile::tempdir().unwrap();
     let project = uuid::Uuid::new_v4().to_string();
     let path = directory.path().join("vulnbell.yaml");
-    std::fs::write(&path,format!("schema: 1\nproject_id: {project}\nname: expired-job-test\ncomponents:\n - ref: unknown\nschedule: daily\n")).unwrap();
+    std::fs::write(&path,format!("schema: 1\nproject_id: {project}\nname: expired-job-test\ncomponents:\n - ref: unknown\nschedule: daily\nresearch:\n  review_budget_minutes: 60\n")).unwrap();
     let profile = vulnbell::profile::load(&path).unwrap();
     let store = vulnbell::store::Store::open(&project).unwrap();
     store.register_project(&profile.name, &path).unwrap();
@@ -56,7 +56,17 @@ fn an_expired_job_never_scans_or_starts_the_missing_agent() {
             ],
         )
         .unwrap();
+    let before = Utc::now();
     let forced = vulnbell::scheduler::run(&profile, &path, true).unwrap();
+    let after = Utc::now();
+    let deadline =
+        chrono::DateTime::parse_from_rfc3339(forced["review_deadline"].as_str().unwrap())
+            .unwrap()
+            .with_timezone(&Utc);
+    assert!(deadline >= before + Duration::minutes(60));
+    assert!(deadline <= after + Duration::minutes(60));
+    assert_eq!(forced["review_budget_minutes"], 60);
+    assert_eq!(forced["review_budget_exhausted"], false);
     assert_eq!(forced["state"], "partial_fallback_report");
     assert_eq!(forced["agent_report_written"], false);
     assert!(forced["research_error"].is_string());

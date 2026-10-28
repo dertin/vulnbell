@@ -48,7 +48,89 @@ fn package() -> PackageObservation {
         component: serde_saphyr::from_str("ref: pkg:pypi/requests\nversion: '2.31.0'\n").unwrap(),
         excerpt: "requests==2.31.0".into(),
         version_excerpt: None,
+        direct: None,
+        direct_rationale: None,
     }
+}
+
+#[test]
+fn direct_scope_reports_unknown_depth_without_mapping_every_tracker() {
+    let (directory, path, mut profile, mut store) = project();
+    profile.research.tracker_scope = vulnbell::profile::TrackerScope::Direct;
+    fs::write(&path, serde_saphyr::to_string(&profile).unwrap()).unwrap();
+    fs::write(
+        directory.path().join("workspace/requirements.txt"),
+        "requests==2.31.0\n",
+    )
+    .unwrap();
+    vulnbell::engine::scan(&profile, &path, true).unwrap();
+    let page = discovery::plan(&profile, &path, &store, 1).unwrap();
+    discovery::import(&profile, &path, &mut store, review(&page, vec![package()])).unwrap();
+    let snapshot = vulnbell::engine::scan(&profile, &path, true).unwrap();
+    let summary = discovery::summary(&profile, &path, &store).unwrap();
+    assert_eq!(summary.components_unmapped, 0);
+    assert_eq!(summary.deferred_unknown_depth, 1);
+    assert!(
+        discovery::plan(&profile, &path, &store, 20)
+            .unwrap()
+            .components
+            .is_empty()
+    );
+    assert!(
+        snapshot
+            .coverage
+            .iter()
+            .any(|row| row.source == "tracker_scope"
+                && row.state == vulnbell::model::CoverageState::Partial)
+    );
+    let pending = serde_json::to_value(vulnbell::tools::cases::pending(&store).unwrap()).unwrap();
+    assert_eq!(pending["tracker_scope_unresolved"], true);
+    assert_eq!(pending["deliverable"], false);
+    let deferred = snapshot
+        .instances
+        .iter()
+        .find(|item| item.reference == "pkg:pypi/requests")
+        .unwrap();
+    assert!(
+        snapshot
+            .coverage
+            .iter()
+            .any(|row| row.source == "osv" && row.scope == deferred.id)
+    );
+    cleanup(store, &profile);
+}
+
+#[test]
+fn manifest_directness_requires_a_rationale_and_is_preserved_in_the_inventory() {
+    let (directory, path, profile, mut store) = project();
+    fs::write(directory.path().join("workspace/pom.xml"),
+        "<project><dependencies><dependency><artifactId>requests</artifactId><version>2.31.0</version></dependency></dependencies></project>").unwrap();
+    let page = discovery::plan(&profile, &path, &store, 1).unwrap();
+    let mut observed = package();
+    observed.excerpt =
+        "<dependency><artifactId>requests</artifactId><version>2.31.0</version></dependency>"
+            .into();
+    observed.direct = Some(true);
+    assert!(discovery::import(&profile, &path, &mut store, review(&page, vec![observed])).is_err());
+    let mut observed = package();
+    observed.excerpt =
+        "<dependency><artifactId>requests</artifactId><version>2.31.0</version></dependency>"
+            .into();
+    observed.direct = Some(true);
+    observed.direct_rationale = Some("Declared under the project's dependencies".into());
+    discovery::import(&profile, &path, &mut store, review(&page, vec![observed])).unwrap();
+    let snapshot = vulnbell::engine::scan(&profile, &path, true).unwrap();
+    assert_eq!(
+        snapshot
+            .instances
+            .iter()
+            .find(|item| item.reference == "pkg:pypi/requests")
+            .unwrap()
+            .provenance
+            .direct,
+        Some(true)
+    );
+    cleanup(store, &profile);
 }
 
 #[test]
@@ -69,6 +151,8 @@ fn maven_property_versions_resolve_only_from_a_definition_in_the_same_chunk() {
             "<artifactId>keycloak-core</artifactId>\n    <version>${keycloak.version}</version>"
                 .into(),
         version_excerpt: version_excerpt.map(str::to_owned),
+        direct: None,
+        direct_rationale: None,
     };
     assert!(
         discovery::import(
@@ -119,7 +203,9 @@ fn cleanup(store: Store, profile: &Profile) {
 
 #[test]
 fn default_general_discovery_imports_python_with_provenance_and_invalidates_changed_files() {
-    let (directory, path, profile, mut store) = project();
+    let (directory, path, mut profile, mut store) = project();
+    profile.research.follow.push("pkg:pypi/requests".into());
+    fs::write(&path, serde_saphyr::to_string(&profile).unwrap()).unwrap();
     assert_eq!(profile.discovery, DiscoveryMode::Agent);
     fs::write(
         directory.path().join("workspace/requirements.txt"),
@@ -165,7 +251,9 @@ fn default_general_discovery_imports_python_with_provenance_and_invalidates_chan
 
 #[test]
 fn pending_blocks_the_report_until_files_are_reviewed_and_components_have_a_source_disposition() {
-    let (directory, path, profile, mut store) = project();
+    let (directory, path, mut profile, mut store) = project();
+    profile.research.follow.push("pkg:pypi/requests".into());
+    fs::write(&path, serde_saphyr::to_string(&profile).unwrap()).unwrap();
     fs::write(
         directory.path().join("workspace/requirements.txt"),
         "requests==2.31.0\n",

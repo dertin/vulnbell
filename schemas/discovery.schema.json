@@ -169,6 +169,19 @@
         "component": {
           "$ref": "#/$defs/Component"
         },
+        "direct": {
+          "description": "Agent-observed relationship to the project, supported by this manifest excerpt.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "direct_rationale": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "excerpt": {
           "type": "string"
         },

@@ -85,8 +85,23 @@ fn scan_inner(
     let mut http = Http::new(store, offline);
     for instance in &mut instances {
         coverage.extend(crate::identity::resolve(instance, &mut http));
+        if profile.research.release_windows && profile.research.tracks(instance) {
+            let declared_upstream = profile.components.iter().any(|component| {
+                component.reference == instance.reference
+                    && component.version == instance.requested_version
+                    && component.upstream.is_some()
+                    && component.upstream == instance.upstream
+            });
+            coverage.push(crate::research::release::acquire(
+                instance,
+                &mut http,
+                declared_upstream,
+            ));
+        }
     }
-    let mut intelligence = crate::sources::scan(&instances, &mut http);
+    let mut previous_cases = store.cases()?;
+    let mut intelligence =
+        crate::sources::scan(&instances, &mut http, &profile.research, &previous_cases);
     let vendor = crate::vendor::feeds(profile, &instances, &mut http);
     intelligence.claims.extend(vendor.claims);
     coverage.extend(intelligence.coverage);
@@ -100,7 +115,11 @@ fn scan_inner(
         &coverage,
     )?;
     coverage.push(Coverage::new("upstream_agent", "project", CoverageState::Partial, "GitHub, GitLab, Launchpad and similar sites are reviewed by the local agent; run research to obtain windows and seen IDs, then import its evidence"));
-    let previous_cases = store.cases()?;
+    for case in &mut previous_cases {
+        if let Some(restored) = restore_directness_migration(case, store)? {
+            *case = restored;
+        }
+    }
     let mut merged_previous_ids = HashSet::new();
     for case in &mut cases {
         let related: Vec<&Case> = previous_cases
@@ -248,6 +267,21 @@ fn scan_inner(
         },
         "upstream tracker review is performed by the configured local agent and imported separately",
     ));
+    let deferred_transitive = instances
+        .iter()
+        .filter(|instance| {
+            !profile.research.tracks(instance) && instance.provenance.direct == Some(false)
+        })
+        .count();
+    let deferred_unknown = instances
+        .iter()
+        .filter(|instance| {
+            !profile.research.tracks(instance) && instance.provenance.direct.is_none()
+        })
+        .count();
+    if deferred_transitive > 0 || deferred_unknown > 0 {
+        coverage.push(Coverage::new("tracker_scope", "project", CoverageState::Partial, format!("tracker and repository-advisory research deferred for {deferred_transitive} transitive and {deferred_unknown} unknown-depth instances; OSV queries the full supported inventory independently and can be partial; unpublished repository advisories may be missed; use research.follow to inspect specific references")));
+    }
     coverage.push(Coverage::new(
         "http_metrics",
         "project",
@@ -274,6 +308,73 @@ fn scan_inner(
         alert_status: "pending".into(),
     })
 }
+
+/// Restore a prior research reading only when the sole intervening change was classification of
+/// previously unknown dependency depth. All source evidence, identities and other facts must match.
+fn restore_directness_migration(current: &Case, store: &Store) -> Result<Option<Case>> {
+    const QUESTION: &str = "Monitored artifact or context changed; reassess the hypothesis and rerun any relevant verification.";
+    if !current.claims.is_empty() || !current.open_questions.iter().any(|q| q == QUESTION) {
+        return Ok(None);
+    }
+    let mut query = store
+        .connection
+        .prepare("SELECT body FROM history WHERE case_id=?1 ORDER BY sequence DESC LIMIT 20")?;
+    let rows = query.query_map([&current.case_id], |row| row.get::<_, String>(0))?;
+    for row in rows {
+        let old: Case = serde_json::from_str(&row?)?;
+        if !same_directness_migration(current, &old)? {
+            continue;
+        }
+        let mut restored = old;
+        restored.instances = current.instances.clone();
+        restored.snapshot_id = current.snapshot_id.clone();
+        return Ok(Some(restored));
+    }
+    Ok(None)
+}
+
+fn same_directness_migration(current: &Case, old: &Case) -> Result<bool> {
+    const QUESTION: &str = "Monitored artifact or context changed; reassess the hypothesis and rerun any relevant verification.";
+    if current.case_id != old.case_id
+        || !old.claims.is_empty()
+        || current.instances.len() != old.instances.len()
+        || serde_json::to_vec(&current.evidence)? != serde_json::to_vec(&old.evidence)?
+        || serde_json::to_vec(&current.upstream_events)?
+            != serde_json::to_vec(&old.upstream_events)?
+    {
+        return Ok(false);
+    }
+    let mut questions = old.open_questions.clone();
+    if !questions.iter().any(|question| question == QUESTION) {
+        questions.push(QUESTION.into());
+    }
+    if questions != current.open_questions {
+        return Ok(false);
+    }
+    let mut newly_classified = false;
+    for (old_instance, instance) in old.instances.iter().zip(&current.instances) {
+        if old_instance.id != instance.id
+            || old_instance.context_fingerprint() != instance.context_fingerprint()
+            || old_instance.upstream != instance.upstream
+            || old_instance.cpe_product != instance.cpe_product
+        {
+            return Ok(false);
+        }
+        match (old_instance.provenance.direct, instance.provenance.direct) {
+            (None, Some(_)) => newly_classified = true,
+            (left, right) if left == right => {}
+            _ => return Ok(false),
+        }
+    }
+    let legacy_contexts: Vec<String> = current
+        .instances
+        .iter()
+        .map(Instance::legacy_context_fingerprint)
+        .collect();
+    let expected = crate::digest(format!("{}:{legacy_contexts:?}", old.facts_sha256).as_bytes());
+    Ok(newly_classified && current.facts_sha256 == expected)
+}
+
 fn same_advisory_instance(current: &Case, previous: &Case) -> bool {
     let shared_instance = current
         .instances
@@ -559,4 +660,65 @@ pub fn triage(store: &mut Store, id: &str, verdict: Verdict) -> Result<Case> {
     store.save_case(&case)?;
     store.set_meta("last_agent_review", &case.updated_at)?;
     Ok(case)
+}
+
+#[cfg(test)]
+mod directness_migration_tests {
+    use super::*;
+    use crate::model::SandboxAvailability;
+    use crate::profile::Component;
+
+    #[test]
+    fn restore_requires_only_new_directness_and_the_original_change_hash() {
+        let mut instance = Instance::declared(&Component {
+            reference: "pkg:cargo/example".into(),
+            version: Some("1.0.0".into()),
+            usage: Default::default(),
+            upstream: Some("https://github.com/example/example".into()),
+            feeds: vec![],
+        });
+        instance.provenance.direct = None;
+        let old = Case {
+            schema_version: 1,
+            case_id: "SIG-test".into(),
+            project_id: "test".into(),
+            snapshot_id: "old".into(),
+            instances: vec![instance],
+            claims: vec![],
+            upstream_events: vec![],
+            evidence: vec![],
+            coverage: vec![],
+            applicability: Applicability::Unknown,
+            verification: Verification::Inconclusive,
+            decision: Decision::Informational,
+            facts_sha256: "old-facts".into(),
+            open_questions: vec![],
+            suggested_search_queries: vec![],
+            sandbox: SandboxAvailability {
+                available: false,
+                reason: "test".into(),
+            },
+            updated_at: crate::now(),
+        };
+        let mut current = old.clone();
+        current.instances[0].provenance.direct = Some(true);
+        current.decision = Decision::Review;
+        current.open_questions.push("Monitored artifact or context changed; reassess the hypothesis and rerun any relevant verification.".into());
+        let contexts = vec![current.instances[0].legacy_context_fingerprint()];
+        current.facts_sha256 =
+            crate::digest(format!("{}:{contexts:?}", old.facts_sha256).as_bytes());
+        assert!(same_directness_migration(&current, &old).unwrap());
+        let mut changed = current.clone();
+        changed.instances[0].resolved_version = Some("2.0.0".into());
+        assert!(!same_directness_migration(&changed, &old).unwrap());
+        let mut changed = current.clone();
+        changed.instances[0].upstream = Some("https://github.com/other/example".into());
+        assert!(!same_directness_migration(&changed, &old).unwrap());
+        let mut changed = current.clone();
+        changed.open_questions.push("new evidence".into());
+        assert!(!same_directness_migration(&changed, &old).unwrap());
+        let mut changed = current;
+        changed.facts_sha256 = "unrelated".into();
+        assert!(!same_directness_migration(&changed, &old).unwrap());
+    }
 }

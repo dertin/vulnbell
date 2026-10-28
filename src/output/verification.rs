@@ -12,6 +12,7 @@ use crate::{
 use anyhow::{Result, bail};
 use schemars::JsonSchema;
 use serde::Serialize;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Serialize, JsonSchema)]
 pub struct FindingReference {
@@ -26,6 +27,10 @@ pub struct FindingCheck {
     pub references: Vec<FindingReference>,
     pub local_checks: Vec<LocalCheck>,
     pub impact: Option<ImpactResult>,
+    /// Evidence-bound review disposition; it never represents a sandbox attestation.
+    pub review_handoff: Option<crate::tools::cases::ReviewHandoff>,
+    /// A prior disposition is no longer current or its evidence cannot be validated.
+    pub review_handoff_stale: bool,
 }
 #[derive(Serialize, JsonSchema, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -42,8 +47,9 @@ pub enum LocalResult {
 pub struct LocalCheck {
     pub instance_id: String,
     pub artifact_version: Option<String>,
-    /// The impact needs evidence and nothing confirms this exact version is affected, so only a
-    /// sandbox result or a categorized blocker settles it. Missing deployment facts never set it.
+    /// An unconfirmed version warrants a review decision; it does not mandate a test.
+    pub sandbox_candidate: bool,
+    /// A current review disposition explicitly requires a test for this instance.
     pub sandbox_needed: bool,
     pub result: LocalResult,
     /// Set for a `blocked` result; absent for blockers recorded without a kind.
@@ -96,6 +102,33 @@ pub(super) fn finding_check(case: &Case, store: &Store, language: Language) -> F
     references.sort_by(|a, b| a.url.cmp(&b.url));
     references.dedup_by(|a, b| a.url == b.url);
     let impact = crate::impact::latest(case, store);
+    let review_handoff = crate::tools::cases::current_handoff(case, store);
+    // The same evidence is inspected for every instance. Validate it once per case, while
+    // retaining the original newest-first ordering and failure behavior for each instance.
+    let mut blockers: HashMap<&str, Result<crate::sandbox::VerificationBlocker, ()>> =
+        HashMap::new();
+    let mut attestations: HashMap<&str, Result<crate::sandbox::Attestation, ()>> = HashMap::new();
+    let affected_claims: HashSet<&str> = case
+        .claims
+        .iter()
+        .filter(|claim| claim.applicability == crate::model::Applicability::Affected)
+        .map(|claim| claim.instance_id.as_str())
+        .collect();
+    let mut reproduced = HashSet::new();
+    for evidence in case
+        .evidence
+        .iter()
+        .filter(|e| e.kind == EvidenceKind::Attestation)
+    {
+        let parsed = attestations.entry(&evidence.sha256).or_insert_with(|| {
+            crate::sandbox::read_attestation(case, store, evidence).map_err(|_| ())
+        });
+        if let Ok(attestation) = parsed
+            && attestation.verification == Verification::LabReproduced
+        {
+            reproduced.insert(attestation.instance_id.clone());
+        }
+    }
     let mut local_checks = Vec::new();
     for instance in &case.instances {
         let needs_evidence = impact.as_ref().is_some_and(|impact| {
@@ -107,8 +140,13 @@ pub(super) fn finding_check(case: &Case, store: &Store, language: Language) -> F
         let mut check = LocalCheck {
             instance_id: instance.id.clone(),
             artifact_version: instance.resolved_version.clone(),
-            sandbox_needed: needs_evidence
-                && !crate::impact::affected_instance_confirmed(case, store, &instance.id),
+            sandbox_candidate: needs_evidence
+                && !affected_claims.contains(instance.id.as_str())
+                && !(case.instances.len() == 1 && case.verification == Verification::LabReproduced)
+                && !reproduced.contains(&instance.id),
+            sandbox_needed: review_handoff.as_ref().is_some_and(|handoff| {
+                handoff.sandbox_required && handoff.sandbox_instance_ids.contains(&instance.id)
+            }),
             result: LocalResult::NotRun,
             blocker: None,
             context: None,
@@ -121,19 +159,23 @@ pub(super) fn finding_check(case: &Case, store: &Store, language: Language) -> F
             output_path: None,
             observed_at: None,
         };
+        let mut blocker_cleared = false;
         for evidence in case.evidence.iter().rev().filter(|item| {
             item.kind == EvidenceKind::Attestation || item.source == "local_validation_blocker"
         }) {
             if evidence.source == "local_validation_blocker" {
-                let blocker = (|| -> Result<crate::sandbox::VerificationBlocker> {
-                    if !store.evidence_exists(evidence)? {
-                        bail!("blocker integrity failed");
-                    }
-                    Ok(serde_json::from_slice(&crate::read_limited(
-                        &store.directory.join("evidence").join(&evidence.sha256),
-                        65536,
-                    )?)?)
-                })();
+                let blocker = blockers.entry(&evidence.sha256).or_insert_with(|| {
+                    (|| -> Result<crate::sandbox::VerificationBlocker> {
+                        if !store.evidence_exists(evidence)? {
+                            bail!("blocker integrity failed");
+                        }
+                        Ok(serde_json::from_slice(&crate::read_limited(
+                            &store.directory.join("evidence").join(&evidence.sha256),
+                            65536,
+                        )?)?)
+                    })()
+                    .map_err(|_| ())
+                });
                 match blocker {
                     Ok(blocker)
                         if blocker.schema_version == 1
@@ -141,6 +183,17 @@ pub(super) fn finding_check(case: &Case, store: &Store, language: Language) -> F
                             && blocker.facts_sha256 == case.facts_sha256
                             && blocker.instance_id == instance.id =>
                     {
+                        if blocker.cleared {
+                            if !blocker_cleared {
+                                check.detail = blocker.reason.clone();
+                                check.observed_at = Some(evidence.observed_at.clone());
+                            }
+                            blocker_cleared = true;
+                            continue;
+                        }
+                        if blocker_cleared {
+                            continue;
+                        }
                         check.result = LocalResult::Blocked;
                         check.blocker = blocker.kind;
                         check.detail = match blocker.kind {
@@ -151,7 +204,7 @@ pub(super) fn finding_check(case: &Case, store: &Store, language: Language) -> F
                                     blocker.reason
                                 )
                             }
-                            None => blocker.reason,
+                            None => blocker.reason.clone(),
                         };
                         check.observed_at = Some(evidence.observed_at.clone());
                         break;
@@ -164,7 +217,9 @@ pub(super) fn finding_check(case: &Case, store: &Store, language: Language) -> F
                     }
                 }
             }
-            let parsed = crate::sandbox::read_attestation(case, store, evidence);
+            let parsed = attestations.entry(&evidence.sha256).or_insert_with(|| {
+                crate::sandbox::read_attestation(case, store, evidence).map_err(|_| ())
+            });
             match parsed {
                 Ok(attestation) if attestation.instance_id == instance.id => {
                     check.result = match attestation.verification {
@@ -198,7 +253,7 @@ pub(super) fn finding_check(case: &Case, store: &Store, language: Language) -> F
                             .to_string_lossy()
                             .into_owned(),
                     );
-                    check.observed_at = Some(attestation.observed_at);
+                    check.observed_at = Some(attestation.observed_at.clone());
                     break;
                 }
                 Ok(_) => (),
@@ -211,12 +266,19 @@ pub(super) fn finding_check(case: &Case, store: &Store, language: Language) -> F
         }
         local_checks.push(check);
     }
+    let review_handoff_stale = review_handoff.is_none()
+        && case
+            .evidence
+            .iter()
+            .any(|evidence| evidence.source == "review_handoff");
     FindingCheck {
         case_id: case.case_id.clone(),
         decision: case.decision,
         references,
         local_checks,
         impact,
+        review_handoff,
+        review_handoff_stale,
     }
 }
 
@@ -337,7 +399,10 @@ pub(super) fn markdown(
         }
         let mut checks: Vec<(String, String, usize)> = Vec::new();
         for check in finding.local_checks.iter().filter(|check| {
-            finding.impact.is_none() || check.sandbox_needed || check.result != LocalResult::NotRun
+            finding.impact.is_none()
+                || check.sandbox_candidate
+                || check.sandbox_needed
+                || check.result != LocalResult::NotRun
         }) {
             let status = text::local_result(language, &check.result);
             let scope =

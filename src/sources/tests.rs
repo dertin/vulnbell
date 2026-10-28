@@ -1,4 +1,168 @@
 use super::*;
+
+#[test]
+fn prior_advisory_refreshes_deferred_repository_without_expanding_tracker_scope() {
+    use crate::model::{Decision, SandboxAvailability, Verification};
+    let project = uuid::Uuid::new_v4().to_string();
+    let store = crate::store::Store::open(&project).unwrap();
+    let profile: crate::profile::Profile = serde_saphyr::from_str(&format!(
+        "schema: 1\nproject_id: {project}\nname: fixture\ncomponents:\n  - ref: pkg:cargo/example\n    version: '1.0.0'\n    upstream: https://github.com/example/example\n")).unwrap();
+    let mut instance = Instance::declared(&profile.components[0]);
+    instance.provenance.direct = Some(false);
+    instance.purl = Some("pkg:cargo/example".into());
+    let evidence = store
+        .record_evidence(b"synthetic", "fixture", None, EvidenceKind::Advisory)
+        .unwrap();
+    let claim = Claim {
+        id: "GHSA-test".into(),
+        source: "github_repository".into(),
+        aliases: vec![],
+        instance_id: instance.id.clone(),
+        summary: "synthetic".into(),
+        applicability: Applicability::Affected,
+        evidence,
+        known_exploited: false,
+    };
+    let case = Case {
+        schema_version: 1,
+        case_id: "fixture".into(),
+        project_id: project.clone(),
+        snapshot_id: "fixture".into(),
+        instances: vec![instance.clone()],
+        claims: vec![claim],
+        upstream_events: vec![],
+        evidence: vec![],
+        coverage: vec![],
+        applicability: Applicability::Unknown,
+        verification: Verification::Inconclusive,
+        decision: Decision::Review,
+        facts_sha256: "fixture".into(),
+        open_questions: vec![],
+        suggested_search_queries: vec![],
+        sandbox: SandboxAvailability {
+            available: false,
+            reason: "fixture".into(),
+        },
+        updated_at: "now".into(),
+    };
+    let mut http = crate::network::Http::new(&store, true);
+    let mut absent = Intelligence::default();
+    repository_advisories(
+        &[instance.clone()],
+        &mut http,
+        &mut absent,
+        &profile.research,
+        &[],
+    );
+    assert!(absent.coverage.is_empty());
+    let mut prior = Intelligence::default();
+    repository_advisories(
+        &[instance.clone()],
+        &mut http,
+        &mut prior,
+        &profile.research,
+        &[case],
+    );
+    assert_eq!(prior.coverage.len(), 1);
+    assert_eq!(prior.coverage[0].scope, instance.id);
+    assert!(!profile.research.tracks(&instance));
+    drop(store);
+    std::fs::remove_dir_all(crate::store::data_root().join(project)).unwrap();
+}
+#[test]
+fn case_advisory_promotion_requires_official_published_matching_source_and_exact_package() {
+    use crate::model::{Decision, SandboxAvailability, SourceFacts, UpstreamEvent, Verification};
+    let profile: crate::profile::Profile = serde_saphyr::from_str("schema: 1\nproject_id: 0de0a8e7-f1a4-4bdc-a198-422b90bbbd84\nname: fixture\ncomponents:\n  - ref: postgres\n    version: '42.7.13'\n    upstream: https://github.com/pgjdbc/pgjdbc\n").unwrap();
+    let mut instance = Instance::declared(&profile.components[0]);
+    instance.purl = Some("pkg:maven/org.postgresql/postgresql".into());
+    let evidence = Evidence {
+        id: "fixture".into(),
+        sha256: "hash".into(),
+        source: "agent_web".into(),
+        url: None,
+        observed_at: "now".into(),
+        kind: EvidenceKind::Context,
+    };
+    let mut case = Case {
+        schema_version: 1,
+        case_id: "fixture".into(),
+        project_id: "fixture".into(),
+        snapshot_id: "fixture".into(),
+        instances: vec![instance],
+        claims: vec![],
+        upstream_events: vec![UpstreamEvent {
+            provider: "github".into(),
+            kind: "advisory".into(),
+            id: "GHSA-abcd-1234-wxyz".into(),
+            url: "https://github.com/pgjdbc/pgjdbc/security/advisories/GHSA-abcd-1234-wxyz".into(),
+            title: "fixture".into(),
+            updated_at: None,
+            sha256: "hash".into(),
+            source_facts: SourceFacts::default(),
+        }],
+        evidence: vec![],
+        coverage: vec![],
+        applicability: Applicability::Unknown,
+        verification: Verification::Inconclusive,
+        decision: Decision::Review,
+        facts_sha256: "hash".into(),
+        open_questions: vec![],
+        suggested_search_queries: vec![],
+        sandbox: SandboxAvailability {
+            available: false,
+            reason: "fixture".into(),
+        },
+        updated_at: "now".into(),
+    };
+    let url = "https://api.github.com/repos/pgjdbc/pgjdbc/security-advisories/GHSA-abcd-1234-wxyz";
+    let document = serde_json::json!({"state":"published","ghsa_id":"GHSA-abcd-1234-wxyz","cve_id":null,"summary":"fixture","withdrawn_at":null,"vulnerabilities":[{"package":{"ecosystem":"maven","name":"org.postgresql:postgresql"},"vulnerable_version_range":">= 42.7.11, <= 42.7.13","patched_versions":"42.7.14"}]}).to_string();
+    assert_eq!(
+        case_repository_advisory(&case, url, document.as_bytes(), &evidence)
+            .unwrap()
+            .1
+            .len(),
+        1
+    );
+    assert!(
+        case_repository_advisory(
+            &case,
+            "https://example.com/repos/pgjdbc/pgjdbc/security-advisories/GHSA-abcd-1234-wxyz",
+            document.as_bytes(),
+            &evidence
+        )
+        .is_none()
+    );
+    assert!(
+        case_repository_advisory(
+            &case,
+            url,
+            document.replace("published", "draft").as_bytes(),
+            &evidence
+        )
+        .is_none()
+    );
+    case.instances[0].resolved_version = Some("42.7.14".into());
+    assert!(
+        case_repository_advisory(&case, url, document.as_bytes(), &evidence)
+            .unwrap()
+            .1
+            .is_empty()
+    );
+    assert!(
+        case_repository_advisory(
+            &case,
+            url,
+            document.replace("published", "withdrawn").as_bytes(),
+            &evidence
+        )
+        .unwrap()
+        .1
+        .is_empty()
+    );
+    case.instances[0].resolved_version = Some("42.7.13".into());
+    case.upstream_events.clear();
+    assert!(case_repository_advisory(&case, url, document.as_bytes(), &evidence).is_none());
+}
 #[test]
 fn osv_and_ghsa_contracts_accept_aliases_and_withdrawals() {
     let batch: OsvBatch = serde_json::from_str(

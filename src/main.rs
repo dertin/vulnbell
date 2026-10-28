@@ -5,7 +5,7 @@ use vulnbell::{
     model::Verdict,
     profile::{self, Profile},
     store::Store,
-    tools::{cases, draft, hits, workspace},
+    tools::{cases, draft, hits, queue, workspace},
 };
 
 #[derive(Parser)]
@@ -41,7 +41,7 @@ enum Commands {
     },
     /// Print a versioned JSON Schema generated from the Rust contract.
     Schema {
-        #[arg(value_parser=["profile","verdict","case","test","attestation","impact","report","research","discovery","runner","snapshot","schedule","status","decisions","impact-batch","verdict-batch","items"])]
+        #[arg(value_parser=["profile","verdict","case","test","attestation","impact","report","research","discovery","runner","snapshot","schedule","status","decisions","impact-batch","verdict-batch","scope-batch","handoff-batch","items"])]
         contract: String,
         #[arg(long)]
         json: bool,
@@ -86,11 +86,14 @@ enum Commands {
         /// Record why a needed sandbox check cannot run; this is context, never proof of safety.
         #[arg(long, requires = "blocker_kind")]
         validation_blocker: Option<String>,
+        /// Supersede an incorrect or obsolete blocker, retaining its evidence history.
+        #[arg(long, conflicts_with = "validation_blocker")]
+        clear_validation_blocker: Option<String>,
         /// Category of the validation blocker. Missing deployment facts are not a blocker.
         #[arg(long, requires = "validation_blocker", value_parser = ["details_undisclosed", "artifact_unavailable", "sandbox_limits", "runtime_unavailable", "authorization_declined"])]
         blocker_kind: Option<String>,
         /// Limit the validation blocker to one instance; by default it applies to every instance.
-        #[arg(long, requires = "validation_blocker")]
+        #[arg(long)]
         instance: Option<String>,
     },
     /// Execute an explicitly authorized test in Microsandbox; no fallback to host execution.
@@ -210,6 +213,14 @@ enum Commands {
 }
 #[derive(Subcommand)]
 enum ToolCommands {
+    /// Evaluate screening and ordering against independently labelled local items.
+    Evaluate {
+        #[arg(long)]
+        from: PathBuf,
+        /// Number of top-ranked selected items used for precision/recall.
+        #[arg(long, default_value_t = 10)]
+        top: usize,
+    },
     /// Screen the responses in a run's raw directory; list missing fetches and items to decide.
     /// Exit 2 means responses are missing or unreadable.
     Hits {
@@ -226,6 +237,9 @@ enum ToolCommands {
         /// Resolve cited advisories from the local cache only.
         #[arg(long)]
         offline: bool,
+        /// Reconsider seen events; use a fresh decisions file for this review.
+        #[arg(long)]
+        recheck: bool,
     },
     /// Build the research batch from the screened items, the deterministic rules and the
     /// decisions file.
@@ -246,9 +260,26 @@ enum ToolCommands {
         import: bool,
         #[arg(long)]
         offline: bool,
+        /// Include seen events using the decisions supplied for this review.
+        #[arg(long)]
+        recheck: bool,
     },
     /// Apply an impact batch; note paths are relative to the batch file.
     Impact {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        from: PathBuf,
+    },
+    /// Narrow over-broad research cases using reviewed evidence; impact remains open.
+    Scope {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        from: PathBuf,
+    },
+    /// Record an evidence-backed review handoff without asserting a sandbox result.
+    Handoff {
         #[arg(long)]
         project: PathBuf,
         #[arg(long)]
@@ -263,6 +294,42 @@ enum ToolCommands {
     },
     /// List what still blocks the daily report. Exit 2 means it is not deliverable yet.
     Pending {
+        #[arg(long)]
+        project: PathBuf,
+        /// Output is always JSON; accepted for consistency with other commands.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List open cases in a deterministic priority order, with persisted review progress.
+    Queue {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+        /// Hide cases already reviewed for their current facts; they remain open.
+        #[arg(long)]
+        unworked: bool,
+    },
+    /// Record a review work interval; this never changes the case verdict or pending status.
+    Progress {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        case: String,
+        #[arg(long, value_parser = ["start", "reviewed", "human_review", "history"])]
+        state: String,
+        #[arg(long)]
+        next_step: Option<String>,
+    },
+    /// Find candidate shared upstream cases across monitors without copying project decisions.
+    Groups {
+        #[arg(long, required = true, num_args = 1)]
+        project: Vec<PathBuf>,
+    },
+    /// Suggest repeated cases with the same advisory, package and resolved version.
+    Duplicates {
         #[arg(long)]
         project: PathBuf,
     },
@@ -317,6 +384,12 @@ enum RunnerCommands {
 }
 #[derive(Subcommand)]
 enum Sandbox {
+    /// Show planning limits and isolation requirements without running a test.
+    Capabilities {
+        /// Use the limits configured by this profile; defaults otherwise.
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
     /// Copy selected files into a hashed archive; never run project code on the host.
     Stage {
         #[arg(long)]
@@ -451,6 +524,12 @@ fn run() -> Result<i32> {
                 "verdict-batch" => serde_json::to_value(schemars::schema_for!(
                     vulnbell::tools::cases::VerdictBatch
                 ))?,
+                "scope-batch" => {
+                    serde_json::to_value(schemars::schema_for!(vulnbell::tools::cases::ScopeBatch))?
+                }
+                "handoff-batch" => serde_json::to_value(schemars::schema_for!(
+                    vulnbell::tools::cases::HandoffBatch
+                ))?,
                 "items" => serde_json::to_value(schemars::schema_for!(Vec<vulnbell::tools::Item>))?,
                 _ => bail!("unknown schema"),
             };
@@ -502,6 +581,7 @@ fn run() -> Result<i32> {
             evidence_url,
             evidence_file,
             validation_blocker,
+            clear_validation_blocker,
             blocker_kind,
             instance,
             ..
@@ -513,6 +593,15 @@ fn run() -> Result<i32> {
                 || evidence_url.is_some()
                 || evidence_file.is_some()
                 || validation_blocker.is_some();
+            let modifies = modifies || clear_validation_blocker.is_some();
+            if instance.is_some()
+                && validation_blocker.is_none()
+                && clear_validation_blocker.is_none()
+            {
+                anyhow::bail!(
+                    "--instance requires --validation-blocker or --clear-validation-blocker"
+                );
+            }
             if let Some(tag) = release_tree {
                 let _lock = store.lock()?;
                 let upstream = case
@@ -528,13 +617,54 @@ fn run() -> Result<i32> {
                 let _lock = store.lock()?;
                 let mut http = vulnbell::network::Http::new(&store, false);
                 let response = http.get(&url)?;
-                let evidence = store.record_evidence(
+                let mut evidence = store.record_evidence(
                     &response.body,
                     "agent_web",
-                    Some(url),
+                    Some(url.clone()),
                     vulnbell::model::EvidenceKind::Context,
                 )?;
-                case.evidence.push(evidence);
+                let advisory = vulnbell::sources::case_repository_advisory(
+                    &case,
+                    &url,
+                    &response.body,
+                    &evidence,
+                );
+                if let Some((advisory_id, claims)) = advisory {
+                    if !claims.is_empty() {
+                        evidence.kind = vulnbell::model::EvidenceKind::Advisory;
+                    }
+                    let existing: Vec<_> = case
+                        .claims
+                        .iter()
+                        .filter(|old| old.source == "github_repository" && old.id == advisory_id)
+                        .collect();
+                    let changed = existing.len() != claims.len()
+                        || claims.iter().any(|claim| {
+                            !existing.iter().any(|old| {
+                                old.instance_id == claim.instance_id
+                                    && old.evidence.sha256 == claim.evidence.sha256
+                            })
+                        });
+                    if changed {
+                        case.claims.retain(|old| {
+                            !(old.source == "github_repository" && old.id == advisory_id)
+                        });
+                        case.claims.extend(claims);
+                        case.facts_sha256 = vulnbell::digest(
+                            format!("{}:{}", case.facts_sha256, evidence.sha256).as_bytes(),
+                        );
+                        case.decision = vulnbell::model::Decision::Review;
+                        case.applicability = vulnbell::model::Applicability::Unknown;
+                        case.verification = vulnbell::model::Verification::Inconclusive;
+                    }
+                }
+                if let Some(old) = case.evidence.iter_mut().find(|old| old.id == evidence.id) {
+                    if evidence.kind == vulnbell::model::EvidenceKind::Advisory {
+                        *old = evidence;
+                    }
+                } else {
+                    case.evidence.push(evidence);
+                }
                 case.updated_at = vulnbell::now();
                 store.save_case(&case)?;
             }
@@ -559,6 +689,14 @@ fn run() -> Result<i32> {
                     &id,
                     instance.as_deref(),
                     kind,
+                    &reason,
+                )?;
+            }
+            if let Some(reason) = clear_validation_blocker {
+                case = vulnbell::sandbox::clear_blocker(
+                    &mut store,
+                    &id,
+                    instance.as_deref(),
                     &reason,
                 )?;
             }
@@ -720,6 +858,13 @@ fn run() -> Result<i32> {
             }
         }
         Commands::Sandbox { command } => match command {
+            Sandbox::Capabilities { project } => {
+                let limits = match project {
+                    Some(path) => profile::load(&path)?.sandbox,
+                    None => profile::SandboxLimits::default(),
+                };
+                emit(&vulnbell::sandbox::capabilities(limits))?;
+            }
             Sandbox::Stage {
                 source,
                 files,
@@ -738,20 +883,27 @@ fn run() -> Result<i32> {
 }
 fn run_tool(command: ToolCommands) -> Result<i32> {
     match command {
+        ToolCommands::Evaluate { from, top } => {
+            let bytes = vulnbell::read_limited(&from, 16 * 1024 * 1024)?;
+            let corpus: vulnbell::tools::evaluate::Corpus = serde_json::from_slice(&bytes)?;
+            emit(&vulnbell::tools::evaluate::evaluate(corpus, top)?)?;
+            Ok(0)
+        }
         ToolCommands::Hits {
             project,
             raw,
             decisions,
             output,
             offline,
+            recheck,
         } => {
             let (_, store) = store_for(&project)?;
             let decisions = decisions
                 .as_deref()
                 .map(draft::ResearchDecisions::load)
                 .transpose()?;
-            let prepared = hits::prepare(&store, &raw, offline)?;
-            let packet = hits::packet(&prepared, decisions.as_ref());
+            let prepared = hits::prepare_with_recheck(&store, &raw, offline, recheck)?;
+            let packet = hits::packet_with_recheck(&prepared, decisions.as_ref(), recheck);
             vulnbell::atomic_write(&output, &serde_json::to_vec_pretty(&packet)?)?;
             emit(&serde_json::json!({
                 "schema_version": 1,
@@ -771,10 +923,11 @@ fn run_tool(command: ToolCommands) -> Result<i32> {
             partial,
             import,
             offline,
+            recheck,
         } => {
             let (_, mut store) = store_for(&project)?;
             let decisions = draft::ResearchDecisions::load(&decisions)?;
-            let prepared = hits::prepare(&store, &raw, offline)?;
+            let prepared = hits::prepare_with_recheck(&store, &raw, offline, recheck)?;
             let (batch, summary) = draft::draft(prepared, &decisions, partial)?;
             vulnbell::atomic_write(&output, &serde_json::to_vec_pretty(&batch)?)?;
             let imported = if import {
@@ -802,11 +955,83 @@ fn run_tool(command: ToolCommands) -> Result<i32> {
             let outcomes = cases::apply_verdicts(&mut store, &batch, batch_base(&from));
             emit_outcomes(&outcomes)
         }
-        ToolCommands::Pending { project } => {
+        ToolCommands::Scope { project, from } => {
+            let (_, mut store) = store_for(&project)?;
+            let batch = cases::load_scope(&from)?;
+            let outcomes = cases::apply_scope(&mut store, &batch, batch_base(&from));
+            emit_outcomes(&outcomes)
+        }
+        ToolCommands::Handoff { project, from } => {
+            let (_, mut store) = store_for(&project)?;
+            let batch = cases::load_handoff(&from)?;
+            let outcomes = cases::apply_handoff(&mut store, &batch, batch_base(&from));
+            emit_outcomes(&outcomes)
+        }
+        ToolCommands::Pending { project, json: _ } => {
             let (_, store) = store_for(&project)?;
             let report = cases::pending(&store)?;
             emit(&report)?;
             Ok(if report.deliverable { 0 } else { 2 })
+        }
+        ToolCommands::Queue {
+            project,
+            limit,
+            offset,
+            unworked,
+        } => {
+            let (_, store) = store_for(&project)?;
+            emit(&queue::list(&store, limit, offset, unworked)?)?;
+            Ok(0)
+        }
+        ToolCommands::Progress {
+            project,
+            case,
+            state,
+            next_step,
+        } => {
+            let (_, store) = store_for(&project)?;
+            if state == "history" {
+                if next_step.is_some() {
+                    bail!("history does not accept a next step");
+                }
+                emit(&queue::progress_history(&store, &case)?)?;
+                return Ok(0);
+            }
+            let state = match state.as_str() {
+                "start" => queue::WorkState::InProgress,
+                "reviewed" => queue::WorkState::Reviewed,
+                "human_review" => queue::WorkState::HumanReview,
+                _ => bail!("unsupported review progress state"),
+            };
+            emit(&queue::record(&store, &case, state, next_step.as_deref())?)?;
+            Ok(0)
+        }
+        ToolCommands::Groups { project } => {
+            if !(2..=20).contains(&project.len()) {
+                bail!("provide 2..20 project profiles");
+            }
+            let mut ids = std::collections::HashSet::new();
+            let mut monitors = Vec::new();
+            for path in project {
+                let (profile, store) = store_for(&path)?;
+                if !ids.insert(profile.project_id) {
+                    bail!("each project must be unique");
+                }
+                monitors.push((path.to_string_lossy().into_owned(), store));
+            }
+            let groups = queue::shared_cases(&monitors)?;
+            emit(
+                &serde_json::json!({"schema_version": 1, "groups": groups, "notice": "Candidate grouping only; verify artifact identity and each project's build, conditions and evidence before reuse."}),
+            )?;
+            Ok(0)
+        }
+        ToolCommands::Duplicates { project } => {
+            let (_, store) = store_for(&project)?;
+            let groups = queue::duplicate_advisories(&store)?;
+            emit(
+                &serde_json::json!({"schema_version": 1, "groups": groups, "notice": "Candidate grouping only; verify artifact and project conditions. No cases are merged or closed."}),
+            )?;
+            Ok(0)
         }
         ToolCommands::Workspace {
             command:

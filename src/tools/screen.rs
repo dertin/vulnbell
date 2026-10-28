@@ -1,6 +1,6 @@
 //! Two-level security screen. Strong signals select an item wherever they appear: title, labels,
-//! body, or the body of the issue a proposed change closes. Weak bug-class terms select an item
-//! only in its title or labels, because bodies mention crashes and leaks without a security claim.
+//! body, or the body of the issue a proposed change closes. Weak bug-class terms select a body
+//! only when it also names a security-relevant technical context.
 use super::{Item, ItemKind};
 use regex::Regex;
 use serde::Serialize;
@@ -20,6 +20,12 @@ static TITLE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static LABEL: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)secur|cve|vulnerab|weakness|unsound").expect("static label pattern")
+});
+static BODY_BUG: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(?:crash\w*|panic\w*|overflow\w*|out.of.bounds|use.after.free|unbounded|exhaust\w*|data race|deadlock\w*|hang\w*)\b").expect("static body bug pattern")
+});
+static BODY_CONTEXT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(?:pars\w*|decod\w*|deserializ\w*|authenticat\w*|authoriz\w*|request\w*|network|protocol|packet\w*|untrusted|remote|input\w*)\b").expect("static body context pattern")
 });
 static IDENTIFIER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(CVE-\d{4}-\d{4,}|GHSA(?:-[0-9a-z]{4}){3}|RUSTSEC-\d{4}-\d{4})\b")
@@ -50,6 +56,8 @@ pub enum SignalPlace {
     Body,
     LinkedIssue,
     Advisory,
+    ContextualBug,
+    LinkedContextualBug,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -65,15 +73,23 @@ pub struct Screen {
 impl Screen {
     /// The item itself carries a signal, not only the issue it closes.
     pub fn own_signal(&self) -> bool {
-        self.places
-            .iter()
-            .any(|place| *place != SignalPlace::LinkedIssue)
+        self.places.iter().any(|place| {
+            !matches!(
+                place,
+                SignalPlace::LinkedIssue | SignalPlace::LinkedContextualBug
+            )
+        })
     }
 }
 
 /// `None` when the item has no security signal. `linked` holds the screened bodies of the issues a
 /// proposed change closes.
 pub fn screen(item: &Item, linked: &str) -> Option<Screen> {
+    screen_with_linked(item, linked, false)
+}
+
+/// Include the independently screened title, labels and body of a linked issue.
+pub fn screen_with_linked(item: &Item, linked: &str, linked_selected: bool) -> Option<Screen> {
     let body = clean(&item.body);
     let mut places = Vec::new();
     if item.kind == ItemKind::Advisory {
@@ -88,8 +104,14 @@ pub fn screen(item: &Item, linked: &str) -> Option<Screen> {
     if STRONG.is_match(&body) {
         places.push(SignalPlace::Body);
     }
-    if STRONG.is_match(linked) {
+    if linked_selected || STRONG.is_match(linked) {
         places.push(SignalPlace::LinkedIssue);
+    }
+    if BODY_BUG.is_match(&body) && BODY_CONTEXT.is_match(&body) {
+        places.push(SignalPlace::ContextualBug);
+    }
+    if BODY_BUG.is_match(linked) && BODY_CONTEXT.is_match(linked) {
+        places.push(SignalPlace::LinkedContextualBug);
     }
     if places.is_empty() {
         return None;
@@ -98,6 +120,20 @@ pub fn screen(item: &Item, linked: &str) -> Option<Screen> {
     let mut snippets = snippets(&own_text);
     if snippets.is_empty() {
         snippets = self::snippets(linked);
+    }
+    if snippets.is_empty() && linked_selected {
+        snippets.push(super::truncate_chars(linked, SNIPPET_RADIUS * 2));
+    }
+    if snippets.is_empty()
+        && (places.contains(&SignalPlace::ContextualBug)
+            || places.contains(&SignalPlace::LinkedContextualBug))
+    {
+        let source = if BODY_BUG.is_match(&body) && BODY_CONTEXT.is_match(&body) {
+            &body
+        } else {
+            linked
+        };
+        snippets.push(super::truncate_chars(source, SNIPPET_RADIUS * 2));
     }
     Some(Screen {
         places,

@@ -170,6 +170,17 @@
         "ref": {
           "type": "string"
         },
+        "release": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReleaseDate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Verified registry metadata for this exact resolved version, when available."
+        },
         "requested_version": {
           "type": [
             "string",
@@ -259,6 +270,25 @@
       "required": [
         "sha256",
         "observed_at"
+      ],
+      "type": "object"
+    },
+    "ReleaseDate": {
+      "properties": {
+        "evidence": {
+          "$ref": "#/$defs/Evidence"
+        },
+        "published_at": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "published_at",
+        "evidence"
       ],
       "type": "object"
     },

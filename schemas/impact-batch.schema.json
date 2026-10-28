@@ -6,6 +6,14 @@
         "answer": {
           "$ref": "#/$defs/ImpactAnswerValue"
         },
+        "evidence": {
+          "default": [],
+          "description": "Evidence already registered on this case; checked for type and integrity by impact.",
+          "items": {
+            "$ref": "#/$defs/EvidenceReference"
+          },
+          "type": "array"
+        },
         "instance_ids": {
           "default": [],
           "description": "Case instances the answer covers; empty means all of them.",
@@ -59,6 +67,22 @@
       "required": [
         "case_id",
         "answers"
+      ],
+      "type": "object"
+    },
+    "EvidenceReference": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sha256"
       ],
       "type": "object"
     },

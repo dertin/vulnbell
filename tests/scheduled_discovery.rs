@@ -12,7 +12,7 @@ fn scheduled_discovery_separates_local_extraction_public_mapping_and_reporting()
     .unwrap();
     let project = uuid::Uuid::new_v4().to_string();
     let path = root.join("vulnbell.yaml");
-    fs::write(&path,format!("schema: 1\nproject_id: {project}\nname: scheduled-general\nschedule: daily\nworkspaces: [workspace]\nreport:\n  language: es\n")).unwrap();
+    fs::write(&path,format!("schema: 1\nproject_id: {project}\nname: scheduled-general\nschedule: daily\nworkspaces: [workspace]\nresearch:\n  follow: [example-tool]\nreport:\n  language: es\n")).unwrap();
     let profile = vulnbell::profile::load(&path).unwrap();
     let store = vulnbell::store::Store::open(&project).unwrap();
     let key = vulnbell::digest(

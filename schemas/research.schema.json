@@ -86,6 +86,13 @@
         "rationale": {
           "type": "string"
         },
+        "reviewed_instance_ids": {
+          "description": "Candidate instances examined when choosing the case scope. Older observations omit this\nand retain their original instance-based freshness semantics.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "source_facts": {
           "$ref": "#/$defs/SourceFacts",
           "default": {

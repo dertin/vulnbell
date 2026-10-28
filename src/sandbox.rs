@@ -8,6 +8,21 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+pub const MAX_TEST_INPUTS: usize = 20;
+
+/// Planning limits only; the runtime's effective policy is checked during verification.
+pub fn capabilities(limits: SandboxLimits) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "workspace_stage": {"max_files": staging::MAX_STAGED_FILES, "max_archive_bytes": staging::MAX_ARCHIVE_BYTES, "whole_directory": false},
+        "test": {"max_inputs": MAX_TEST_INPUTS, "limits": limits, "guest_disk_mib": 2048},
+        "profile_caps": {"max_input_file_mib": SandboxLimits::CAP_INPUT_FILE_MIB, "max_inputs_mib": SandboxLimits::CAP_INPUTS_MIB, "max_memory_mib": SandboxLimits::CAP_MEMORY_MIB, "max_timeout_seconds": SandboxLimits::CAP_TIMEOUT_SECONDS},
+        "required_network_policy": "deny_ingress_and_egress",
+        "runtime_policy_checked_during_verify": true,
+        "explicit_authorization_required": true
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TestSpec {
@@ -66,6 +81,9 @@ pub struct VerificationBlocker {
     /// needed check.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<BlockerKind>,
+    /// A later reviewed correction supersedes an earlier blocker for these same case facts.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cleared: bool,
     pub reason: String,
 }
 
@@ -88,7 +106,31 @@ pub fn record_blocker(
             .collect(),
     };
     for instance_id in &instance_ids {
-        append_blocker(&mut case, store, instance_id, Some(kind), reason)?;
+        append_blocker(&mut case, store, instance_id, Some(kind), false, reason)?;
+    }
+    store.save_case(&case)?;
+    Ok(case)
+}
+
+/// Supersede a mistaken or no-longer-valid blocker without deleting its evidence history.
+pub fn clear_blocker(
+    store: &mut Store,
+    id: &str,
+    instance_id: Option<&str>,
+    reason: &str,
+) -> Result<Case> {
+    let _lock = store.lock()?;
+    let mut case = store.case(id)?;
+    let ids: Vec<String> = match instance_id {
+        Some(id) => vec![id.to_owned()],
+        None => case
+            .instances
+            .iter()
+            .map(|instance| instance.id.clone())
+            .collect(),
+    };
+    for id in &ids {
+        append_blocker(&mut case, store, id, None, true, reason)?;
     }
     store.save_case(&case)?;
     Ok(case)
@@ -99,6 +141,7 @@ fn append_blocker(
     store: &Store,
     instance_id: &str,
     kind: Option<BlockerKind>,
+    cleared: bool,
     reason: &str,
 ) -> Result<()> {
     if reason.trim().is_empty()
@@ -116,6 +159,7 @@ fn append_blocker(
         facts_sha256: case.facts_sha256.clone(),
         instance_id: instance_id.into(),
         kind,
+        cleared,
         reason: reason.into(),
     };
     let evidence = store.record_evidence(
@@ -306,7 +350,7 @@ pub fn verify(
     let test_bytes = crate::read_limited(spec_path, 1024 * 1024)?;
     let test: TestSpec = crate::parse_yaml(&test_bytes)?;
     if test.schema_version != 1
-        || test.inputs.len() > 20
+        || test.inputs.len() > MAX_TEST_INPUTS
         || test.script.len() > 65536
         || test.oracle.stdout_contains.is_empty()
         || !(0..=255).contains(&test.oracle.expected_exit)
@@ -353,6 +397,7 @@ pub fn verify(
             store,
             &test.instance_id,
             Some(BlockerKind::RuntimeUnavailable),
+            false,
             &reason,
         )?;
         case.updated_at = crate::now();
@@ -384,7 +429,7 @@ pub fn verify(
         let control = test.control.as_ref().context("positive non-applicability requires a contrasting known-positive control with the same script")?;
         if test.inputs.is_empty()
             || control.inputs.is_empty()
-            || control.inputs.len() > 20
+            || control.inputs.len() > MAX_TEST_INPUTS
             || control.stdout_contains.is_empty()
             || control.artifact_version.is_empty()
             || !(0..=255).contains(&control.expected_exit)
@@ -421,6 +466,7 @@ pub fn verify(
                 store,
                 &test.instance_id,
                 None,
+                false,
                 &error.to_string(),
             )?;
             store.save_case(&case)?;

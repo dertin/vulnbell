@@ -18,9 +18,17 @@ Native parsers extract supported lockfiles first. General discovery is enabled b
 
 VulnBell checks published advisories and CVE data, including OSV, GitHub Security Advisories, RustSec, CVE Records, NVD, and CISA KEV. Unlike a CVE-only monitor, the agent also reviews recent upstream issues, pull requests, merge requests, bug reports, fixes, and release information. This can surface credible security signals before a CVE is published. These early signals remain untrusted until the available evidence supports them.
 
+Tracker research defaults to explicitly monitored products and known direct dependencies. All inventoried packages remain eligible for OSV checks, while deeper tracker searches and repository-only advisories are deferred; the report counts transitives and unknown-depth instances and states that coverage limitation. Set `research.follow` to exact inventory references when a particular inner dependency warrants investigation, or `research.tracker_scope: all` for exhaustive tracker research. A lockfile or SBOM may not establish depth: unknown does not mean safe or transitive.
+
+The research plan suggests evidence-backed deferred advisories for selective follow-up without expanding the scope automatically. An unresolved scope with no selected instance prevents a deliverable status. Optional `research.release_windows: true` obtains exact-version publication dates from supported registries or an explicitly declared GitHub product repository; unavailable dates use a documented fallback. Advisory checks remain independent of the time window. Assess screening and ordering using an independently labelled corpus with `vulnbell tools evaluate`; see [the evaluation guide](docs/upstream-screen-evaluation.md).
+
 Each report identifies the affected component and version, project impact, urgency, evidence links, local or sandbox verification, recommended action, and anything that could not be confirmed.
 
 Reports also show the source map and discovery progress, including pending files, excluded inputs and unavailable sources. Incomplete work remains partial.
+
+For a user-requested time-bounded review, set `research.review_budget_minutes` to 1–120 in each monitor profile. The interactive agent prioritizes evidence-backed risks and hands remaining cases to human review without closing them. Scheduled agent phases observe the earlier of this budget and the schedule window; synchronous scan, adapter preflight, report writing and cleanup may overrun it, so this is not a hard whole-process timeout. The incomplete report and `tools pending` status remain visible.
+
+`tools queue` lists open cases in a deterministic order; `tools progress` records resumable work intervals and next steps without altering findings, `tools groups` suggests shared upstream/version investigations across monitors, and `tools duplicates` finds candidate duplicate advisories within one monitor. Changed facts, evidence or outcome invalidate the completed progress view. Grouping is a hint: each project still needs its own build and impact assessment. See the [workspace workflow](skills/vulnbell/references/workspace.md).
 
 [See a sample report](examples/report.md).
 

@@ -78,39 +78,68 @@ struct Screened {
 }
 
 pub fn prepare(store: &Store, raw: &Path, offline: bool) -> Result<Prepared> {
+    prepare_with_recheck(store, raw, offline, false)
+}
+
+/// Recheck includes previously seen items without changing their stored decisions.
+pub fn prepare_with_recheck(
+    store: &Store,
+    raw: &Path,
+    offline: bool,
+    recheck: bool,
+) -> Result<Prepared> {
     let plan = crate::research::full_plan(store)?;
     let snapshot = store.latest()?;
     let mut screened_targets: Vec<Screened> = Vec::new();
     let mut cited: BTreeSet<String> = BTreeSet::new();
     for target in plan.targets {
         let mut collected = raw::read_target(raw, &target);
-        let issue_bodies: HashMap<String, String> = collected
+        let issue_bodies: HashMap<String, (String, bool)> = collected
             .items
             .iter()
+            .chain(&collected.linked_issues)
             .filter(|item| item.kind == ItemKind::Issue)
-            .map(|item| (item.key.clone(), screen::clean(&item.body)))
+            .map(|item| {
+                (
+                    item.key.clone(),
+                    (
+                        format!(
+                            "{}\n{}\n{}",
+                            item.title,
+                            item.labels.join(" "),
+                            screen::clean(&item.body)
+                        ),
+                        screen::screen(item, "").is_some(),
+                    ),
+                )
+            })
             .collect();
         let mut not_selected = 0;
         let mut selected_keys = HashSet::new();
         let mut items = Vec::new();
         for item in std::mem::take(&mut collected.items) {
-            let linked: String = item
+            let linked_issues: Vec<&(String, bool)> = item
                 .closes
                 .iter()
                 .filter_map(|key| issue_bodies.get(key))
-                .cloned()
+                .collect();
+            let linked: String = linked_issues
+                .iter()
+                .map(|(text, _)| text.as_str())
                 .collect::<Vec<_>>()
                 .join("\n");
-            let Some(screen) = screen::screen(&item, &linked) else {
+            let linked_selected = linked_issues.iter().any(|(_, selected)| *selected);
+            let Some(screen) = screen::screen_with_linked(&item, &linked, linked_selected) else {
                 not_selected += 1;
                 collected.items.push(item);
                 continue;
             };
-            let unchanged = target.seen.iter().any(|seen| {
-                seen.context_current
-                    && seen.url == item.url
-                    && super::same_instant(&seen.updated_at, &item.updated_at)
-            });
+            let unchanged = !recheck
+                && target.seen.iter().any(|seen| {
+                    seen.context_current
+                        && seen.url == item.url
+                        && super::same_instant(&seen.updated_at, &item.updated_at)
+                });
             if !unchanged {
                 cited.extend(screen.identifiers.iter().cloned());
             }
@@ -202,7 +231,7 @@ pub(super) fn disposition(item: &Item, screen: &Screen, context: &RuleContext<'_
         return advisory_rule(item, context);
     }
     if item.kind == ItemKind::Release {
-        if unpublished.is_empty() {
+        if !screen.identifiers.is_empty() && unpublished.is_empty() {
             return Disposition::Rule(RuleOutcome {
                 assessment: Assessment::Informational,
                 reason: None,
@@ -235,19 +264,12 @@ pub(super) fn disposition(item: &Item, screen: &Screen, context: &RuleContext<'_
     Disposition::Review { unpublished }
 }
 
-/// A dependency update relays its dependency's advisories. It needs no review when it names no
-/// advisory, or when every advisory it names is published and no monitored instance is, or may
-/// be, inside an affected range.
+/// A dependency update is settled as a relay only when every cited advisory is published and no
+/// monitored instance is, or may be, inside an affected range.
 fn dependency_relay(screen: &Screen, context: &RuleContext<'_>) -> Option<RuleOutcome> {
     let words = text::text(context.language);
     if screen.identifiers.is_empty() {
-        return Some(RuleOutcome {
-            assessment: Assessment::Ignore,
-            reason: None,
-            rationale: words.rule_relay_without_ids.into(),
-            facts: SourceFacts::default(),
-            instance_ids: Vec::new(),
-        });
+        return None;
     }
     let mut packages: BTreeSet<&str> = BTreeSet::new();
     for id in &screen.identifiers {
@@ -341,6 +363,15 @@ fn advisory_rule(item: &Item, context: &RuleContext<'_>) -> Disposition {
         .iter()
         .map(|package| package.name.as_str())
         .collect();
+    if packages.is_empty()
+        || context.target_instances.is_empty()
+        || context
+            .target_instances
+            .iter()
+            .any(|instance| !matches!(crate::sources::github_package(instance), Ok(Some(_))))
+    {
+        return review;
+    }
     if matches.is_empty() {
         return Disposition::Rule(RuleOutcome {
             assessment: Assessment::NotApplicable,
@@ -408,6 +439,17 @@ pub struct ReviewPacket {
     pub missing: Vec<MissingFetch>,
     pub errors: Vec<TargetError>,
     pub review: Vec<ReviewItem>,
+    /// Bounded sample of items the deterministic screen did not select, for audit.
+    pub unselected_sample: Vec<UnselectedItem>,
+    pub ordering_model: &'static str,
+}
+
+#[derive(Serialize)]
+pub struct UnselectedItem {
+    pub upstream: String,
+    pub key: String,
+    pub url: String,
+    pub title: String,
 }
 
 #[derive(Serialize, Default)]
@@ -430,6 +472,8 @@ pub struct TargetError {
 
 #[derive(Serialize)]
 pub struct ReviewItem {
+    /// Copy this fingerprint into the decision; a changed target requires a fresh assessment.
+    pub context_sha256: String,
     pub key: String,
     pub upstream: String,
     pub kind: ItemKind,
@@ -438,6 +482,8 @@ pub struct ReviewItem {
     pub state: String,
     pub labels: Vec<String>,
     pub updated_at: String,
+    /// Ordering hint only; no item is excluded or classified safe by priority.
+    pub priority: ReviewPriority,
     pub signals: Vec<SignalPlace>,
     pub identifiers: Vec<String>,
     pub dependency_update: bool,
@@ -446,9 +492,51 @@ pub struct ReviewItem {
     pub unpublished: Vec<String>,
     pub advisories: Vec<CitedAdvisory>,
     pub instance_ids: Vec<String>,
+    /// A multi-instance review must select the affected scope explicitly.
+    pub scope_required: bool,
     /// Decision recorded for an earlier update of this item.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_decision: Option<PreviousDecision>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewPriority {
+    ExactAffected,
+    NamedAdvisory,
+    SecurityClaim,
+    BugSignal,
+}
+
+pub(super) fn review_priority(
+    entry: &Entry,
+    resolutions: &BTreeMap<String, Resolution>,
+    instance_ids: &[String],
+) -> ReviewPriority {
+    let matched = entry
+        .screen
+        .identifiers
+        .iter()
+        .filter_map(|id| resolutions.get(id))
+        .any(|resolution| {
+            resolution.in_build.iter().any(|found| {
+                found.status == BuildStatus::Affected && instance_ids.contains(&found.instance_id)
+            })
+        });
+    if matched {
+        ReviewPriority::ExactAffected
+    } else if entry.item.kind == ItemKind::Advisory || !entry.screen.identifiers.is_empty() {
+        ReviewPriority::NamedAdvisory
+    } else if entry
+        .screen
+        .places
+        .iter()
+        .any(|place| matches!(place, SignalPlace::Body | SignalPlace::LinkedIssue))
+    {
+        ReviewPriority::SecurityClaim
+    } else {
+        ReviewPriority::BugSignal
+    }
 }
 
 #[derive(Serialize)]
@@ -467,6 +555,15 @@ pub struct PreviousDecision {
 }
 
 pub fn packet(prepared: &Prepared, decisions: Option<&ResearchDecisions>) -> ReviewPacket {
+    packet_with_recheck(prepared, decisions, false)
+}
+
+/// In a recheck, include existing readings as context rather than accepting them automatically.
+pub fn packet_with_recheck(
+    prepared: &Prepared,
+    decisions: Option<&ResearchDecisions>,
+    recheck: bool,
+) -> ReviewPacket {
     let resolutions = &prepared.resolutions;
     let mut summary = PacketSummary {
         targets: prepared.targets.len(),
@@ -475,6 +572,7 @@ pub fn packet(prepared: &Prepared, decisions: Option<&ResearchDecisions>) -> Rev
     let mut missing = Vec::new();
     let mut errors = Vec::new();
     let mut review = Vec::new();
+    let mut unselected_sample = Vec::new();
     for prepared_target in &prepared.targets {
         let collected = &prepared_target.collected;
         if collected.complete() {
@@ -487,20 +585,47 @@ pub fn packet(prepared: &Prepared, decisions: Option<&ResearchDecisions>) -> Rev
         }));
         summary.listed += collected.items.len();
         summary.selected += prepared_target.entries.len();
+        let selected: HashSet<&str> = prepared_target
+            .entries
+            .iter()
+            .map(|entry| entry.item.key.as_str())
+            .collect();
+        for item in &collected.items {
+            if !selected.contains(item.key.as_str()) && unselected_sample.len() < 25 {
+                unselected_sample.push(UnselectedItem {
+                    upstream: prepared_target.target.upstream.clone(),
+                    key: item.key.clone(),
+                    url: item.url.clone(),
+                    title: item.title.clone(),
+                });
+            }
+        }
         for entry in &prepared_target.entries {
-            let lookup = decisions.map(|decisions| decisions.lookup(&entry.item));
-            let unpublished = match &entry.disposition {
+            let lookup =
+                decisions.map(|decisions| decisions.lookup(&entry.item, &prepared_target.target));
+            let unpublished: &[String] = match &entry.disposition {
                 Disposition::Unchanged => {
                     summary.unchanged += 1;
                     continue;
                 }
-                Disposition::Rule(_) => {
+                Disposition::Rule(_) if !matches!(lookup, Some(DecisionLookup::Current(_))) => {
                     summary.rule_resolved += 1;
                     continue;
                 }
+                // A current explicit decision overrides the deterministic rule in draft too.
+                Disposition::Rule(_) => &[],
                 Disposition::Review { unpublished } => unpublished,
             };
             let previous_decision = match lookup {
+                Some(DecisionLookup::Current(decision))
+                    if recheck || decision.needs_scope(&prepared_target.target) =>
+                {
+                    Some(PreviousDecision {
+                        updated_at: decision.updated_at.clone(),
+                        assessment: decision.assessment,
+                        rationale: decision.rationale.clone(),
+                    })
+                }
                 Some(DecisionLookup::Current(_)) => {
                     summary.decided += 1;
                     continue;
@@ -514,6 +639,7 @@ pub fn packet(prepared: &Prepared, decisions: Option<&ResearchDecisions>) -> Rev
             };
             summary.to_review += 1;
             review.push(ReviewItem {
+                context_sha256: prepared_target.target.context_sha256.clone(),
                 key: entry.item.key.clone(),
                 upstream: prepared_target.target.upstream.clone(),
                 kind: entry.item.kind,
@@ -522,12 +648,13 @@ pub fn packet(prepared: &Prepared, decisions: Option<&ResearchDecisions>) -> Rev
                 state: entry.item.state.clone(),
                 labels: entry.item.labels.clone(),
                 updated_at: entry.item.updated_at.clone(),
+                priority: review_priority(entry, resolutions, &prepared_target.target.instance_ids),
                 signals: entry.screen.places.clone(),
                 identifiers: entry.screen.identifiers.clone(),
                 dependency_update: entry.screen.dependency_update,
                 snippets: entry.screen.snippets.clone(),
                 closes: entry.item.closes.clone(),
-                unpublished: unpublished.clone(),
+                unpublished: unpublished.to_vec(),
                 advisories: entry
                     .screen
                     .identifiers
@@ -541,10 +668,17 @@ pub fn packet(prepared: &Prepared, decisions: Option<&ResearchDecisions>) -> Rev
                     })
                     .collect(),
                 instance_ids: prepared_target.target.instance_ids.clone(),
+                scope_required: prepared_target.target.instance_ids.len() > 1,
                 previous_decision,
             });
         }
     }
+    review.sort_by(|a, b| {
+        a.priority
+            .cmp(&b.priority)
+            .then_with(|| a.upstream.cmp(&b.upstream))
+            .then_with(|| a.key.cmp(&b.key))
+    });
     ReviewPacket {
         schema_version: 1,
         project_id: prepared.project_id.clone(),
@@ -553,5 +687,7 @@ pub fn packet(prepared: &Prepared, decisions: Option<&ResearchDecisions>) -> Rev
         missing,
         errors,
         review,
+        unselected_sample,
+        ordering_model: "deterministic-v1; ordering only, not a severity or applicability verdict",
     }
 }

@@ -65,6 +65,15 @@ pub struct Instance {
     pub cpe_product: Option<String>,
     pub upstream: Option<String>,
     pub identity_evidence: Vec<Evidence>,
+    /// Verified registry metadata for this exact resolved version, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<ReleaseDate>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReleaseDate {
+    pub version: String,
+    pub published_at: String,
+    pub evidence: Evidence,
 }
 impl Instance {
     pub fn declared(component: &Component) -> Self {
@@ -105,10 +114,20 @@ impl Instance {
             cpe_product: None,
             upstream: component.upstream.clone(),
             identity_evidence: Vec::new(),
+            release: None,
         }
     }
 
     pub fn context_fingerprint(&self) -> String {
+        self.context_fingerprint_for_directness(None)
+    }
+
+    /// Fingerprint produced by the earlier directness-sensitive parser.
+    pub(crate) fn legacy_context_fingerprint(&self) -> String {
+        self.context_fingerprint_for_directness(self.provenance.direct)
+    }
+
+    fn context_fingerprint_for_directness(&self, direct: Option<bool>) -> String {
         // A lockfile hash records provenance, but unrelated dependency edits are not new facts.
         let declaration = match self.origin {
             Origin::Locked => None,
@@ -123,7 +142,9 @@ impl Instance {
             self.origin,
             &self.provenance.path,
             &self.provenance.workspace,
-            self.provenance.direct,
+            // Directness controls tracker scope; it is not evidence that code is used.
+            // Retain the legacy unknown slot so older unknown-depth fingerprints stay stable.
+            direct,
             &self.provenance.resolution,
             &self.provenance.artifact_integrity,
             &self.purl,

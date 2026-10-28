@@ -22,6 +22,9 @@ pub struct DiscoverySummary {
     pub files_excluded: usize,
     pub files_unavailable: usize,
     pub components_unmapped: usize,
+    /// Inventory instances outside the selected tracker-mapping scope.
+    pub deferred_transitive: usize,
+    pub deferred_unknown_depth: usize,
     /// Mapped components without a repository, so upstream research cannot cover them.
     pub sources_unavailable: usize,
     pub complete: bool,
@@ -99,6 +102,11 @@ pub struct PackageObservation {
     /// `${name}` placeholder (for example a Maven `<properties>` entry).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version_excerpt: Option<String>,
+    /// Agent-observed relationship to the project, supported by this manifest excerpt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_rationale: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]

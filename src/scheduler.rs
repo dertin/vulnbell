@@ -185,13 +185,20 @@ pub fn run(profile: &Profile, profile_path: &Path, force: bool) -> Result<serde_
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
     }
+    // Count the initial scan against an explicitly configured review budget. The scan itself is
+    // synchronous, so a slow scan can overrun it; subsequent agent calls will not start afterward.
+    let budget_deadline = profile
+        .research
+        .review_budget_minutes
+        .map(|minutes| current + Duration::minutes(i64::from(minutes)));
     let mut snapshot = crate::engine::scan(profile, profile_path, false)?;
     let mut store = Store::open(&profile.project_id.to_string())?;
-    let deadline = if force {
-        Utc::now() + chrono::Duration::seconds(900)
+    let window_deadline = if force {
+        budget_deadline.unwrap_or_else(|| Utc::now() + Duration::seconds(900))
     } else {
         slot.expires_at
     };
+    let deadline = budget_deadline.map_or(window_deadline, |end| window_deadline.min(end));
     let discovery_error = crate::discovery::automation::run(
         profile,
         profile_path,
@@ -306,6 +313,6 @@ pub fn run(profile: &Profile, profile_path: &Path, force: bool) -> Result<serde_
         store.set_meta("last_agent_failure", error)?;
     }
     Ok(
-        serde_json::json!({"schema_version":1,"state":outcome,"report":report_path,"slot":slot_key,"research_error":research_error,"report_error":report_error,"agent_report_written":agent_report.is_ok(),"unattended_sandbox":false}),
+        serde_json::json!({"schema_version":1,"state":outcome,"report":report_path,"slot":slot_key,"research_error":research_error,"report_error":report_error,"agent_report_written":agent_report.is_ok(),"unattended_sandbox":false,"review_budget_minutes":profile.research.review_budget_minutes,"review_deadline":budget_deadline,"review_budget_exhausted":budget_deadline.is_some_and(|end| Utc::now() >= end)}),
     )
 }

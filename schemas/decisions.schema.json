@@ -13,12 +13,21 @@
     "ItemDecision": {
       "additionalProperties": false,
       "properties": {
+        "all_instances": {
+          "default": false,
+          "description": "Explicitly assess every instance of a multi-component upstream as one scope.",
+          "type": "boolean"
+        },
         "assessment": {
           "$ref": "#/$defs/Assessment"
         },
+        "context_sha256": {
+          "description": "Context fingerprint returned by tools hits for the exact reviewed target.",
+          "type": "string"
+        },
         "instance_ids": {
           "default": [],
-          "description": "Instances of the item's upstream the reading applies to; empty means all of them.",
+          "description": "Instances of the item's upstream the reading applies to.",
           "items": {
             "type": "string"
           },
@@ -61,6 +70,7 @@
       "required": [
         "key",
         "updated_at",
+        "context_sha256",
         "assessment",
         "rationale"
       ],

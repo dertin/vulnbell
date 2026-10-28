@@ -33,6 +33,8 @@ struct CargoPackage {
     version: String,
     source: Option<String>,
     checksum: Option<String>,
+    #[serde(default)]
+    dependencies: Vec<String>,
 }
 #[derive(Deserialize)]
 struct ComposerLock {
@@ -70,6 +72,12 @@ struct NpmPackage {
     link: bool,
     #[serde(default)]
     dependencies: BTreeMap<String, String>,
+    #[serde(default, rename = "devDependencies")]
+    dev_dependencies: BTreeMap<String, String>,
+    #[serde(default, rename = "optionalDependencies")]
+    optional_dependencies: BTreeMap<String, String>,
+    #[serde(default, rename = "peerDependencies")]
+    peer_dependencies: BTreeMap<String, String>,
 }
 #[derive(Deserialize)]
 struct PnpmLock {
@@ -77,6 +85,19 @@ struct PnpmLock {
     version: serde_json::Value,
     #[serde(default)]
     packages: BTreeMap<String, serde::de::IgnoredAny>,
+    #[serde(default)]
+    importers: BTreeMap<String, PnpmImporter>,
+}
+#[derive(Deserialize)]
+struct PnpmImporter {
+    #[serde(default)]
+    dependencies: BTreeMap<String, serde_json::Value>,
+    #[serde(default, rename = "devDependencies")]
+    dev_dependencies: BTreeMap<String, serde_json::Value>,
+    #[serde(default, rename = "optionalDependencies")]
+    optional_dependencies: BTreeMap<String, serde_json::Value>,
+    #[serde(default, rename = "peerDependencies")]
+    peer_dependencies: BTreeMap<String, serde_json::Value>,
 }
 #[derive(Deserialize)]
 struct Cyclone {
@@ -193,6 +214,38 @@ pub fn parse_lock(filename: &str, bytes: &[u8]) -> Result<Vec<LockedPackage>> {
             if lock.version.is_some_and(|version| version > 4) {
                 bail!("unsupported Cargo lock version");
             }
+            let roots: Vec<&CargoPackage> = lock
+                .package
+                .iter()
+                .filter(|package| package.source.is_none())
+                .collect();
+            let mut direct = std::collections::HashSet::new();
+            let mut ambiguous = std::collections::HashSet::new();
+            let mut root_references_complete = true;
+            for dependency in roots.iter().flat_map(|root| &root.dependencies) {
+                let mut fields = dependency.split_whitespace();
+                let Some(name) = fields.next() else {
+                    root_references_complete = false;
+                    continue;
+                };
+                let version = fields.next().filter(|value| !value.starts_with('('));
+                let candidates: Vec<&CargoPackage> = lock
+                    .package
+                    .iter()
+                    .filter(|package| {
+                        package.name == name
+                            && version.is_none_or(|version| package.version == version)
+                    })
+                    .collect();
+                if candidates.len() == 1 {
+                    direct.insert((candidates[0].name.clone(), candidates[0].version.clone()));
+                } else if candidates.len() > 1 {
+                    ambiguous.insert(name.to_owned());
+                } else {
+                    root_references_complete = false;
+                }
+            }
+            let has_roots = !roots.is_empty();
             for package in lock.package {
                 if let Some(source) = package.source.as_deref()
                     && (source.starts_with("registry+") || source.starts_with("sparse+"))
@@ -206,6 +259,17 @@ pub fn parse_lock(filename: &str, bytes: &[u8]) -> Result<Vec<LockedPackage>> {
                         bail!("custom Cargo registry has no verified crates.io equivalence");
                     }
                     let mut target = locked("cargo", package.name, package.version);
+                    if has_roots {
+                        target.direct = if direct
+                            .contains(&(target.name.clone(), target.version.clone()))
+                        {
+                            Some(true)
+                        } else if !root_references_complete || ambiguous.contains(&target.name) {
+                            None
+                        } else {
+                            Some(false)
+                        };
+                    }
                     target.resolution = package.source;
                     target.artifact_integrity = package.checksum;
                     packages.push(target);
@@ -254,11 +318,16 @@ pub fn parse_lock(filename: &str, bytes: &[u8]) -> Result<Vec<LockedPackage>> {
                 }
                 visit(lock.dependencies, &mut packages, 0, "")?;
             } else if matches!(lock.version, 2 | 3) {
-                let direct_names: std::collections::HashSet<String> = lock
-                    .packages
-                    .get("")
-                    .map(|root| root.dependencies.keys().cloned().collect())
-                    .unwrap_or_default();
+                let direct_names: Option<std::collections::HashSet<String>> =
+                    lock.packages.get("").map(|root| {
+                        root.dependencies
+                            .keys()
+                            .chain(root.dev_dependencies.keys())
+                            .chain(root.optional_dependencies.keys())
+                            .chain(root.peer_dependencies.keys())
+                            .cloned()
+                            .collect()
+                    });
                 for (path, package) in lock.packages {
                     if path.is_empty() || package.link {
                         continue;
@@ -275,11 +344,13 @@ pub fn parse_lock(filename: &str, bytes: &[u8]) -> Result<Vec<LockedPackage>> {
                     if version.starts_with("file:") || version.starts_with("git") {
                         bail!("nonregistry npm package: identity unresolved");
                     }
-                    let direct = direct_names
-                        .iter()
-                        .any(|declared_name| path == format!("node_modules/{declared_name}"));
+                    let direct = direct_names.as_ref().map(|names| {
+                        names
+                            .iter()
+                            .any(|declared_name| path == format!("node_modules/{declared_name}"))
+                    });
                     let mut target = locked("npm", name, version);
-                    target.direct = Some(direct);
+                    target.direct = direct;
                     target.resolution = Some(path);
                     target.artifact_integrity = package.integrity;
                     packages.push(target);
@@ -302,6 +373,40 @@ pub fn parse_lock(filename: &str, bytes: &[u8]) -> Result<Vec<LockedPackage>> {
             {
                 bail!("supported pnpm lock versions: 6 and 9");
             }
+            let mut direct = std::collections::HashSet::new();
+            let mut complete = !lock.importers.is_empty();
+            for importer in lock.importers.values() {
+                for (name, value) in importer
+                    .dependencies
+                    .iter()
+                    .chain(&importer.dev_dependencies)
+                    .chain(&importer.optional_dependencies)
+                    .chain(&importer.peer_dependencies)
+                {
+                    let resolved = value
+                        .as_str()
+                        .or_else(|| value.get("version").and_then(serde_json::Value::as_str));
+                    match resolved {
+                        Some(version)
+                            if !version.is_empty()
+                                && !version.starts_with("link:")
+                                && !version.starts_with("file:")
+                                && !version.starts_with("workspace:")
+                                && !version.starts_with("npm:")
+                                && semver::Version::parse(
+                                    version.split('(').next().unwrap_or(version),
+                                )
+                                .is_ok() =>
+                        {
+                            direct.insert((
+                                name.clone(),
+                                version.split('(').next().unwrap_or(version).to_owned(),
+                            ));
+                        }
+                        _ => complete = false,
+                    }
+                }
+            }
             for (key, _) in lock.packages {
                 let identity = key
                     .trim_start_matches('/')
@@ -312,6 +417,11 @@ pub fn parse_lock(filename: &str, bytes: &[u8]) -> Result<Vec<LockedPackage>> {
                     .rsplit_once('@')
                     .context("pnpm registry key must contain @version")?;
                 let mut target = locked("npm", name.into(), package_version.into());
+                if direct.contains(&(name.to_owned(), package_version.to_owned())) {
+                    target.direct = Some(true);
+                } else if complete {
+                    target.direct = Some(false);
+                }
                 target.resolution = Some(key);
                 packages.push(target);
             }
@@ -532,7 +642,7 @@ pub fn discover(
                 }
                 use rusqlite::OptionalExtension;
                 let hash = crate::digest(&bytes);
-                let key = format!("parser-v4:{name}:{hash}");
+                let key = format!("parser-v6:{name}:{hash}");
                 let cached: Option<String> = store
                     .connection
                     .query_row(
@@ -632,6 +742,7 @@ pub fn discover(
                             cpe_product: None,
                             upstream: None,
                             identity_evidence: Vec::new(),
+                            release: None,
                         });
                     }
                     inventory.coverage.push(Coverage::new("inventory", &relative, CoverageState::Checked, "registry packages parsed; directness is included when available; local/git dependencies have no registry equivalence"));

@@ -11,6 +11,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 pub(crate) mod automation;
+pub(crate) mod release;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -86,6 +87,10 @@ pub enum EventKind {
 pub struct ResearchEvent {
     pub upstream: String,
     pub instance_ids: Vec<String>,
+    /// Candidate instances examined when choosing the case scope. Older observations omit this
+    /// and retain their original instance-based freshness semantics.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reviewed_instance_ids: Vec<String>,
     pub provider: String,
     pub external_id: String,
     pub kind: EventKind,
@@ -113,10 +118,14 @@ pub struct ResearchComponent {
     pub requested_version: Option<String>,
     pub resolved_version: Option<String>,
     pub origin: crate::model::Origin,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<crate::model::ReleaseDate>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ResearchTarget {
     pub upstream: String,
+    /// Fingerprint of the exact monitored instances in this target.
+    pub context_sha256: String,
     pub instance_ids: Vec<String>,
     pub components: Vec<ResearchComponent>,
     pub from: String,
@@ -125,6 +134,15 @@ pub struct ResearchTarget {
     pub seen: Vec<SeenEvent>,
     pub seen_truncated: bool,
     pub continuation: Option<SourceContinuation>,
+    /// Persisted incomplete source review, including its stated blocker and pinned window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<SourceReview>,
+    /// Older progress is retained as context but must not be resumed against changed artifacts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_progress: Option<SourceReview>,
+    /// True when the source window was reopened because its monitored context changed.
+    #[serde(default)]
+    pub context_reopened: bool,
 }
 /// An imported event with the agent's previous reading, so an item whose `updated_at` is unchanged
 /// needs no new review.
@@ -156,9 +174,28 @@ pub struct ResearchPlan {
     pub project_id: String,
     pub snapshot_id: String,
     pub targets: Vec<ResearchTarget>,
+    /// Inventory instances outside tracker exploration; advisories are still scanned separately.
+    pub tracker_scope: crate::profile::TrackerScope,
+    pub deferred_transitive_instances: usize,
+    pub deferred_unknown_instances: usize,
+    /// No inventory instance was selected for tracker research.
+    pub scope_unselected: bool,
+    /// Evidence-backed candidates for focused investigation; these do not change the scope.
+    pub follow_suggestions: Vec<FollowSuggestion>,
+    pub follow_suggestions_total: usize,
     pub required_agent_sites: Vec<String>,
     pub policy: String,
     pub next_cursor: Option<String>,
+}
+#[derive(Debug, Serialize)]
+pub struct FollowSuggestion {
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub version: Option<String>,
+    pub case_id: String,
+    pub advisory_id: String,
+    pub applicability: Applicability,
+    pub evidence: crate::model::Evidence,
 }
 pub fn plan_page(store: &Store, after: &str, limit: usize) -> Result<ResearchPlan> {
     if !(1..=20).contains(&limit) {
@@ -178,8 +215,77 @@ fn build_plan(
 ) -> Result<ResearchPlan> {
     use rusqlite::OptionalExtension;
     let snapshot = store.latest()?;
+    let configured = store
+        .meta("profile_path")?
+        .map(|path| crate::profile::load(std::path::Path::new(&path)))
+        .transpose()?;
+    let research = configured
+        .as_ref()
+        .map(|profile| &profile.research)
+        .cloned()
+        .unwrap_or_default();
+    let selected = |instance: &Instance| research.tracks(instance);
+    let deferred_transitive_instances = snapshot
+        .instances
+        .iter()
+        .filter(|instance| !selected(instance) && instance.provenance.direct == Some(false))
+        .count();
+    let deferred_unknown_instances = snapshot
+        .instances
+        .iter()
+        .filter(|instance| !selected(instance) && instance.provenance.direct.is_none())
+        .count();
+    let scope_unselected =
+        !snapshot.instances.is_empty() && !snapshot.instances.iter().any(selected);
+    let instances_by_id: BTreeMap<_, _> = snapshot
+        .instances
+        .iter()
+        .map(|instance| (instance.id.as_str(), instance))
+        .collect();
+    let mut suggestions = Vec::new();
+    for case in store.cases()? {
+        for claim in case.claims {
+            if claim.applicability == Applicability::NotAffected {
+                continue;
+            }
+            let Some(instance) = instances_by_id.get(claim.instance_id.as_str()).copied() else {
+                continue;
+            };
+            if selected(instance) || !store.evidence_exists(&claim.evidence).unwrap_or(false) {
+                continue;
+            }
+            suggestions.push(FollowSuggestion {
+                reference: instance.reference.clone(),
+                version: instance.resolved_version.clone(),
+                case_id: case.case_id.clone(),
+                advisory_id: claim.id,
+                applicability: claim.applicability,
+                evidence: claim.evidence,
+            });
+        }
+    }
+    suggestions.sort_by(|a, b| {
+        (&a.reference, &a.version, &a.advisory_id, &a.case_id).cmp(&(
+            &b.reference,
+            &b.version,
+            &b.advisory_id,
+            &b.case_id,
+        ))
+    });
+    suggestions.dedup_by(|a, b| {
+        a.reference == b.reference
+            && a.version == b.version
+            && a.advisory_id == b.advisory_id
+            && a.case_id == b.case_id
+    });
+    let follow_suggestions_total = suggestions.len();
+    suggestions.truncate(100);
     let mut repositories: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for instance in &snapshot.instances {
+    for instance in snapshot
+        .instances
+        .iter()
+        .filter(|instance| selected(instance))
+    {
         if let Some(upstream) = &instance.upstream {
             repositories
                 .entry(upstream.trim_end_matches('/').into())
@@ -191,10 +297,9 @@ fn build_plan(
         let path = std::path::Path::new(&path);
         let profile = crate::profile::load(path)?;
         for (instance_id, url) in crate::discovery::mapped_sources(&profile, path, store)? {
-            if snapshot
-                .instances
-                .iter()
-                .any(|instance| instance.id == instance_id)
+            if instances_by_id
+                .get(instance_id.as_str())
+                .is_some_and(|instance| selected(instance))
             {
                 let ids = repositories
                     .entry(url.trim_end_matches('/').to_owned())
@@ -208,12 +313,18 @@ fn build_plan(
     let first_scan = store
         .meta("first_scan")?
         .unwrap_or_else(|| snapshot.started_at.clone());
-    let initial = DateTime::parse_from_rfc3339(&first_scan)? - Duration::days(30);
-    let instances_by_id: BTreeMap<_, _> = snapshot
-        .instances
-        .iter()
-        .map(|instance| (instance.id.as_str(), instance))
-        .collect();
+    let mut initial = DateTime::parse_from_rfc3339(&first_scan)? - Duration::days(30);
+    if let Some(path) = store.meta("profile_path")? {
+        let profile = crate::profile::load(std::path::Path::new(&path))?;
+        if let Some(since) = profile.research.initial_since {
+            initial = DateTime::parse_from_rfc3339(&since)?;
+            if initial > DateTime::parse_from_rfc3339(&snapshot.finished_at)? {
+                bail!(
+                    "research.initial_since is after the completed scan; run a new scan or correct the date"
+                );
+            }
+        }
+    }
     let mut targets = Vec::new();
     let mut next_cursor = None;
     for (upstream, instance_ids) in repositories
@@ -234,9 +345,34 @@ fn build_plan(
                 |row| row.get(0),
             )
             .optional()?;
+        let context_key = format!("research_context:{}", crate::digest(upstream.as_bytes()));
+        let context =
+            tracker_context(&instance_ids, &snapshot.instances, research.release_windows)?;
+        let reviewed_context = store.meta(&context_key)?;
+        let mut context_reopened =
+            checkpoint.is_some() && reviewed_context.as_deref() != Some(&context);
+        let checkpoint = if context_reopened { None } else { checkpoint };
         let mut from = match &checkpoint {
             Some(checkpoint) => {
                 (DateTime::parse_from_rfc3339(checkpoint)? - Duration::minutes(5)).to_rfc3339()
+            }
+            None if research.release_windows && research.initial_since.is_none() => {
+                let mut dates = Vec::new();
+                for id in &instance_ids {
+                    let date = instances_by_id
+                        .get(id.as_str())
+                        .and_then(|instance| {
+                            instance.release.as_ref().filter(|release| {
+                                instance.resolved_version.as_deref()
+                                    == Some(release.version.as_str())
+                            })
+                        })
+                        .and_then(|release| {
+                            DateTime::parse_from_rfc3339(&release.published_at).ok()
+                        });
+                    dates.push(date.unwrap_or(initial));
+                }
+                dates.into_iter().min().unwrap_or(initial).to_rfc3339()
             }
             None => initial.to_rfc3339(),
         };
@@ -250,11 +386,24 @@ fn build_plan(
             .optional()?;
         let mut until = snapshot.finished_at.clone();
         let mut continuation = None;
-        if let Some(body) = progress {
-            let progress: SourceReview = serde_json::from_str(&body)?;
-            from = progress.from;
-            until = progress.until;
-            continuation = progress.continuation;
+        let progress_key = format!(
+            "research_progress_context:{}",
+            crate::digest(upstream.as_bytes())
+        );
+        let progress_context = store.meta(&progress_key)?;
+        let progress: Option<SourceReview> = progress
+            .map(|body| serde_json::from_str(&body))
+            .transpose()?;
+        let (progress, stale_progress) = if progress_context.as_deref() == Some(&context) {
+            (progress, None)
+        } else {
+            context_reopened |= progress.is_some();
+            (None, progress)
+        };
+        if let Some(progress) = &progress {
+            from = progress.from.clone();
+            until = progress.until.clone();
+            continuation = progress.continuation.clone();
         }
         let mut seen = Vec::new();
         let mut seen_bytes = 0;
@@ -286,16 +435,15 @@ fn build_plan(
                 event.context_current = serde_json::from_str::<ResearchEvent>(&body)
                     .ok()
                     .is_some_and(|recorded| {
-                        instance_ids
-                            .iter()
-                            .all(|id| recorded.instance_ids.contains(id))
+                        let reviewed = if recorded.reviewed_instance_ids.is_empty() {
+                            &recorded.instance_ids
+                        } else {
+                            &recorded.reviewed_instance_ids
+                        };
+                        instance_ids.iter().all(|id| reviewed.contains(id))
                             && event_content(&recorded)
                                 .and_then(|content| {
-                                    event_hash(
-                                        &content,
-                                        &recorded.instance_ids,
-                                        &snapshot.instances,
-                                    )
+                                    event_hash(&content, reviewed, &snapshot.instances)
                                 })
                                 .is_ok_and(|hash| hash == event.content_sha256)
                     });
@@ -316,10 +464,12 @@ fn build_plan(
                 requested_version: instance.requested_version.clone(),
                 resolved_version: instance.resolved_version.clone(),
                 origin: instance.origin,
+                release: instance.release.clone(),
             })
             .collect();
         targets.push(ResearchTarget {
             upstream,
+            context_sha256: context,
             instance_ids,
             components,
             from,
@@ -328,9 +478,38 @@ fn build_plan(
             seen,
             seen_truncated,
             continuation,
+            progress,
+            stale_progress,
+            context_reopened,
         });
     }
-    Ok(ResearchPlan {schema_version:1,project_id:snapshot.project_id,snapshot_id:snapshot.id,targets,next_cursor,required_agent_sites:vec!["github.com".into(),"gitlab.com".into(),"launchpad.net (bugs and merge proposals)".into()],policy:"Review issues, proposed changes, discussions, documentation, changelogs, releases and advisories at each mapped source. Exhaust relevant pages and linked context in the supplied window. Screen each item on its title, labels and body (up to the 8000-character excerpt limit), not the title alone; for a proposed change also read the issue it closes. For every item with a security claim, answer from the item in source_facts: which advisory IDs it cites, which versions it says are affected, where it says the fix is (version, release or backport) and through which change, and which feature or configuration it requires; leave a field empty when the item does not say, never infer it. Then judge it against the monitored version. A seen event whose updated_at is unchanged and whose context_current is true keeps its recorded assessment and needs no new review; resend an event when it changed or its context_current is false. Only complete reviews advance source checkpoints. Follow next_cursor for remaining targets. seen_truncated means the prompt contains only a sample; the CLI still deduplicates all imported events. Initial window is 30 days; later windows overlap the last completed review by 5 minutes.".into()})
+    Ok(ResearchPlan {schema_version:1,project_id:snapshot.project_id,snapshot_id:snapshot.id,targets,tracker_scope:research.tracker_scope,deferred_transitive_instances,deferred_unknown_instances,scope_unselected,follow_suggestions:suggestions,follow_suggestions_total,next_cursor,required_agent_sites:vec!["github.com".into(),"gitlab.com".into(),"launchpad.net (bugs and merge proposals)".into()],policy:"Review issues, proposed changes, discussions, documentation, changelogs, releases and advisories at each selected mapped source. Deferred transitive and unknown-depth instances remain in the inventory and advisory scan, not proven safe; inspect follow_suggestions and add exact references to research.follow for targeted investigation where warranted. Exhaust relevant pages and linked context in the supplied window. Screen each item on its title, labels and full acquired body, not the title alone; for a proposed change also read the issue it closes. For every item with a security claim, answer from the item in source_facts: which advisory IDs it cites, which versions it says are affected, where it says the fix is (version, release or backport) and through which change, and which feature or configuration it requires; leave a field empty when the item does not say, never infer it. Then judge it against the monitored version. A seen event whose updated_at is unchanged and whose context_current is true keeps its recorded assessment and needs no new review; resend an event when it changed or its context_current is false. Only complete reviews advance source checkpoints. Follow next_cursor for remaining targets. seen_truncated means the prompt contains only a sample; the CLI still deduplicates all imported events. The initial window uses research.initial_since if configured, otherwise exact registry release dates when enabled or a 30 day fallback; shared targets use the earliest date. Later windows overlap the last completed review by 5 minutes. Earlier activity is outside this window, not established safe; advisory scans are independent.".into()})
+}
+fn tracker_context(
+    instance_ids: &[String],
+    instances: &[Instance],
+    release_windows: bool,
+) -> Result<String> {
+    let mut facts: Vec<_> = instances
+        .iter()
+        .filter(|instance| instance_ids.contains(&instance.id))
+        .map(|instance| {
+            (
+                &instance.id,
+                instance.context_fingerprint(),
+                if release_windows {
+                    instance
+                        .release
+                        .as_ref()
+                        .map(|release| (&release.version, &release.published_at))
+                } else {
+                    None
+                },
+            )
+        })
+        .collect();
+    facts.sort_by(|a, b| a.0.cmp(b.0));
+    Ok(crate::digest(&serde_json::to_vec(&facts)?))
 }
 /// Observation recorded as evidence for an event.
 fn event_content(event: &ResearchEvent) -> Result<Vec<u8>> {
@@ -466,6 +645,18 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
         {
             bail!("event instance is outside declared upstream scope");
         }
+        if !event.reviewed_instance_ids.is_empty()
+            && (event
+                .reviewed_instance_ids
+                .iter()
+                .any(|id| !target.instance_ids.contains(id))
+                || event
+                    .instance_ids
+                    .iter()
+                    .any(|id| !event.reviewed_instance_ids.contains(id)))
+        {
+            bail!("reviewed instances must include the case scope and belong to the upstream");
+        }
         if event.external_id.is_empty()
             || event.external_id.len() > 300
             || event.title.len() > 2000
@@ -507,21 +698,56 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
             bail!("event timestamp is outside review window");
         }
         let content = event_content(event)?;
-        let hash = event_hash(&content, &event.instance_ids, &snapshot.instances)?;
+        let reviewed = if event.reviewed_instance_ids.is_empty() {
+            &event.instance_ids
+        } else {
+            &event.reviewed_instance_ids
+        };
+        let hash = event_hash(&content, reviewed, &snapshot.instances)?;
         // The original permalink identifies the event; agent/provider ID formatting may vary.
         let key = crate::digest(format!("{}:{}", event.upstream, event_url).as_bytes());
-        let previous: Option<String> = store
+        let previous: Option<(String, String)> = store
             .connection
             .query_row(
-                "SELECT content_sha256 FROM research_events WHERE key=?1",
+                "SELECT content_sha256,body FROM research_events WHERE key=?1",
                 [&key],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        if previous.as_deref() == Some(&hash) {
+        let same_content = previous
+            .as_ref()
+            .is_some_and(|(old_hash, _)| old_hash == &hash);
+        let same_reading = previous
+            .as_ref()
+            .and_then(|(_, body)| serde_json::from_str::<ResearchEvent>(body).ok())
+            .is_some_and(|old| {
+                let old_reviewed = if old.reviewed_instance_ids.is_empty() {
+                    &old.instance_ids
+                } else {
+                    &old.reviewed_instance_ids
+                };
+                old.assessment == event.assessment
+                    && old.not_applicable_reason == event.not_applicable_reason
+                    && old.rationale == event.rationale
+                    && old.instance_ids == event.instance_ids
+                    && old_reviewed == reviewed
+            });
+        if same_content && same_reading {
             duplicates += 1;
             continue;
         }
+        // A new assessment must invalidate an earlier case verdict even if upstream text is unchanged.
+        let case_facts = if same_content {
+            crate::digest(&serde_json::to_vec(&(
+                &hash,
+                event.assessment,
+                event.not_applicable_reason,
+                &event.rationale,
+                &event.instance_ids,
+            ))?)
+        } else {
+            hash.clone()
+        };
         let evidence = store.record_evidence(
             &content,
             "agent_upstream_observation",
@@ -611,7 +837,7 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
                 applicability: Applicability::Unknown,
                 verification: Verification::Inconclusive,
                 decision,
-                facts_sha256: hash.clone(),
+                facts_sha256: case_facts,
                 open_questions,
                 suggested_search_queries: Vec::new(),
                 sandbox: crate::sandbox::availability(),
@@ -628,6 +854,12 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
             );
         }
     }
+    let release_windows = store
+        .meta("profile_path")?
+        .map(|path| crate::profile::load(std::path::Path::new(&path)))
+        .transpose()?
+        .map(|profile| profile.research.release_windows)
+        .unwrap_or(false);
     let transaction = store.connection.transaction()?;
     for id in &merged_case_ids {
         transaction.execute("DELETE FROM cases WHERE id=?1", [id])?;
@@ -671,6 +903,13 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
         }
     }
     for source in &batch.sources {
+        let target = plan
+            .targets
+            .iter()
+            .find(|target| target.upstream == source.upstream)
+            .context("research source disappeared from plan")?;
+        let context = tracker_context(&target.instance_ids, &snapshot.instances, release_windows)?;
+        let key_suffix = crate::digest(source.upstream.as_bytes());
         if source.coverage == ReviewCoverage::Complete {
             transaction.execute(
                 "INSERT OR REPLACE INTO research_cursors VALUES (?1,?2)",
@@ -680,10 +919,22 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
                 "DELETE FROM research_progress WHERE upstream=?1",
                 [&source.upstream],
             )?;
+            transaction.execute(
+                "INSERT OR REPLACE INTO meta VALUES (?1,?2)",
+                params![format!("research_context:{key_suffix}"), context],
+            )?;
+            transaction.execute(
+                "DELETE FROM meta WHERE key=?1",
+                [format!("research_progress_context:{key_suffix}")],
+            )?;
         } else {
             transaction.execute(
                 "INSERT OR REPLACE INTO research_progress VALUES (?1,?2)",
                 params![source.upstream, serde_json::to_string(source)?],
+            )?;
+            transaction.execute(
+                "INSERT OR REPLACE INTO meta VALUES (?1,?2)",
+                params![format!("research_progress_context:{key_suffix}"), context],
             )?;
         }
     }

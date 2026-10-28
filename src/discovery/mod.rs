@@ -73,7 +73,14 @@ pub fn map_registries(
     let scope = scope(profile, path)?;
     let mut http = crate::network::Http::new(store, offline);
     let first_party = sources::first_party(&roots(profile, path)?);
-    let run = sources::map_registries(store, &scope, &first_party, &mut http, limit)?;
+    let run = sources::map_registries(
+        store,
+        &scope,
+        &first_party,
+        &profile.research,
+        &mut http,
+        limit,
+    )?;
     Ok(RegistryMapping {
         run,
         summary: summary(profile, path, store)?,
@@ -112,6 +119,7 @@ pub fn plan(profile: &Profile, path: &Path, store: &Store, limit: usize) -> Resu
             store,
             &scope,
             &sources::first_party(&roots(profile, path)?),
+            &profile.research,
             sources::Mapper::Agent,
             limit,
         )?
@@ -313,7 +321,7 @@ fn summary_for_instances(
     let files_pending = count("discovery_files", "pending")?;
     let files_unavailable = count("discovery_files", "unavailable")?;
     let (components_unmapped, sources_unavailable) =
-        sources::counts(store, scope, first_party, instances)?;
+        sources::counts(store, scope, first_party, instances, &profile.research)?;
     let complete = enabled
         && initialized_roots >= profile.workspaces.len()
         && directories_pending == 0
@@ -333,6 +341,18 @@ fn summary_for_instances(
             + count("discovery_files", "removed")?,
         files_unavailable,
         components_unmapped,
+        deferred_transitive: instances
+            .iter()
+            .filter(|instance| {
+                !profile.research.tracks(instance) && instance.provenance.direct == Some(false)
+            })
+            .count(),
+        deferred_unknown_depth: instances
+            .iter()
+            .filter(|instance| {
+                !profile.research.tracks(instance) && instance.provenance.direct.is_none()
+            })
+            .count(),
         sources_unavailable,
         complete,
     })
@@ -350,14 +370,16 @@ pub fn coverage(summary: &DiscoverySummary) -> Coverage {
             CoverageState::Partial
         },
         format!(
-            "directories_pending={}, file_chunks_pending={}, files_reviewed={}, files_excluded={}, files_unavailable={}, components_unmapped={}, sources_unavailable={}; agent observations are not verified vulnerability claims",
+            "directories_pending={}, file_chunks_pending={}, files_reviewed={}, files_excluded={}, files_unavailable={}, components_unmapped={}, sources_unavailable={}, deferred_transitive={}, deferred_unknown_depth={}; agent observations are not verified vulnerability claims",
             summary.directories_pending,
             summary.files_pending,
             summary.files_reviewed,
             summary.files_excluded,
             summary.files_unavailable,
             summary.components_unmapped,
-            summary.sources_unavailable
+            summary.sources_unavailable,
+            summary.deferred_transitive,
+            summary.deferred_unknown_depth
         ),
     )
 }

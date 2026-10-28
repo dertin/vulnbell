@@ -137,9 +137,16 @@ fn mapped_sources_require_acquired_evidence_and_every_category() {
     assert!(import(&mut store, "test", vec![observation.clone()]).is_ok());
     assert_eq!(mapped(&store, "test").unwrap().len(), 1);
     assert!(
-        targets(&store, "test", &BTreeSet::new(), Mapper::Agent, 10)
-            .unwrap()
-            .is_empty()
+        targets(
+            &store,
+            "test",
+            &BTreeSet::new(),
+            &crate::profile::Research::default(),
+            Mapper::Agent,
+            10
+        )
+        .unwrap()
+        .is_empty()
     );
     let mut enrichment_gap = observation.clone();
     enrichment_gap.sources[0].state = MappingState::Unavailable;
@@ -149,7 +156,8 @@ fn mapped_sources_require_acquired_evidence_and_every_category() {
             &store,
             "test",
             &BTreeSet::new(),
-            std::slice::from_ref(&instance)
+            std::slice::from_ref(&instance),
+            &crate::profile::Research::default()
         )
         .unwrap(),
         (0, 0)
@@ -165,9 +173,16 @@ fn mapped_sources_require_acquired_evidence_and_every_category() {
     native_gap.rationale = format!("{} from https://crates.io/x", registry::NATIVE_RATIONALE);
     import(&mut store, "test", vec![native_gap]).unwrap();
     let pending = |mapper| {
-        targets(&store, "test", &BTreeSet::new(), mapper, 10)
-            .unwrap()
-            .len()
+        targets(
+            &store,
+            "test",
+            &BTreeSet::new(),
+            &crate::profile::Research::default(),
+            mapper,
+            10,
+        )
+        .unwrap()
+        .len()
     };
     assert_eq!((pending(Mapper::Agent), pending(Mapper::Registry)), (1, 0));
     import(&mut store, "test", vec![no_repository]).unwrap();
@@ -176,7 +191,8 @@ fn mapped_sources_require_acquired_evidence_and_every_category() {
             &store,
             "test",
             &BTreeSet::new(),
-            std::slice::from_ref(&instance)
+            std::slice::from_ref(&instance),
+            &crate::profile::Research::default()
         )
         .unwrap(),
         (0, 1)
@@ -186,9 +202,16 @@ fn mapped_sources_require_acquired_evidence_and_every_category() {
     next_snapshot.started_at = (chrono::Utc::now() + chrono::Duration::seconds(1)).to_rfc3339();
     store.save_snapshot(&next_snapshot).unwrap();
     assert!(
-        targets(&store, "test", &BTreeSet::new(), Mapper::Agent, 10)
-            .unwrap()
-            .is_empty()
+        targets(
+            &store,
+            "test",
+            &BTreeSet::new(),
+            &crate::profile::Research::default(),
+            Mapper::Agent,
+            10
+        )
+        .unwrap()
+        .is_empty()
     );
     let week_old = (chrono::Utc::now() - chrono::Duration::days(8)).to_rfc3339();
     store
@@ -196,9 +219,16 @@ fn mapped_sources_require_acquired_evidence_and_every_category() {
         .execute("UPDATE discovery_sources SET checked_at=?1", [&week_old])
         .unwrap();
     assert_eq!(
-        targets(&store, "test", &BTreeSet::new(), Mapper::Agent, 10)
-            .unwrap()
-            .len(),
+        targets(
+            &store,
+            "test",
+            &BTreeSet::new(),
+            &crate::profile::Research::default(),
+            Mapper::Agent,
+            10
+        )
+        .unwrap()
+        .len(),
         1
     );
     drop(directory);
@@ -345,7 +375,14 @@ fn workspace_root_poms_mark_their_own_artifacts_as_first_party() {
     let instances: Vec<Instance> = profile.components.iter().map(Instance::declared).collect();
     let store = Store::open("6f0c2c1e-7d1a-4c5e-9b1f-0a4f1f0d2e31").unwrap();
     assert_eq!(
-        counts(&store, "scope", &first_party(&roots), &instances).unwrap(),
+        counts(
+            &store,
+            "scope",
+            &first_party(&roots),
+            &instances,
+            &crate::profile::Research::default()
+        )
+        .unwrap(),
         (1, 0)
     );
 }

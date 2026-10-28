@@ -68,6 +68,7 @@ pub(super) fn targets(
     store: &Store,
     scope: &str,
     first_party: &BTreeSet<String>,
+    research: &crate::profile::Research,
     mapper: Mapper,
     limit: usize,
 ) -> Result<Vec<PublicTarget>> {
@@ -77,7 +78,7 @@ pub(super) fn targets(
     let snapshot = store.latest()?;
     let mut targets = Vec::new();
     for instance in &snapshot.instances {
-        if first_party.contains(&instance.reference) {
+        if first_party.contains(&instance.reference) || !research.tracks(instance) {
             continue;
         }
         let previous: Option<(String,String,String)> = store
@@ -401,6 +402,7 @@ pub(super) fn counts(
     scope: &str,
     first_party: &BTreeSet<String>,
     instances: &[Instance],
+    research: &crate::profile::Research,
 ) -> Result<(usize, usize)> {
     let observations = all(store, scope)?;
     let observations: BTreeMap<_, _> = observations
@@ -411,7 +413,7 @@ pub(super) fn counts(
     let mut unavailable = 0;
     for instance in instances
         .iter()
-        .filter(|instance| !first_party.contains(&instance.reference))
+        .filter(|instance| !first_party.contains(&instance.reference) && research.tracks(instance))
     {
         match observations.get(instance.id.as_str()) {
             Some(observation) if observation.fingerprint == fingerprint(instance) => {

@@ -708,6 +708,32 @@ pub(super) fn import(
         )?;
         let mut packages = Vec::new();
         for observation in &review.packages {
+            if observation.direct.is_some() {
+                let name = std::path::Path::new(&relative)
+                    .file_name()
+                    .and_then(|v| v.to_str())
+                    .unwrap_or("");
+                if ![
+                    "pom.xml",
+                    "Cargo.toml",
+                    "package.json",
+                    "composer.json",
+                    "pyproject.toml",
+                    "go.mod",
+                ]
+                .contains(&name)
+                    || !observation
+                        .direct_rationale
+                        .as_ref()
+                        .is_some_and(|r| !r.trim().is_empty() && r.len() <= 2000)
+                {
+                    bail!(
+                        "directness requires a supported manifest excerpt and a bounded rationale"
+                    );
+                }
+            } else if observation.direct_rationale.is_some() {
+                bail!("directness rationale requires an explicit relationship");
+            }
             let mut candidate = profile.clone();
             candidate.components = vec![observation.component.clone()];
             if !crate::profile::validate(&candidate).valid
@@ -780,7 +806,7 @@ pub(super) fn import(
             instance.provenance.path = Some(relative.clone());
             instance.provenance.workspace = Some(root.clone());
             instance.provenance.sha256 = chunk.sha256.clone();
-            instance.provenance.direct = None;
+            instance.provenance.direct = observation.direct;
             instance.provenance.line = excerpt_line(&root, &relative, &chunk, &observation.excerpt);
             instance.identity_evidence.push(store.record_evidence(
                 &serde_json::to_vec(observation)?,

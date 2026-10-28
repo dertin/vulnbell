@@ -118,6 +118,8 @@ pub fn markdown(snapshot: &Snapshot) -> String {
 
 #[derive(serde::Serialize, schemars::JsonSchema)]
 pub struct MorningReport {
+    /// Current report contract distinguishes candidates from explicitly required checks.
+    #[schemars(range(min = 1, max = 1))]
     pub schema_version: u32,
     pub audience: String,
     /// Report language from the profile; the generated sentences in this report use it.
@@ -149,9 +151,12 @@ pub struct MorningReport {
 pub enum PendingReason {
     /// `vulnbell impact` has not been answered for the current case facts.
     ImpactNotAssessed,
-    /// An instance needs a sandbox check (see `LocalCheck::sandbox_needed`) and has neither a
-    /// result nor a blocker with a kind.
+    /// An unconfirmed signal needs an explicit review disposition, not necessarily a test.
+    ReviewDispositionMissing,
+    /// A test was explicitly required and has neither a result nor a categorized blocker.
     SandboxCheckMissing,
+    /// Recorded verification evidence could not be validated.
+    InvalidVerificationEvidence,
 }
 #[derive(serde::Serialize, schemars::JsonSchema)]
 pub struct PendingVerification {
@@ -165,15 +170,43 @@ fn pending_verification(check: &FindingCheck) -> Option<PendingReason> {
     if check.impact.is_none() {
         return Some(PendingReason::ImpactNotAssessed);
     }
-    let unsettled = check.local_checks.iter().any(|local| {
-        local.sandbox_needed
-            && match local.result {
-                LocalResult::NotRun => true,
-                LocalResult::Blocked => local.blocker.is_none(),
-                _ => false,
-            }
-    });
-    unsettled.then_some(PendingReason::SandboxCheckMissing)
+    if check
+        .local_checks
+        .iter()
+        .any(|local| local.result == LocalResult::InvalidEvidence)
+    {
+        return Some(PendingReason::InvalidVerificationEvidence);
+    }
+    if check.decision == Decision::Review
+        && check
+            .review_handoff
+            .as_ref()
+            .is_some_and(|handoff| !handoff.sandbox_required)
+    {
+        return None;
+    }
+    let unsettled = |local: &LocalCheck| match local.result {
+        LocalResult::NotRun => true,
+        LocalResult::Blocked => local.blocker.is_none(),
+        _ => false,
+    };
+    if check
+        .local_checks
+        .iter()
+        .any(|local| local.sandbox_needed && unsettled(local))
+    {
+        return Some(PendingReason::SandboxCheckMissing);
+    }
+    if (check.decision == Decision::Review && check.review_handoff_stale)
+        || (check.review_handoff.is_none()
+            && check
+                .local_checks
+                .iter()
+                .any(|local| local.sandbox_candidate && unsettled(local)))
+    {
+        return Some(PendingReason::ReviewDispositionMissing);
+    }
+    None
 }
 #[derive(serde::Serialize, schemars::JsonSchema)]
 pub struct MonitoredComponent {
@@ -628,6 +661,8 @@ pub fn discovery_markdown(report: &MorningReport) -> String {
                 &discovery.files_unavailable,
                 &discovery.components_unmapped,
                 &discovery.sources_unavailable,
+                &discovery.deferred_transitive,
+                &discovery.deferred_unknown_depth,
             ],
         ));
     }
@@ -884,7 +919,9 @@ pub fn morning_markdown(report: &MorningReport) -> String {
                 words.incomplete_banner,
                 &[
                     &count(PendingReason::ImpactNotAssessed),
+                    &count(PendingReason::ReviewDispositionMissing),
                     &count(PendingReason::SandboxCheckMissing),
+                    &count(PendingReason::InvalidVerificationEvidence),
                 ],
             ),
         );
@@ -916,6 +953,11 @@ pub fn morning_markdown(report: &MorningReport) -> String {
                 text.push_str(words.review_table_header);
             }
             for item in rows {
+                let handoff = report
+                    .finding_checks
+                    .iter()
+                    .find(|check| check.case_id == item.case_id)
+                    .and_then(|check| check.review_handoff.as_ref());
                 let mut review_context = fill(
                     words.review_context,
                     &[
@@ -928,9 +970,11 @@ pub fn morning_markdown(report: &MorningReport) -> String {
                     review_context.push_str(&source_facts_text(facts, language));
                     review_context.push('.');
                 }
-                for question in &item.open_questions {
-                    review_context.push(' ');
-                    review_context.push_str(question);
+                if handoff.is_none() {
+                    for question in &item.open_questions {
+                        review_context.push(' ');
+                        review_context.push_str(question);
+                    }
                 }
                 if let Some(verdict) = &item.recorded_verdict {
                     review_context.push_str(words.recorded_verdict_inline);
@@ -939,6 +983,12 @@ pub fn morning_markdown(report: &MorningReport) -> String {
                 if let Some(impact) = impact_summary(report, &item.case_id) {
                     review_context.push_str(words.impact_inline);
                     review_context.push_str(&impact);
+                }
+                if let Some(handoff) = handoff {
+                    review_context.push(' ');
+                    review_context.push_str(&handoff.rationale);
+                    review_context.push(' ');
+                    review_context.push_str(&handoff.uncertainty);
                 }
                 let link = item
                     .evidence_links
@@ -961,7 +1011,9 @@ pub fn morning_markdown(report: &MorningReport) -> String {
                                 .iter()
                                 .all(|local| local.result == LocalResult::Blocked)
                     });
-                let next_step = if blocked {
+                let next_step = if let Some(handoff) = handoff {
+                    inline(&handoff.next_step)
+                } else if blocked {
                     words.resolve_blocker.to_owned()
                 } else {
                     inline(&item.recommended_action)

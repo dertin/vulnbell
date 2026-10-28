@@ -41,6 +41,8 @@ pub struct ItemDecision {
     pub key: String,
     /// The item's `updated_at` when it was reviewed; a later update lists the item again.
     pub updated_at: String,
+    /// Context fingerprint returned by tools hits for the exact reviewed target.
+    pub context_sha256: String,
     pub assessment: Assessment,
     /// Required with `not_applicable`; forbidden otherwise.
     #[serde(default)]
@@ -48,9 +50,21 @@ pub struct ItemDecision {
     pub rationale: String,
     #[serde(default)]
     pub source_facts: SourceFacts,
-    /// Instances of the item's upstream the reading applies to; empty means all of them.
+    /// Instances of the item's upstream the reading applies to.
     #[serde(default)]
     pub instance_ids: Vec<String>,
+    /// Explicitly assess every instance of a multi-component upstream as one scope.
+    #[serde(default)]
+    pub all_instances: bool,
+}
+
+impl ItemDecision {
+    pub(super) fn needs_scope(&self, target: &ResearchTarget) -> bool {
+        self.assessment == Assessment::Review
+            && target.instance_ids.len() > 1
+            && self.instance_ids.is_empty()
+            && !self.all_instances
+    }
 }
 
 pub enum DecisionLookup<'a> {
@@ -86,8 +100,21 @@ impl ResearchDecisions {
             if super::normalize_time(&decision.updated_at).is_none() {
                 bail!("decision {key}: updated_at must be the item's RFC3339 time");
             }
+            if decision.context_sha256.len() != 64
+                || !decision
+                    .context_sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+            {
+                bail!(
+                    "decision {key}: context_sha256 must be the target fingerprint from tools hits"
+                );
+            }
             if decision.rationale.trim().is_empty() || decision.rationale.len() > 4000 {
                 bail!("decision {key}: rationale must be 1..4000 bytes");
+            }
+            if decision.all_instances && !decision.instance_ids.is_empty() {
+                bail!("decision {key}: choose instance_ids or all_instances, not both");
             }
             if (decision.assessment == Assessment::NotApplicable)
                 != decision.not_applicable_reason.is_some()
@@ -102,13 +129,16 @@ impl ResearchDecisions {
         Ok(())
     }
 
-    pub fn lookup(&self, item: &Item) -> DecisionLookup<'_> {
+    pub fn lookup(&self, item: &Item, target: &ResearchTarget) -> DecisionLookup<'_> {
         match self
             .decisions
             .iter()
             .find(|decision| decision.key == item.key)
         {
-            Some(decision) if super::same_instant(&decision.updated_at, &item.updated_at) => {
+            Some(decision)
+                if super::same_instant(&decision.updated_at, &item.updated_at)
+                    && decision.context_sha256 == target.context_sha256 =>
+            {
                 DecisionLookup::Current(decision)
             }
             Some(decision) => DecisionLookup::Stale(decision),
@@ -223,7 +253,15 @@ fn target_events(
             review.unchanged += 1;
             continue;
         }
-        let reading = match (decisions.lookup(&entry.item), &entry.disposition) {
+        let reading = match (decisions.lookup(&entry.item, target), &entry.disposition) {
+            (DecisionLookup::Current(decision), _) if decision.needs_scope(target) => {
+                review.undecided += 1;
+                undecided.push(format!(
+                    "{} (select instance_ids or all_instances)",
+                    entry.item.key
+                ));
+                continue;
+            }
             (DecisionLookup::Current(decision), _) => {
                 review.decided += 1;
                 Reading {
@@ -311,6 +349,7 @@ fn event(
         } else {
             reading.instance_ids.to_vec()
         },
+        reviewed_instance_ids: target.instance_ids.clone(),
         provider: provider.to_owned(),
         external_id: item.key.clone(),
         kind: item.kind.event_kind(),

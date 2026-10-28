@@ -41,7 +41,7 @@
         },
         "body": {
           "default": "",
-          "description": "Up to 8000 characters of the description, release notes or commit message.",
+          "description": "Complete description, release notes or commit message within the raw-file budget.",
           "type": "string"
         },
         "closes": {
