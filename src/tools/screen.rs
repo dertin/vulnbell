@@ -4,7 +4,10 @@
 use super::{Item, ItemKind};
 use regex::Regex;
 use serde::Serialize;
-use std::sync::LazyLock;
+use std::{collections::BTreeSet, sync::LazyLock};
+
+#[cfg(test)]
+mod tests;
 
 static STRONG: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -48,6 +51,119 @@ const SNIPPET_RADIUS: usize = 160;
 const MAX_SNIPPETS: usize = 4;
 const MAX_IDENTIFIERS: usize = 32;
 
+#[derive(Default)]
+struct Identifiers {
+    values: BTreeSet<String>,
+    truncated: bool,
+}
+
+impl Identifiers {
+    fn insert(&mut self, value: String) {
+        if self.values.contains(&value) {
+            return;
+        }
+        if self.values.len() < MAX_IDENTIFIERS {
+            self.values.insert(value);
+        } else {
+            self.truncated = true;
+            if self.values.last().is_some_and(|last| &value < last) {
+                self.values.pop_last();
+                self.values.insert(value);
+            }
+        }
+    }
+
+    fn scan(&mut self, text: &str) {
+        for matched in IDENTIFIER.find_iter(text) {
+            let raw = matched.as_str();
+            let normalized = if raw.to_ascii_uppercase().starts_with("GHSA") {
+                format!("GHSA{}", raw[4..].to_ascii_lowercase())
+            } else {
+                raw.to_ascii_uppercase()
+            };
+            self.insert(normalized);
+        }
+    }
+
+    fn merge(&mut self, other: &Self) {
+        self.truncated |= other.truncated;
+        for value in &other.values {
+            self.insert(value.clone());
+        }
+    }
+}
+
+/// Bounded signals extracted from linked issues.
+#[derive(Default)]
+pub(super) struct LinkedSignals {
+    identifiers: Identifiers,
+    selected: bool,
+    strong: bool,
+    bug: bool,
+    context: bool,
+    snippets: Vec<String>,
+    excerpt: String,
+}
+
+impl LinkedSignals {
+    fn add_text(&mut self, text: &str) {
+        self.strong |= STRONG.is_match(text);
+        self.bug |= BODY_BUG.is_match(text);
+        self.context |= BODY_CONTEXT.is_match(text);
+        self.identifiers.scan(text);
+        if self.snippets.len() < MAX_SNIPPETS {
+            self.snippets.extend(
+                snippets(text)
+                    .into_iter()
+                    .take(MAX_SNIPPETS - self.snippets.len()),
+            );
+        }
+        if !text.is_empty() && self.excerpt.chars().count() < SNIPPET_RADIUS * 2 {
+            if !self.excerpt.is_empty() {
+                self.excerpt.push('\n');
+            }
+            let room = SNIPPET_RADIUS * 2 - self.excerpt.chars().count();
+            self.excerpt.push_str(&super::truncate_chars(text, room));
+        }
+    }
+
+    pub(super) fn from_issue(item: &Item) -> Self {
+        let mut signals = Self::default();
+        let body = clean(&item.body);
+        signals.selected = item.kind == ItemKind::Advisory
+            || item.labels.iter().any(|label| LABEL.is_match(label))
+            || TITLE.is_match(&item.title)
+            || STRONG.is_match(&body)
+            || (BODY_BUG.is_match(&body) && BODY_CONTEXT.is_match(&body));
+        signals.add_text(&item.title);
+        for label in &item.labels {
+            signals.add_text(label);
+        }
+        signals.add_text(&body);
+        signals
+    }
+
+    pub(super) fn merge(&mut self, other: &Self) {
+        self.identifiers.merge(&other.identifiers);
+        self.selected |= other.selected;
+        self.strong |= other.strong;
+        self.bug |= other.bug;
+        self.context |= other.context;
+        if self.snippets.len() < MAX_SNIPPETS {
+            self.snippets.extend(
+                other
+                    .snippets
+                    .iter()
+                    .take(MAX_SNIPPETS - self.snippets.len())
+                    .cloned(),
+            );
+        }
+        if self.excerpt.is_empty() {
+            self.excerpt = other.excerpt.clone();
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SignalPlace {
@@ -65,6 +181,10 @@ pub struct Screen {
     pub places: Vec<SignalPlace>,
     /// Advisory IDs cited in the title, body or linked issue.
     pub identifiers: Vec<String>,
+    /// Additional distinct identifiers were present but not included.
+    pub identifiers_truncated: bool,
+    /// The item contains only advisory identifiers and neutral separators.
+    pub sole_advisory_identifiers: bool,
     pub dependency_update: bool,
     /// Text around strong signals, so the reviewer reads the claim without the full body.
     pub snippets: Vec<String>,
@@ -90,6 +210,15 @@ pub fn screen(item: &Item, linked: &str) -> Option<Screen> {
 
 /// Include the independently screened title, labels and body of a linked issue.
 pub fn screen_with_linked(item: &Item, linked: &str, linked_selected: bool) -> Option<Screen> {
+    let mut signals = LinkedSignals {
+        selected: linked_selected,
+        ..Default::default()
+    };
+    signals.add_text(linked);
+    screen_with_signals(item, &signals)
+}
+
+pub(super) fn screen_with_signals(item: &Item, linked: &LinkedSignals) -> Option<Screen> {
     let body = clean(&item.body);
     let mut places = Vec::new();
     if item.kind == ItemKind::Advisory {
@@ -104,13 +233,13 @@ pub fn screen_with_linked(item: &Item, linked: &str, linked_selected: bool) -> O
     if STRONG.is_match(&body) {
         places.push(SignalPlace::Body);
     }
-    if linked_selected || STRONG.is_match(linked) {
+    if linked.selected || linked.strong {
         places.push(SignalPlace::LinkedIssue);
     }
     if BODY_BUG.is_match(&body) && BODY_CONTEXT.is_match(&body) {
         places.push(SignalPlace::ContextualBug);
     }
-    if BODY_BUG.is_match(linked) && BODY_CONTEXT.is_match(linked) {
+    if linked.bug && linked.context {
         places.push(SignalPlace::LinkedContextualBug);
     }
     if places.is_empty() {
@@ -119,10 +248,10 @@ pub fn screen_with_linked(item: &Item, linked: &str, linked_selected: bool) -> O
     let own_text = format!("{}\n{body}", item.title);
     let mut snippets = snippets(&own_text);
     if snippets.is_empty() {
-        snippets = self::snippets(linked);
+        snippets = linked.snippets.clone();
     }
-    if snippets.is_empty() && linked_selected {
-        snippets.push(super::truncate_chars(linked, SNIPPET_RADIUS * 2));
+    if snippets.is_empty() && linked.selected {
+        snippets.push(linked.excerpt.clone());
     }
     if snippets.is_empty()
         && (places.contains(&SignalPlace::ContextualBug)
@@ -131,16 +260,46 @@ pub fn screen_with_linked(item: &Item, linked: &str, linked_selected: bool) -> O
         let source = if BODY_BUG.is_match(&body) && BODY_CONTEXT.is_match(&body) {
             &body
         } else {
-            linked
+            &linked.excerpt
         };
         snippets.push(super::truncate_chars(source, SNIPPET_RADIUS * 2));
     }
+    let mut ids = Identifiers::default();
+    ids.scan(&item.title);
+    ids.scan(&item.body);
+    ids.merge(&linked.identifiers);
+    let sole_advisory_identifiers = !TITLE.is_match(&item.title)
+        && !item.labels.iter().any(|label| LABEL.is_match(label))
+        && item.closes.is_empty()
+        && !linked.selected
+        && !linked.strong
+        && !linked.bug
+        && !linked.context
+        && linked.identifiers.values.is_empty()
+        && identifiers_only(&item.body);
     Some(Screen {
         places,
-        identifiers: identifiers(&[&item.title, &item.body, linked]),
+        identifiers: ids.values.into_iter().collect(),
+        identifiers_truncated: ids.truncated,
+        sole_advisory_identifiers,
         dependency_update: DEPENDENCY_UPDATE.is_match(&item.title),
         snippets,
     })
+}
+
+fn identifiers_only(text: &str) -> bool {
+    let separator =
+        |character: char| character.is_whitespace() || ",;:.()[]*#-".contains(character);
+    let mut end = 0;
+    let mut found = false;
+    for matched in IDENTIFIER.find_iter(text) {
+        if !text[end..matched.start()].chars().all(separator) {
+            return false;
+        }
+        found = true;
+        end = matched.end();
+    }
+    found && text[end..].chars().all(separator)
 }
 
 /// Text whose strong terms are claims by the item rather than template or link text.
@@ -157,31 +316,26 @@ pub fn clean(text: &str) -> String {
         .into_owned()
 }
 
-/// Sorted, deduplicated advisory IDs: `GHSA-` keeps its lowercase body, other IDs are uppercase.
-pub fn identifiers(texts: &[&str]) -> Vec<String> {
-    let mut found: Vec<String> = Vec::new();
+/// Returns sorted advisory IDs and whether the result omitted any distinct IDs.
+pub fn identifiers(texts: &[&str]) -> (Vec<String>, bool) {
+    let mut ids = Identifiers::default();
     for text in texts {
-        for matched in IDENTIFIER.find_iter(text) {
-            let raw = matched.as_str();
-            let normalized = if raw.to_ascii_uppercase().starts_with("GHSA") {
-                format!("GHSA{}", raw[4..].to_ascii_lowercase())
-            } else {
-                raw.to_ascii_uppercase()
-            };
-            found.push(normalized);
-        }
+        ids.scan(text);
     }
-    found.sort_unstable();
-    found.dedup();
-    found.truncate(MAX_IDENTIFIERS);
-    found
+    (ids.values.into_iter().collect(), ids.truncated)
 }
 
 fn snippets(text: &str) -> Vec<String> {
     let mut ranges: Vec<(usize, usize)> = Vec::new();
     for matched in STRONG.find_iter(text) {
         let start = char_floor(text, matched.start().saturating_sub(SNIPPET_RADIUS));
-        let end = char_ceil(text, matched.end().saturating_add(SNIPPET_RADIUS));
+        let end = char_ceil(
+            text,
+            matched
+                .end()
+                .min(matched.start().saturating_add(SNIPPET_RADIUS))
+                .saturating_add(SNIPPET_RADIUS),
+        );
         match ranges.last_mut() {
             Some(last) if start <= last.1 => last.1 = end,
             _ => ranges.push((start, end)),

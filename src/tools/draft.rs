@@ -17,7 +17,7 @@ use anyhow::{Context, Result, bail};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashSet},
     path::Path,
 };
 
@@ -37,6 +37,8 @@ pub struct ResearchDecisions {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ItemDecision {
+    /// Upstream reported by `tools hits`.
+    pub upstream: String,
     /// Item key reported by `tools hits`.
     pub key: String,
     /// The item's `updated_at` when it was reviewed; a later update lists the item again.
@@ -88,14 +90,20 @@ impl ResearchDecisions {
         if self.schema_version != 1 {
             bail!("decisions schema_version must be 1");
         }
-        let mut keys = HashMap::new();
+        let mut keys = HashSet::new();
         for decision in &self.decisions {
             let key = decision.key.as_str();
             if key.trim().is_empty() || key.len() > 300 {
                 bail!("decision key must be 1..300 bytes");
             }
-            if keys.insert(key, ()).is_some() {
-                bail!("duplicate decision for {key}");
+            if decision.upstream.len() > 2048
+                || decision.upstream.chars().any(char::is_control)
+                || crate::profile::public_https_syntax(&decision.upstream).is_err()
+            {
+                bail!("decision {key}: upstream must be a public HTTPS URL");
+            }
+            if !keys.insert((decision.upstream.as_str(), key)) {
+                bail!("duplicate decision for {}: {key}", decision.upstream);
             }
             if super::normalize_time(&decision.updated_at).is_none() {
                 bail!("decision {key}: updated_at must be the item's RFC3339 time");
@@ -133,7 +141,7 @@ impl ResearchDecisions {
         match self
             .decisions
             .iter()
-            .find(|decision| decision.key == item.key)
+            .find(|decision| decision.upstream == target.upstream && decision.key == item.key)
         {
             Some(decision)
                 if super::same_instant(&decision.updated_at, &item.updated_at)

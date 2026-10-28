@@ -1,10 +1,10 @@
 //! Layout and parsing of the provider responses the agent fetches with `gh` and `curl` into a
 //! run's raw directory. Each research target maps to one provider directory; a missing or
 //! incomplete response is reported with the file and API resource still needed.
-use super::{AdvisoryPackage, Item, ItemKind, RepositoryAdvisory};
+use super::{Item, ItemKind};
 use crate::research::ResearchTarget;
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -14,13 +14,24 @@ use std::{
     sync::LazyLock,
 };
 
-const MAX_RAW_FILE: u64 = 256 * 1024 * 1024;
+const MAX_RAW_FILE: u64 = 64 * 1024 * 1024;
+const MAX_RAW_TOTAL: u64 = 64 * 1024 * 1024;
+const MAX_JSON_VALUES: u64 = 300_000;
 const MAX_PAGES: usize = 50;
-const JIRA_FIELDS: &str = "summary,updated,status,issuetype,labels,priority,description";
+
+mod forge;
+mod github;
+mod jira;
+#[cfg(test)]
+mod tests;
+
+use forge::{read_forgejo, read_gitlab};
+use github::{github_issues, read_github};
+use jira::read_jira;
 
 static CLOSES: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+(#|https://[^\s)#]+/issues/)(\d+)",
+        r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+(?:(https://[^\s)#]+/(?:-/)?issues/)|((?:[a-z0-9_.-]+/)*[a-z0-9_.-]+)?#)(\d+)",
     )
     .expect("static closing-keyword pattern")
 });
@@ -283,8 +294,57 @@ fn sanitize(segment: &str) -> String {
     if safe(&cleaned) { cleaned } else { "_".into() }
 }
 
-/// Reads every response the target needs and keeps the items updated inside its window.
+/// Aggregate input limit for one research batch.
+pub struct RawBudget {
+    remaining: u64,
+    remaining_values: u64,
+}
+
+impl Default for RawBudget {
+    fn default() -> Self {
+        Self {
+            remaining: MAX_RAW_TOTAL,
+            remaining_values: MAX_JSON_VALUES,
+        }
+    }
+}
+
+struct RawReader<'a> {
+    root: &'a Path,
+    budget: &'a mut RawBudget,
+}
+
 pub fn read_target(raw: &Path, target: &ResearchTarget) -> TargetItems {
+    read_target_with_budget(raw, target, &mut RawBudget::default())
+}
+
+/// Directory for responses acquired for this exact upstream and review window.
+pub fn window_directory(target: &ResearchTarget) -> PathBuf {
+    let key = format!(
+        "{}:{}{}:{}{}:{}",
+        target.upstream.len(),
+        target.upstream,
+        target.from.len(),
+        target.from,
+        target.until.len(),
+        target.until
+    );
+    PathBuf::from("windows").join(crate::digest(key.as_bytes()))
+}
+
+/// Reads source responses within the shared batch budget.
+pub fn read_target_with_budget(
+    raw: &Path,
+    target: &ResearchTarget,
+    budget: &mut RawBudget,
+) -> TargetItems {
+    let window = window_directory(target);
+    let root = raw.join(&window);
+    let mut reader = RawReader {
+        root: &root,
+        budget,
+    };
+    let raw = &mut reader;
     let provider = provider_for(&target.upstream);
     let mut result = TargetItems {
         method: String::new(),
@@ -316,11 +376,14 @@ pub fn read_target(raw: &Path, target: &ResearchTarget) -> TargetItems {
         .items
         .retain(|item| super::in_window(&item.updated_at, &target.from, &target.until));
     read_linked_issues(raw, target, &provider, &mut result);
+    for missing in &mut result.missing {
+        missing.path = crate::slash_path(&window.join(&missing.path));
+    }
     result
 }
 
 fn read_linked_issues(
-    raw: &Path,
+    raw: &mut RawReader<'_>,
     target: &ResearchTarget,
     provider: &Provider,
     result: &mut TargetItems,
@@ -375,6 +438,13 @@ fn read_linked_issues(
         .filter(|key| !present.contains(key))
         .collect();
     for key in links {
+        if !key.starts_with(&format!("{prefix}#")) {
+            result.errors.push(format!(
+                "cross-repository reference requires manual research: {}",
+                super::truncate_chars(&key, 300)
+            ));
+            continue;
+        }
         let Some(number) = key.strip_prefix(&format!("{prefix}#")).filter(|number| {
             !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
         }) else {
@@ -455,27 +525,25 @@ fn utc_z(value: &str) -> String {
         .unwrap_or_else(|_| value.to_owned())
 }
 
-fn before(value: &str, limit: &str) -> bool {
-    match (
-        DateTime::parse_from_rfc3339(value),
-        DateTime::parse_from_rfc3339(limit),
-    ) {
-        (Ok(value), Ok(limit)) => value < limit,
-        _ => false,
-    }
-}
-
 fn relative(path: &Path) -> String {
     crate::slash_path(path)
 }
 
 /// `Ok(None)` when the agent has not written the file yet.
-fn read_values(raw: &Path, relative: &Path) -> Result<Option<Vec<Value>>> {
-    let path = raw.join(relative);
+fn read_values(raw: &mut RawReader<'_>, relative: &Path) -> Result<Option<Vec<Value>>> {
+    let path = raw.root.join(relative);
     if !path.exists() {
         return Ok(None);
     }
-    let bytes = crate::read_limited(&path, MAX_RAW_FILE)?;
+    let limit = MAX_RAW_FILE.min(raw.budget.remaining);
+    if limit == 0 {
+        bail!("raw response budget exhausted");
+    }
+    let bytes = crate::read_limited(&path, limit)
+        .context("raw response exceeds the remaining input budget")?;
+    raw.budget.remaining -= bytes.len() as u64;
+    let values = count_json_values(&bytes, raw.budget.remaining_values)?;
+    raw.budget.remaining_values -= values;
     let mut values = Vec::new();
     for value in serde_json::Deserializer::from_slice(&bytes).into_iter::<Value>() {
         values.push(value.with_context(|| format!("{} is not JSON", relative.display()))?);
@@ -486,8 +554,47 @@ fn read_values(raw: &Path, relative: &Path) -> Result<Option<Vec<Value>>> {
     Ok(Some(values))
 }
 
-/// REST list responses as `gh --paginate` prints them: one array per page, or one array of page
-/// arrays with `--slurp`. An object with a `message` is an error response.
+fn count_json_values(bytes: &[u8], limit: u64) -> Result<u64> {
+    let mut count = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut in_literal = false;
+    for byte in bytes {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if *byte == b'\\' {
+                escaped = true;
+            } else if *byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match *byte {
+            b'"' => {
+                in_string = true;
+                count += 1;
+                in_literal = false;
+            }
+            b'{' | b'[' => {
+                count += 1;
+                in_literal = false;
+            }
+            b']' | b'}' | b',' | b':' | b' ' | b'\n' | b'\r' | b'\t' => in_literal = false,
+            _ if !in_literal => {
+                count += 1;
+                in_literal = true;
+            }
+            _ => {}
+        }
+        if count > limit {
+            bail!("raw response exceeds the remaining JSON value budget");
+        }
+    }
+    Ok(count)
+}
+
+/// Flattens REST records and rejects provider error objects.
 fn rest_records(values: Vec<Value>) -> Result<Vec<Value>> {
     fn collect(value: Value, records: &mut Vec<Value>) -> Result<()> {
         match value {
@@ -528,137 +635,29 @@ fn time(value: Option<&str>) -> Option<String> {
     value.and_then(super::normalize_time)
 }
 
-/// Keys of issues closed by closing keywords, as `#N` or a full link into the same repository.
+/// Keys of issues named in closing references.
 fn closes(text: &str, web_base: &str, key_prefix: &str) -> Vec<String> {
     let mut keys: Vec<String> = CLOSES
         .captures_iter(text)
-        .filter(|captures| &captures[1] == "#" || captures[1].starts_with(web_base))
-        .map(|captures| format!("{key_prefix}#{}", &captures[2]))
+        .map(|captures| {
+            let number = &captures[3];
+            if let Some(url) = captures.get(1) {
+                let base = url.as_str();
+                if base == format!("{web_base}issues/") || base == format!("{web_base}-/issues/") {
+                    format!("{key_prefix}#{number}")
+                } else {
+                    format!("{base}{number}")
+                }
+            } else if let Some(repository) = captures.get(2) {
+                format!("{}#{number}", repository.as_str())
+            } else {
+                format!("{key_prefix}#{number}")
+            }
+        })
         .collect();
     keys.sort_unstable();
     keys.dedup();
     keys
-}
-
-fn read_github(
-    raw: &Path,
-    target: &ResearchTarget,
-    owner: &str,
-    repository: &str,
-    mirror: bool,
-    result: &mut TargetItems,
-) {
-    let directory = result.provider.directory();
-    let prefix = format!("{owner}/{repository}");
-    let web_base = format!("https://github.com/{prefix}/");
-    let mirror_note = if mirror {
-        format!("official GitHub mirror github.com/{prefix}: ")
-    } else {
-        String::new()
-    };
-    result.method = format!(
-        "{mirror_note}GitHub REST issues and pull requests (state=all, since=from, all pages), releases, published repository advisories and discussions updated in the window"
-    );
-    let since = utc_z(&target.from);
-    let requests = [
-        (
-            "issues",
-            format!(
-                "repos/{prefix}/issues?state=all&since={since}&per_page=100&sort=updated&direction=desc"
-            ),
-        ),
-        ("releases", format!("repos/{prefix}/releases?per_page=100")),
-        (
-            "security-advisories",
-            format!("repos/{prefix}/security-advisories?per_page=100"),
-        ),
-    ];
-    for (name, request) in requests {
-        let mut records = Vec::new();
-        let mut complete = false;
-        for page in 1..=MAX_PAGES {
-            let path = directory.join(format!("{name}.page-{page}.json"));
-            let values = match read_values(raw, &path) {
-                Ok(Some(values)) => values,
-                Ok(None) => {
-                    result.missing.push(MissingFetch {
-                        upstream: target.upstream.clone(),
-                        path: relative(&path),
-                        tool: FetchTool::GhRest,
-                        request: format!("{request}&page={page}"),
-                    });
-                    break;
-                }
-                Err(error) => {
-                    result.errors.push(format!("{}: {error}", relative(&path)));
-                    break;
-                }
-            };
-            match rest_records(values) {
-                Ok(page_records) if page_records.len() <= 100 => {
-                    let last_page = page_records.len() < 100;
-                    records.extend(page_records);
-                    if last_page {
-                        complete = true;
-                        break;
-                    }
-                    if page == MAX_PAGES {
-                        result
-                            .errors
-                            .push(format!("{name}: more than {MAX_PAGES} pages"));
-                    }
-                }
-                Ok(_) => {
-                    result.errors.push(format!(
-                        "{}: REST page exceeds 100 records",
-                        relative(&path)
-                    ));
-                    break;
-                }
-                Err(error) => {
-                    result.errors.push(format!("{}: {error}", relative(&path)));
-                    break;
-                }
-            }
-        }
-        if !complete {
-            continue;
-        }
-        let parsed = match name {
-            "issues" => github_issues(records, &prefix, &web_base),
-            "releases" => github_releases(records, &prefix),
-            _ => github_advisories(records, &prefix, result),
-        };
-        match parsed {
-            Ok(items) => result.items.extend(items),
-            Err(error) => result.errors.push(format!("{name}: {error}")),
-        }
-    }
-    {
-        let path = directory.join("discussions.json");
-        let request = format!("repo:{prefix} updated:>={since}");
-        let values = match read_values(raw, &path) {
-            Ok(Some(values)) => values,
-            Ok(None) => {
-                result.missing.push(MissingFetch {
-                    upstream: target.upstream.clone(),
-                    path: relative(&path),
-                    tool: FetchTool::GhGraphqlDiscussions,
-                    request,
-                });
-                return;
-            }
-            Err(error) => {
-                result.errors.push(format!("{}: {error}", relative(&path)));
-                return;
-            }
-        };
-        let parsed = github_discussions(values, &prefix);
-        match parsed {
-            Ok(items) => result.items.extend(items),
-            Err(error) => result.errors.push(format!("{}: {error}", relative(&path))),
-        }
-    }
 }
 
 #[derive(Deserialize)]
@@ -666,282 +665,40 @@ struct GitHubLabel {
     name: String,
 }
 #[derive(Deserialize)]
-struct GitHubIssue {
-    number: u64,
-    title: String,
-    html_url: String,
-    state: String,
-    updated_at: String,
-    #[serde(default)]
-    labels: Vec<GitHubLabel>,
-    body: Option<String>,
-    pull_request: Option<Value>,
-}
-
-fn github_issues(values: Vec<Value>, prefix: &str, web_base: &str) -> Result<Vec<Item>> {
-    let mut items = Vec::new();
-    for record in rest_records(values)? {
-        let issue: GitHubIssue = serde_json::from_value(record)?;
-        let Some(updated_at) = time(Some(&issue.updated_at)) else {
-            bail!("GitHub issue has an invalid update timestamp");
-        };
-        let text = issue.body.unwrap_or_default();
-        items.push(Item {
-            key: format!("{prefix}#{}", issue.number),
-            kind: if issue.pull_request.is_some() {
-                ItemKind::PullRequest
-            } else {
-                ItemKind::Issue
-            },
-            url: issue.html_url,
-            title: issue.title,
-            state: issue.state,
-            labels: issue.labels.into_iter().map(|label| label.name).collect(),
-            updated_at,
-            closes: closes(&text, web_base, prefix),
-            body: body(Some(text)),
-            advisory: None,
-        });
-    }
-    Ok(items)
-}
-
-#[derive(Deserialize)]
 struct GitHubRelease {
     tag_name: String,
     name: Option<String>,
     html_url: String,
     published_at: Option<String>,
     created_at: Option<String>,
+    updated_at: Option<String>,
     body: Option<String>,
     #[serde(default)]
     draft: bool,
 }
 
-fn github_releases(values: Vec<Value>, prefix: &str) -> Result<Vec<Item>> {
-    let mut items = Vec::new();
-    for record in rest_records(values)? {
-        let release: GitHubRelease = serde_json::from_value(record)?;
-        if release.draft {
-            continue;
-        }
-        let moment = release
-            .published_at
-            .as_deref()
-            .or(release.created_at.as_deref());
-        let Some(updated_at) = time(moment) else {
-            bail!("GitHub release has no valid publication timestamp");
-        };
-        items.push(Item {
-            key: format!("{prefix}@{}", release.tag_name),
-            kind: ItemKind::Release,
-            url: release.html_url,
-            title: release
-                .name
-                .filter(|name| !name.trim().is_empty())
-                .unwrap_or_else(|| release.tag_name.clone()),
-            state: "published".into(),
-            labels: Vec::new(),
-            updated_at,
-            body: body(release.body),
-            closes: Vec::new(),
-            advisory: None,
-        });
-    }
-    Ok(items)
-}
-
 #[derive(Deserialize)]
-struct GitHubAdvisoryPackage {
-    ecosystem: String,
-    name: Option<String>,
-}
-#[derive(Deserialize)]
-struct GitHubAdvisoryVulnerability {
-    package: Option<GitHubAdvisoryPackage>,
-    vulnerable_version_range: Option<String>,
-    patched_versions: Option<String>,
-}
-#[derive(Deserialize)]
-struct GitHubRepositoryAdvisory {
-    ghsa_id: String,
-    cve_id: Option<String>,
-    html_url: String,
-    summary: String,
-    description: Option<String>,
-    updated_at: String,
-    withdrawn_at: Option<String>,
-    #[serde(default)]
-    vulnerabilities: Vec<GitHubAdvisoryVulnerability>,
-}
-
-fn github_advisories(
-    values: Vec<Value>,
-    prefix: &str,
-    result: &mut TargetItems,
-) -> Result<Vec<Item>> {
-    let mut items = Vec::new();
-    for record in rest_records(values)? {
-        let advisory: GitHubRepositoryAdvisory = serde_json::from_value(record)?;
-        if advisory.withdrawn_at.is_some() {
-            continue;
-        }
-        result
-            .published_identifiers
-            .insert(advisory.ghsa_id.clone());
-        if let Some(cve) = &advisory.cve_id {
-            result.published_identifiers.insert(cve.clone());
-        }
-        let Some(updated_at) = time(Some(&advisory.updated_at)) else {
-            bail!("GitHub advisory has an invalid update timestamp");
-        };
-        let packages = advisory
-            .vulnerabilities
-            .into_iter()
-            .filter_map(|vulnerability| {
-                let package = vulnerability.package?;
-                Some(AdvisoryPackage {
-                    ecosystem: package.ecosystem,
-                    name: package.name?,
-                    vulnerable_range: vulnerability.vulnerable_version_range.unwrap_or_default(),
-                    patched: vulnerability.patched_versions.unwrap_or_default(),
-                })
-            })
-            .collect();
-        let description = advisory
-            .description
-            .filter(|text| !text.trim().is_empty())
-            .unwrap_or_else(|| advisory.summary.clone());
-        items.push(Item {
-            key: format!("{prefix}/{}", advisory.ghsa_id),
-            kind: ItemKind::Advisory,
-            url: advisory.html_url,
-            title: format!("{}: {}", advisory.ghsa_id, advisory.summary),
-            state: "published".into(),
-            labels: Vec::new(),
-            updated_at,
-            body: body(Some(description)),
-            closes: Vec::new(),
-            advisory: Some(RepositoryAdvisory {
-                ghsa_id: advisory.ghsa_id,
-                cve_id: advisory.cve_id,
-                packages,
-            }),
-        });
-    }
-    Ok(items)
-}
-
-#[derive(Deserialize)]
-struct DiscussionCategory {
-    name: String,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Discussion {
-    number: u64,
+struct GitLabIssue {
+    iid: u64,
     title: String,
-    url: String,
+    web_url: String,
+    state: String,
     updated_at: String,
-    body: Option<String>,
-    category: Option<DiscussionCategory>,
+    #[serde(default)]
+    labels: Vec<String>,
+    description: Option<String>,
 }
-
-/// GraphQL pages of `search(type: DISCUSSION)`; nodes of other types are empty objects.
-fn github_discussions(values: Vec<Value>, prefix: &str) -> Result<Vec<Item>> {
-    let mut pages = Vec::new();
-    for value in values {
-        match value {
-            Value::Array(slurped) => pages.extend(slurped),
-            page => pages.push(page),
-        }
-    }
-    let mut items = Vec::new();
-    let page_count = pages.len();
-    let mut cursors = BTreeSet::new();
-    let mut expected_discussions = 0_u64;
-    for (index, page) in pages.into_iter().enumerate() {
-        if let Some(errors) = page.get("errors") {
-            bail!(
-                "GraphQL errors: {}",
-                super::truncate_chars(&errors.to_string(), 200)
-            );
-        }
-        let nodes = page
-            .pointer("/data/search/nodes")
-            .and_then(Value::as_array)
-            .context("GraphQL page without data.search.nodes")?;
-        let count = page
-            .pointer("/data/search/discussionCount")
-            .and_then(Value::as_u64)
-            .context("GraphQL page without discussionCount; refetch using the current query")?;
-        expected_discussions = expected_discussions.max(count);
-        let more = page
-            .pointer("/data/search/pageInfo/hasNextPage")
-            .and_then(Value::as_bool)
-            .context("GraphQL page without pageInfo.hasNextPage; pagination is unverified")?;
-        if more {
-            let cursor = page
-                .pointer("/data/search/pageInfo/endCursor")
-                .and_then(Value::as_str)
-                .filter(|value| !value.is_empty())
-                .context("GraphQL continuation has no cursor")?;
-            if !cursors.insert(cursor.to_owned()) || index + 1 == page_count {
-                bail!("GraphQL discussion pagination is incomplete or repeats a cursor");
-            }
-        } else if index + 1 != page_count {
-            bail!("GraphQL discussion pages continue after the terminal page");
-        }
-        for node in nodes {
-            if node.get("number").is_none() {
-                continue;
-            }
-            let discussion: Discussion = serde_json::from_value(node.clone())?;
-            let Some(updated_at) = time(Some(&discussion.updated_at)) else {
-                bail!("GitHub discussion has an invalid update timestamp");
-            };
-            items.push(Item {
-                key: format!("{prefix}/discussions/{}", discussion.number),
-                kind: ItemKind::Discussion,
-                url: discussion.url,
-                title: discussion.title,
-                state: String::new(),
-                labels: discussion
-                    .category
-                    .map(|category| vec![category.name])
-                    .unwrap_or_default(),
-                updated_at,
-                body: body(discussion.body),
-                closes: Vec::new(),
-                advisory: None,
-            });
-        }
-    }
-    if u64::try_from(items.len()).unwrap_or(u64::MAX) < expected_discussions {
-        bail!(
-            "GraphQL discussion results are incomplete: {} of {expected_discussions}; narrow the time window and refetch",
-            items.len()
-        );
-    }
-    Ok(items)
-}
-
-/// Pages `<name>.page-1.json`, `<name>.page-2.json`, ... read until the first missing file.
 struct PagedFile {
     name: &'static str,
     page_size: usize,
-    /// Releases list oldest last and ignore the window; later pages are needed only while the
-    /// last item read is not older than the window start.
-    stop_before_from: bool,
 }
 
 /// Records of every page read, or the missing page that must be fetched next.
 fn read_pages(
-    raw: &Path,
+    raw: &mut RawReader<'_>,
     directory: &Path,
     paged: &PagedFile,
     request: impl Fn(usize) -> String,
-    moment: impl Fn(&Value) -> Option<String>,
     target: &ResearchTarget,
     result: &mut TargetItems,
 ) -> Option<Vec<Value>> {
@@ -972,13 +729,8 @@ fn read_pages(
             }
         };
         let full = page_records.len() >= paged.page_size;
-        let older = paged.stop_before_from
-            && page_records
-                .last()
-                .and_then(&moment)
-                .is_some_and(|last| before(&last, &target.from));
         records.extend(page_records);
-        if !full || older {
+        if !full {
             return Some(records);
         }
     }
@@ -988,466 +740,7 @@ fn read_pages(
     None
 }
 
-#[derive(Deserialize)]
-struct GitLabIssue {
-    iid: u64,
-    title: String,
-    web_url: String,
-    state: String,
-    updated_at: String,
-    #[serde(default)]
-    labels: Vec<String>,
-    description: Option<String>,
-}
-#[derive(Deserialize)]
-struct GitLabRelease {
-    tag_name: String,
-    name: Option<String>,
-    released_at: Option<String>,
-    created_at: Option<String>,
-    description: Option<String>,
-}
-
-fn read_gitlab(
-    raw: &Path,
-    target: &ResearchTarget,
-    host: &str,
-    project: &str,
-    result: &mut TargetItems,
-) {
-    let directory = result.provider.directory();
-    let api = format!(
-        "https://{host}/api/v4/projects/{}",
-        crate::sources::encode(project)
-    );
-    let web_base = format!("https://{host}/{project}/");
-    result.method = format!(
-        "GitLab API v4 {host}/{project}: issues and merge requests updated in the window (all pages), releases"
-    );
-    let (from, until) = (utc_z(&target.from), utc_z(&target.until));
-    let updated = |value: &Value| time(value.get("updated_at").and_then(Value::as_str));
-    for (name, kind, separator) in [
-        ("issues", ItemKind::Issue, "#"),
-        ("merge_requests", ItemKind::MergeRequest, "!"),
-    ] {
-        let paged = PagedFile {
-            name,
-            page_size: 100,
-            stop_before_from: false,
-        };
-        let request = |page: usize| {
-            format!(
-                "{api}/{name}?scope=all&updated_after={from}&updated_before={until}&per_page=100&page={page}"
-            )
-        };
-        let Some(records) = read_pages(raw, &directory, &paged, request, updated, target, result)
-        else {
-            continue;
-        };
-        for record in records {
-            let issue: GitLabIssue = match serde_json::from_value(record) {
-                Ok(issue) => issue,
-                Err(error) => {
-                    result.errors.push(format!("{name}: {error}"));
-                    break;
-                }
-            };
-            let Some(updated_at) = time(Some(&issue.updated_at)) else {
-                result
-                    .errors
-                    .push(format!("{name}: invalid update timestamp"));
-                continue;
-            };
-            let text = issue.description.unwrap_or_default();
-            result.items.push(Item {
-                key: format!("{project}{separator}{}", issue.iid),
-                kind,
-                url: issue.web_url,
-                title: issue.title,
-                state: issue.state,
-                labels: issue.labels,
-                updated_at,
-                closes: closes(&text, &web_base, project),
-                body: body(Some(text)),
-                advisory: None,
-            });
-        }
-    }
-    let paged = PagedFile {
-        name: "releases",
-        page_size: 100,
-        stop_before_from: true,
-    };
-    let released = |value: &Value| {
-        time(
-            value
-                .get("released_at")
-                .or_else(|| value.get("created_at"))
-                .and_then(Value::as_str),
-        )
-    };
-    let request = |page: usize| format!("{api}/releases?per_page=100&page={page}");
-    let Some(records) = read_pages(raw, &directory, &paged, request, released, target, result)
-    else {
-        return;
-    };
-    for record in records {
-        let release: GitLabRelease = match serde_json::from_value(record) {
-            Ok(release) => release,
-            Err(error) => {
-                result.errors.push(format!("releases: {error}"));
-                return;
-            }
-        };
-        let moment = release
-            .released_at
-            .as_deref()
-            .or(release.created_at.as_deref());
-        let Some(updated_at) = time(moment) else {
-            result
-                .errors
-                .push("GitLab release has no valid publication timestamp".into());
-            continue;
-        };
-        result.items.push(Item {
-            key: format!("{project}@{}", release.tag_name),
-            kind: ItemKind::Release,
-            url: format!("https://{host}/{project}/-/releases/{}", release.tag_name),
-            title: release
-                .name
-                .filter(|name| !name.trim().is_empty())
-                .unwrap_or_else(|| release.tag_name.clone()),
-            state: "published".into(),
-            labels: Vec::new(),
-            updated_at,
-            body: body(release.description),
-            closes: Vec::new(),
-            advisory: None,
-        });
-    }
-}
-
-#[derive(Deserialize)]
-struct ForgejoIssue {
-    number: u64,
-    title: String,
-    html_url: String,
-    state: String,
-    updated_at: String,
-    #[serde(default)]
-    labels: Vec<GitHubLabel>,
-    body: Option<String>,
-    pull_request: Option<Value>,
-}
-
-fn read_forgejo(
-    raw: &Path,
-    target: &ResearchTarget,
-    host: &str,
-    owner: &str,
-    repository: &str,
-    result: &mut TargetItems,
-) {
-    let directory = result.provider.directory();
-    let prefix = format!("{owner}/{repository}");
-    let api = format!("https://{host}/api/v1/repos/{prefix}");
-    let web_base = format!("https://{host}/{prefix}/");
-    result.method = format!(
-        "Forgejo API {host}/{prefix}: issues and pull requests updated in the window (all pages), releases"
-    );
-    let (from, until) = (utc_z(&target.from), utc_z(&target.until));
-    let paged = PagedFile {
-        name: "issues",
-        page_size: 50,
-        stop_before_from: false,
-    };
-    let updated = |value: &Value| time(value.get("updated_at").and_then(Value::as_str));
-    let request = |page: usize| {
-        format!("{api}/issues?state=all&since={from}&before={until}&limit=50&page={page}")
-    };
-    if let Some(records) = read_pages(raw, &directory, &paged, request, updated, target, result) {
-        for record in records {
-            let issue: ForgejoIssue = match serde_json::from_value(record) {
-                Ok(issue) => issue,
-                Err(error) => {
-                    result.errors.push(format!("issues: {error}"));
-                    break;
-                }
-            };
-            let Some(updated_at) = time(Some(&issue.updated_at)) else {
-                result
-                    .errors
-                    .push("Forgejo issue has an invalid update timestamp".into());
-                continue;
-            };
-            let text = issue.body.unwrap_or_default();
-            result.items.push(Item {
-                key: format!("{prefix}#{}", issue.number),
-                kind: if issue.pull_request.is_some_and(|value| !value.is_null()) {
-                    ItemKind::PullRequest
-                } else {
-                    ItemKind::Issue
-                },
-                url: issue.html_url,
-                title: issue.title,
-                state: issue.state,
-                labels: issue.labels.into_iter().map(|label| label.name).collect(),
-                updated_at,
-                closes: closes(&text, &web_base, &prefix),
-                body: body(Some(text)),
-                advisory: None,
-            });
-        }
-    }
-    let paged = PagedFile {
-        name: "releases",
-        page_size: 50,
-        stop_before_from: true,
-    };
-    let published = |value: &Value| {
-        time(
-            value
-                .get("published_at")
-                .or_else(|| value.get("created_at"))
-                .and_then(Value::as_str),
-        )
-    };
-    let request = |page: usize| format!("{api}/releases?limit=50&page={page}");
-    let Some(records) = read_pages(raw, &directory, &paged, request, published, target, result)
-    else {
-        return;
-    };
-    for record in records {
-        let release: GitHubRelease = match serde_json::from_value(record) {
-            Ok(release) => release,
-            Err(error) => {
-                result.errors.push(format!("releases: {error}"));
-                return;
-            }
-        };
-        let moment = release
-            .published_at
-            .as_deref()
-            .or(release.created_at.as_deref());
-        let Some(updated_at) = time(moment) else {
-            result
-                .errors
-                .push("Forgejo release has no valid publication timestamp".into());
-            continue;
-        };
-        result.items.push(Item {
-            key: format!("{prefix}@{}", release.tag_name),
-            kind: ItemKind::Release,
-            url: release.html_url,
-            title: release
-                .name
-                .filter(|name| !name.trim().is_empty())
-                .unwrap_or_else(|| release.tag_name.clone()),
-            state: "published".into(),
-            labels: Vec::new(),
-            updated_at,
-            body: body(release.body),
-            closes: Vec::new(),
-            advisory: None,
-        });
-    }
-}
-
-#[derive(Deserialize)]
-struct JiraName {
-    name: String,
-}
-#[derive(Deserialize)]
-struct JiraFields {
-    #[serde(default)]
-    summary: String,
-    updated: Option<String>,
-    status: Option<JiraName>,
-    issuetype: Option<JiraName>,
-    priority: Option<JiraName>,
-    #[serde(default)]
-    labels: Vec<String>,
-    description: Option<Value>,
-}
-#[derive(Deserialize)]
-struct JiraIssue {
-    key: String,
-    fields: JiraFields,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct JiraPage {
-    #[serde(default)]
-    issues: Vec<JiraIssue>,
-    #[serde(default)]
-    start_at: usize,
-    #[serde(default)]
-    total: usize,
-    #[serde(default = "default_true")]
-    is_last: bool,
-    next_page_token: Option<String>,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-/// Plain text of a Jira description: a string (REST v2) or an Atlassian Document (REST v3).
-fn jira_text(value: &Value) -> String {
-    match value {
-        Value::String(text) => text.clone(),
-        Value::Object(node) => {
-            let mut text = node
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
-            if let Some(Value::Array(children)) = node.get("content") {
-                for child in children {
-                    text.push(' ');
-                    text.push_str(&jira_text(child));
-                }
-            }
-            text
-        }
-        Value::Array(children) => children.iter().map(jira_text).collect::<Vec<_>>().join(" "),
-        _ => String::new(),
-    }
-}
-
-fn read_jira(
-    raw: &Path,
-    target: &ResearchTarget,
-    api: JiraApi,
-    base: &str,
-    project: &str,
-    result: &mut TargetItems,
-) {
-    let directory = result.provider.directory();
-    result.method = format!(
-        "Jira REST search of project {project} on {base}, updated in the window with a one-day margin, filtered on fields.updated"
-    );
-    let day = |value: &str, offset: i64| {
-        DateTime::parse_from_rfc3339(value)
-            .map(|time| {
-                (time + Duration::days(offset))
-                    .format("%Y-%m-%d")
-                    .to_string()
-            })
-            .unwrap_or_default()
-    };
-    let jql = format!(
-        "project = \"{project}\" AND updated >= \"{}\" AND updated <= \"{}\" ORDER BY updated DESC",
-        day(&target.from, -1),
-        day(&target.until, 1)
-    );
-    let query = format!(
-        "jql={}&fields={JIRA_FIELDS}&maxResults=100",
-        crate::sources::encode(&jql)
-    );
-    let mut token: Option<String> = None;
-    for page in 1..=MAX_PAGES {
-        let path = directory.join(format!("{project}.page-{page}.json"));
-        let request = match api {
-            JiraApi::SearchV2 => format!(
-                "{base}/rest/api/2/search?{query}&startAt={}",
-                (page - 1) * 100
-            ),
-            JiraApi::SearchJqlV3 => match &token {
-                Some(token) => format!(
-                    "{base}/rest/api/3/search/jql?{query}&nextPageToken={}",
-                    crate::sources::encode(token)
-                ),
-                None => format!("{base}/rest/api/3/search/jql?{query}"),
-            },
-        };
-        let values = match read_values(raw, &path) {
-            Ok(Some(values)) => values,
-            Ok(None) => {
-                result.missing.push(MissingFetch {
-                    upstream: target.upstream.clone(),
-                    path: relative(&path),
-                    tool: FetchTool::Curl,
-                    request,
-                });
-                return;
-            }
-            Err(error) => {
-                result.errors.push(format!("{}: {error}", relative(&path)));
-                return;
-            }
-        };
-        let Some(value) = values.into_iter().next() else {
-            result
-                .errors
-                .push(format!("{}: empty response file", relative(&path)));
-            return;
-        };
-        if let Some(messages) = value.get("errorMessages") {
-            result.errors.push(format!(
-                "{}: Jira error {}",
-                relative(&path),
-                super::truncate_chars(&messages.to_string(), 200)
-            ));
-            return;
-        }
-        let parsed: JiraPage = match serde_json::from_value(value) {
-            Ok(parsed) => parsed,
-            Err(error) => {
-                result.errors.push(format!("{}: {error}", relative(&path)));
-                return;
-            }
-        };
-        let read = parsed.issues.len();
-        for issue in parsed.issues {
-            let Some(updated_at) = time(issue.fields.updated.as_deref()) else {
-                result.errors.push(format!(
-                    "{}: Jira item has an invalid update timestamp",
-                    relative(&path)
-                ));
-                continue;
-            };
-            let mut labels = issue.fields.labels;
-            labels.extend(
-                [issue.fields.issuetype, issue.fields.priority]
-                    .into_iter()
-                    .flatten()
-                    .map(|name| name.name),
-            );
-            result.items.push(Item {
-                url: format!("{base}/browse/{}", issue.key),
-                key: issue.key,
-                kind: ItemKind::Issue,
-                title: issue.fields.summary,
-                state: issue
-                    .fields
-                    .status
-                    .map(|status| status.name)
-                    .unwrap_or_default(),
-                labels,
-                updated_at,
-                body: body(issue.fields.description.as_ref().map(jira_text)),
-                closes: Vec::new(),
-                advisory: None,
-            });
-        }
-        let more = match api {
-            JiraApi::SearchV2 => read > 0 && parsed.start_at + read < parsed.total,
-            JiraApi::SearchJqlV3 => {
-                token = parsed.next_page_token;
-                !parsed.is_last && token.is_some()
-            }
-        };
-        if !more {
-            return;
-        }
-    }
-    result
-        .errors
-        .push(format!("{project}: more than {MAX_PAGES} pages"));
-}
-
-fn read_manual(raw: &Path, target: &ResearchTarget, result: &mut TargetItems) {
+fn read_manual(raw: &mut RawReader<'_>, target: &ResearchTarget, result: &mut TargetItems) {
     let path = result.provider.directory().join("items.json");
     result.method = format!("agent review of {} with its own tools", target.upstream);
     let values = match read_values(raw, &path) {

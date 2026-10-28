@@ -1,6 +1,17 @@
 use super::*;
 
 #[test]
+fn first_party_rejects_poms_with_invalid_utf8() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(
+        directory.path().join("pom.xml"),
+        b"<project><groupId>example\xff</groupId><artifactId>app</artifactId></project>",
+    )
+    .unwrap();
+    assert!(first_party(&[directory.path().to_string_lossy().into_owned()]).is_empty());
+}
+
+#[test]
 fn lockfile_hash_changes_keep_mappings_and_declaration_changes_invalidate_them() {
     let profile: crate::profile::Profile = serde_saphyr::from_str(
         "schema: 1\nproject_id: 0de0a8e7-f1a4-4bdc-a198-422b90bbbd84\nname: sources\ncomponents:\n  - ref: example\n    version: '1.0.0'\n",
@@ -136,6 +147,31 @@ fn mapped_sources_require_acquired_evidence_and_every_category() {
     assert!(import(&mut store, "test", vec![invalid]).is_err());
     assert!(import(&mut store, "test", vec![observation.clone()]).is_ok());
     assert_eq!(mapped(&store, "test").unwrap().len(), 1);
+    let second = record_document(
+        &store,
+        "https://example.net",
+        b"Official project: https://example.net",
+    )
+    .unwrap();
+    let mut ordered = observation.clone();
+    let changes = ordered
+        .sources
+        .iter_mut()
+        .find(|source| source.kind == SourceKind::ProposedChanges)
+        .unwrap();
+    changes.url = Some("https://example.net".into());
+    changes.evidence = vec![EvidenceReference {
+        id: second.id,
+        sha256: second.sha256,
+    }];
+    import(&mut store, "test", vec![ordered]).unwrap();
+    assert_eq!(
+        mapped(&store, "test").unwrap(),
+        vec![
+            (instance.id.clone(), "https://example.org".into()),
+            (instance.id.clone(), "https://example.net".into()),
+        ]
+    );
     assert!(
         targets(
             &store,

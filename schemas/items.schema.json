@@ -74,7 +74,7 @@
           "type": "string"
         },
         "updated_at": {
-          "description": "The source's RFC3339 update time (publication time for releases and commit time for commits).",
+          "description": "The source's RFC3339 update time, or commit time for commits.",
           "type": "string"
         },
         "url": {

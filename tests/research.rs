@@ -10,6 +10,101 @@ use vulnbell::{
 };
 
 #[test]
+fn research_keeps_declared_order_and_deduplicates_mapped_sources() {
+    use vulnbell::{
+        discovery::{
+            self, DiscoveryBatch, IdentityObservation, MappingState, SOURCE_KINDS, SourceKind,
+            SourceMapping,
+        },
+        model::{EvidenceKind, EvidenceReference},
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let project = uuid::Uuid::new_v4().to_string();
+    let path = directory.path().join("vulnbell.yaml");
+    let upstream = "https://github.com/example/app";
+    fs::write(&path, format!("schema: 1\nproject_id: {project}\nname: ordering\ncomponents:\n  - ref: first\n    version: '1.0.0'\n    upstream: {upstream}\n  - ref: second\n    version: '1.0.0'\n    upstream: {upstream}\n  - ref: mapped\n    version: '1.0.0'\n")).unwrap();
+    let profile = vulnbell::profile::load(&path).unwrap();
+    let snapshot = vulnbell::engine::scan(&profile, &path, true).unwrap();
+    let mut store = Store::open(&project).unwrap();
+    let page = discovery::plan(&profile, &path, &store, 20).unwrap();
+    let mut evidence = store
+        .record_evidence(
+            upstream.as_bytes(),
+            "discovery_public_document",
+            Some(upstream.into()),
+            EvidenceKind::Context,
+        )
+        .unwrap();
+    evidence.id = "DOC-fixture".into();
+    store
+        .connection
+        .execute(
+            "INSERT INTO discovery_documents VALUES (?1,?2)",
+            rusqlite::params![evidence.id, serde_json::to_string(&evidence).unwrap()],
+        )
+        .unwrap();
+    let observations = page
+        .components
+        .iter()
+        .map(|component| IdentityObservation {
+            instance_id: component.instance_id.clone(),
+            fingerprint: component.fingerprint.clone(),
+            version: None,
+            cpe_product: None,
+            rationale: "Official source mapping fixture".into(),
+            sources: SOURCE_KINDS
+                .iter()
+                .map(|kind| {
+                    let mapped = matches!(kind, SourceKind::Repository | SourceKind::Issues);
+                    SourceMapping {
+                        kind: *kind,
+                        state: if mapped {
+                            MappingState::Mapped
+                        } else {
+                            MappingState::Unavailable
+                        },
+                        url: mapped.then(|| upstream.to_owned()),
+                        detail: "Fixture source".into(),
+                        evidence: if mapped {
+                            vec![EvidenceReference {
+                                id: evidence.id.clone(),
+                                sha256: evidence.sha256.clone(),
+                            }]
+                        } else {
+                            vec![]
+                        },
+                    }
+                })
+                .collect(),
+        })
+        .collect();
+    discovery::import(
+        &profile,
+        &path,
+        &mut store,
+        DiscoveryBatch::Sources {
+            schema_version: 1,
+            project_id: page.project_id,
+            scope_sha256: page.scope_sha256,
+            observations,
+        },
+    )
+    .unwrap();
+    let plan = vulnbell::research::plan_page(&store, "", 20).unwrap();
+    assert_eq!(plan.targets.len(), 1);
+    assert_eq!(
+        plan.targets[0].instance_ids,
+        snapshot
+            .instances
+            .iter()
+            .map(|instance| instance.id.clone())
+            .collect::<Vec<_>>()
+    );
+    drop(store);
+    fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+}
+
+#[test]
 fn initial_window_uses_configured_timestamp_without_changing_advisory_inventory() {
     let directory = tempfile::tempdir().unwrap();
     let project = uuid::Uuid::new_v4().to_string();
@@ -287,9 +382,16 @@ fn scoped_event_stays_current_until_a_reviewed_candidate_changes() {
         }],
         events: vec![event],
     };
+    let mut missing_scope = batch.clone();
+    missing_scope.events[0].reviewed_instance_ids = vec![target.instance_ids[1].clone()];
+    assert!(vulnbell::research::import(&mut store, missing_scope).is_err());
+    let mut outside_scope = batch.clone();
+    outside_scope.events[0]
+        .reviewed_instance_ids
+        .push("outside".into());
+    assert!(vulnbell::research::import(&mut store, outside_scope).is_err());
     let mut broad = batch.clone();
     broad.events[0].instance_ids = target.instance_ids.clone();
-    broad.events[0].reviewed_instance_ids.clear();
     vulnbell::research::import(&mut store, broad).unwrap();
     assert_eq!(store.cases().unwrap()[0].instances.len(), 2);
     let before = store.cases().unwrap()[0].facts_sha256.clone();
@@ -353,7 +455,7 @@ fn shared_upstream_event_opens_one_case_and_not_applicable_needs_a_reason() {
     let event = |url: &str, assessment, reason| ResearchEvent {
         upstream: target.upstream.clone(),
         instance_ids: target.instance_ids.clone(),
-        reviewed_instance_ids: vec![],
+        reviewed_instance_ids: target.instance_ids.clone(),
         provider: "launchpad".into(),
         external_id: url.rsplit('/').next().unwrap().into(),
         kind: EventKind::Issue,
@@ -496,7 +598,7 @@ fn agent_reviews_github_gitlab_launchpad_with_dedupe_and_failure_safe_checkpoint
     .map(|(index, (provider, url, kind))| ResearchEvent {
         upstream: target.upstream.clone(),
         instance_ids: target.instance_ids.clone(),
-        reviewed_instance_ids: vec![],
+        reviewed_instance_ids: target.instance_ids.clone(),
         provider: provider.into(),
         external_id: index.to_string(),
         kind,
@@ -561,13 +663,12 @@ fn agent_reviews_github_gitlab_launchpad_with_dedupe_and_failure_safe_checkpoint
             .last_complete_review
             .is_none()
     );
-    let mut legacy_duplicate = store.cases().unwrap()[0].clone();
-    legacy_duplicate.case_id = "ZZZ-synthetic-legacy-duplicate".into();
-    store.save_case(&legacy_duplicate).unwrap();
+    let mut related_case = store.cases().unwrap()[0].clone();
+    related_case.case_id = "ZZZ-synthetic-related-case".into();
+    store.save_case(&related_case).unwrap();
     let duplicate = vulnbell::research::import(&mut store, batch.clone()).unwrap();
     assert_eq!(duplicate["duplicates"], 3);
-    assert_eq!(duplicate["merged_cases"], 1);
-    assert!(store.case("ZZZ-synthetic-legacy-duplicate").is_ok());
+    assert!(store.case("ZZZ-synthetic-related-case").is_ok());
     let mut reformatted = batch.clone();
     for event in &mut reformatted.events {
         event.external_id = format!("project#{}", event.external_id);
@@ -578,7 +679,7 @@ fn agent_reviews_github_gitlab_launchpad_with_dedupe_and_failure_safe_checkpoint
         3
     );
 
-    assert_eq!(store.cases().unwrap().len(), 3);
+    assert_eq!(store.cases().unwrap().len(), 4);
     let mut completed = batch;
     completed.sources[0].coverage = ReviewCoverage::Complete;
     vulnbell::research::import(&mut store, completed).unwrap();
@@ -647,6 +748,97 @@ fn agent_reviews_github_gitlab_launchpad_with_dedupe_and_failure_safe_checkpoint
         events: vec![],
     };
     assert!(vulnbell::research::import(&mut store, stale).is_err());
+    drop(store);
+    fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+}
+
+#[test]
+fn same_link_from_distinct_upstreams_preserves_each_case() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = uuid::Uuid::new_v4().to_string();
+    let path = directory.path().join("vulnbell.yaml");
+    fs::write(&path, format!("schema: 1\nproject_id: {project}\nname: independent-sources\ncomponents:\n  - ref: example-a\n    version: '1.0.0'\n    upstream: https://github.com/example/a\n  - ref: example-b\n    version: '1.0.0'\n    upstream: https://github.com/example/b\n")).unwrap();
+    let profile = vulnbell::profile::load(&path).unwrap();
+    vulnbell::engine::scan(&profile, &path, true).unwrap();
+    let mut store = Store::open(&project).unwrap();
+    let plan = vulnbell::research::plan_page(&store, "", 20).unwrap();
+    let url = "https://github.com/example/a/issues/1";
+    let sources = plan
+        .targets
+        .iter()
+        .map(|target| SourceReview {
+            upstream: target.upstream.clone(),
+            from: target.from.clone(),
+            until: target.until.clone(),
+            coverage: ReviewCoverage::Partial,
+            detail: "synthetic".into(),
+            continuation: None,
+        })
+        .collect();
+    let events = plan
+        .targets
+        .iter()
+        .enumerate()
+        .map(|(index, target)| ResearchEvent {
+            upstream: target.upstream.clone(),
+            instance_ids: target.instance_ids.clone(),
+            reviewed_instance_ids: target.instance_ids.clone(),
+            provider: "github".into(),
+            external_id: format!("item-{index}"),
+            kind: EventKind::Issue,
+            url: url.into(),
+            title: "synthetic".into(),
+            excerpt: "synthetic".into(),
+            updated_at: target.until.clone(),
+            assessment: if index == 0 {
+                Assessment::Informational
+            } else {
+                Assessment::Review
+            },
+            not_applicable_reason: None,
+            rationale: "synthetic".into(),
+            source_facts: Default::default(),
+        })
+        .collect();
+    vulnbell::research::import(
+        &mut store,
+        ResearchBatch {
+            schema_version: 1,
+            project_id: project.clone(),
+            snapshot_id: plan.snapshot_id.clone(),
+            sources,
+            events,
+        },
+    )
+    .unwrap();
+    let original = store.cases().unwrap();
+    assert_eq!(original.len(), 2);
+    assert!(
+        original
+            .iter()
+            .any(|case| case.decision == Decision::Review)
+    );
+    vulnbell::research::import(
+        &mut store,
+        ResearchBatch {
+            schema_version: 1,
+            project_id: project.clone(),
+            snapshot_id: plan.snapshot_id,
+            sources: vec![],
+            events: vec![],
+        },
+    )
+    .unwrap();
+    let cases = store.cases().unwrap();
+    assert_eq!(cases.len(), 2);
+    assert!(cases.iter().any(|case| case.decision == Decision::Review));
+    assert!(
+        original
+            .iter()
+            .all(|old| cases.iter().any(|case| case.case_id == old.case_id
+                && case.facts_sha256 == old.facts_sha256
+                && case.evidence.len() == old.evidence.len()))
+    );
     drop(store);
     fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
 }

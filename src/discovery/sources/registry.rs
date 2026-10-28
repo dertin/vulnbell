@@ -5,17 +5,16 @@ use crate::{
     network::Http,
     store::Store,
 };
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use rusqlite::params;
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 const NOT_ACQUIRED: &str =
     "not acquired by native registry mapping; an agent may map it from the repository pages";
 pub(super) const NATIVE_RATIONALE: &str = "Native registry mapping";
-/// Recorded in native Maven rationales; bump it when POM resolution changes so incomplete
-/// mappings from earlier revisions are mapped again.
-pub(super) const MAVEN_MAPPER: &str = "Maven effective POM revision 5";
+/// Identifies the POM mapping rules recorded with each source observation.
+pub(super) const MAVEN_MAPPER: &str = "Maven effective POM revision 6";
 /// Maven inheritance depth followed for `scm`, `issueManagement` and `url`.
 const MAX_PARENT_POMS: usize = 5;
 /// Bounds nested and self-referencing Maven property definitions.
@@ -23,28 +22,6 @@ const MAX_INTERPOLATION_PASSES: usize = 32;
 const FORGES_WITH_SSH: [&str; 3] = ["github.com", "gitlab.com", "bitbucket.org"];
 const NATIVE_ADVISORIES: &str =
     "advisories are queried natively by scan (OSV, GHSA, RustSec, NVD); no tracker page acquired";
-/// POM sections whose `<url>` children do not describe the project itself.
-const POM_NESTED: [&str; 18] = [
-    "parent",
-    "organization",
-    "licenses",
-    "developers",
-    "contributors",
-    "scm",
-    "issueManagement",
-    "ciManagement",
-    "mailingLists",
-    "distributionManagement",
-    "repositories",
-    "pluginRepositories",
-    "build",
-    "profiles",
-    "dependencies",
-    "dependencyManagement",
-    "reporting",
-    "properties",
-];
-
 #[derive(Debug, Serialize)]
 pub struct RegistryFailure {
     #[serde(rename = "ref")]
@@ -93,79 +70,160 @@ fn string_or_url<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str>
     field.as_str().or_else(|| text(field, "url"))
 }
 
-/// Content of the first `<tag>` or `<tag attributes>` element.
-fn xml_section<'a>(document: &'a str, tag: &str) -> Option<&'a str> {
-    let open = format!("<{tag}");
-    let close = format!("</{tag}>");
-    let mut from = 0;
-    let start = loop {
-        let found = document[from..].find(&open)? + from + open.len();
-        match document[found..].chars().next()? {
-            '>' => break found + 1,
-            character if character.is_whitespace() => {
-                break document[found..].find('>')? + found + 1;
+const MAX_POM_BYTES: usize = 8 * 1024 * 1024;
+const MAX_POM_NODES: u32 = 100_000;
+
+#[derive(Default)]
+struct ParsedPom {
+    urls: PomUrls,
+    properties: BTreeMap<String, String>,
+    coordinates: BTreeMap<String, String>,
+    parent: PomParent,
+}
+
+#[derive(Default)]
+enum PomParent {
+    #[default]
+    None,
+    Registry(String),
+    Unresolved,
+}
+
+fn child<'a, 'input>(
+    node: roxmltree::Node<'a, 'input>,
+    name: &str,
+) -> Result<Option<roxmltree::Node<'a, 'input>>> {
+    let mut matches = node.children().filter(|child| {
+        child.is_element()
+            && child.tag_name().namespace() == node.tag_name().namespace()
+            && child.tag_name().name() == name
+    });
+    let first = matches.next();
+    if matches.next().is_some() {
+        bail!("duplicate Maven field {name}");
+    }
+    Ok(first)
+}
+
+fn scalar(node: roxmltree::Node<'_, '_>) -> Result<Option<String>> {
+    if node.children().any(|child| child.is_element()) {
+        bail!("Maven field must contain text only");
+    }
+    let text = node
+        .children()
+        .filter(|child| child.is_text())
+        .filter_map(|child| child.text())
+        .collect::<String>();
+    let value = text.trim();
+    Ok((!value.is_empty()).then(|| value.to_owned()))
+}
+
+fn field(node: roxmltree::Node<'_, '_>, name: &str) -> Result<Option<String>> {
+    child(node, name)?
+        .map(scalar)
+        .transpose()
+        .map(Option::flatten)
+}
+
+fn parse_pom(pom: &str) -> Result<ParsedPom> {
+    if pom.len() > MAX_POM_BYTES || pom.contains("<!DOCTYPE") {
+        bail!("POM exceeds limits or declares a DTD");
+    }
+    let document = roxmltree::Document::parse_with_options(
+        pom,
+        roxmltree::ParsingOptions {
+            allow_dtd: false,
+            nodes_limit: MAX_POM_NODES,
+            entity_resolver: None,
+        },
+    )
+    .context("invalid Maven POM")?;
+    let project = document.root_element();
+    if project.tag_name().name() != "project"
+        || !matches!(
+            project.tag_name().namespace(),
+            None | Some("http://maven.apache.org/POM/4.0.0")
+        )
+    {
+        bail!("Maven POM requires a project root");
+    }
+    let parent = child(project, "parent")?;
+    let parent_field = |name: &str| {
+        parent
+            .map(|node| field(node, name))
+            .transpose()
+            .map(Option::flatten)
+    };
+    let mut coordinates = BTreeMap::new();
+    for name in ["groupId", "artifactId", "version"] {
+        let mut value = field(project, name)?;
+        if value.is_none() && name != "artifactId" {
+            value = parent_field(name)?;
+        }
+        if let Some(value) = value {
+            coordinates.insert(format!("project.{name}"), value);
+        }
+    }
+    let mut properties = BTreeMap::new();
+    if let Some(section) = child(project, "properties")? {
+        for property in section.children().filter(|node| {
+            node.is_element() && node.tag_name().namespace() == section.tag_name().namespace()
+        }) {
+            let name = property.tag_name().name().to_owned();
+            let value = scalar(property)?.unwrap_or_default();
+            if properties.insert(name, value).is_some() {
+                bail!("duplicate Maven property");
             }
-            _ => from = found,
         }
-    };
-    let end = document[start..].find(&close)? + start;
-    Some(document[start..end].trim())
-}
-
-fn raw(value: Option<&str>) -> Option<String> {
-    value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-}
-
-/// Direct `<properties>` children of a POM; comments are skipped.
-fn pom_properties(pom: &str) -> BTreeMap<String, String> {
-    let mut properties = BTreeMap::new();
-    let Some(mut section) = xml_section(pom, "properties") else {
-        return properties;
-    };
-    while let Some(start) = section.find('<') {
-        section = &section[start + 1..];
-        if let Some(comment) = section.strip_prefix("!--") {
-            let Some(end) = comment.find("-->") else {
-                break;
-            };
-            section = &comment[end + 3..];
-            continue;
-        }
-        let Some(name_end) = section.find('>') else {
-            break;
-        };
-        let name = &section[..name_end];
-        if name.ends_with('/') {
-            section = &section[name_end + 1..];
-            continue;
-        }
-        let close = format!("</{name}>");
-        let Some(value_end) = section[name_end + 1..].find(&close) else {
-            break;
-        };
-        let value = &section[name_end + 1..name_end + 1 + value_end];
-        properties.insert(name.to_owned(), value.trim().to_owned());
-        section = &section[name_end + 1 + value_end + close.len()..];
     }
-    properties
-}
-
-/// Coordinates `${project.*}` refers to in the effective model of the child POM.
-fn project_properties(pom: &str) -> BTreeMap<String, String> {
-    let project = strip_sections(pom, &POM_NESTED);
-    let parent = xml_section(pom, "parent").unwrap_or_default();
-    let mut properties = BTreeMap::new();
-    for coordinate in ["groupId", "artifactId", "version"] {
-        if let Some(value) =
-            xml_section(&project, coordinate).or_else(|| xml_section(parent, coordinate))
+    let parent_url = match (
+        parent_field("groupId")?,
+        parent_field("artifactId")?,
+        parent_field("version")?,
+    ) {
+        (Some(group), Some(artifact), Some(version))
+            if [&group, &artifact, &version].iter().all(|value| {
+                !value.is_empty()
+                    && !value.contains(['$', '/', '<'])
+                    && !value.contains(char::is_whitespace)
+            }) =>
         {
-            properties.insert(format!("project.{coordinate}"), value.to_owned());
+            registry_url(&format!("pkg:maven/{group}/{artifact}"), Some(&version))
+        }
+        _ => None,
+    };
+    let parent = match (parent, parent_url) {
+        (None, _) => PomParent::None,
+        (Some(_), Some(url)) => PomParent::Registry(url),
+        (Some(_), None) => PomParent::Unresolved,
+    };
+    let scm = child(project, "scm")?;
+    let scm_field = |name: &str| {
+        scm.map(|node| field(node, name))
+            .transpose()
+            .map(Option::flatten)
+    };
+    let mut scm_urls = Vec::new();
+    for name in ["url", "connection", "developerConnection"] {
+        if let Some(value) = scm_field(name)? {
+            scm_urls.push(value);
         }
     }
-    properties
+    let issues = child(project, "issueManagement")?
+        .map(|node| field(node, "url"))
+        .transpose()?
+        .flatten();
+    Ok(ParsedPom {
+        urls: PomUrls {
+            scm: scm_urls,
+            scm_tag: scm_field("tag")?,
+            website: field(project, "url")?,
+            issues,
+        },
+        properties,
+        coordinates,
+        parent,
+    })
 }
 
 /// Replaces `${name}` from the merged chain properties; an undefined name leaves no URL.
@@ -221,21 +279,6 @@ fn resolve_pom(urls: PomUrls, properties: &BTreeMap<String, String>) -> Declared
     }
 }
 
-fn strip_sections(document: &str, tags: &[&str]) -> String {
-    let mut remaining = document.to_owned();
-    for tag in tags {
-        let open = format!("<{tag}>");
-        let close = format!("</{tag}>");
-        while let Some(start) = remaining.find(&open) {
-            let Some(end) = remaining[start..].find(&close) else {
-                break;
-            };
-            remaining.replace_range(start..start + end + close.len(), "");
-        }
-    }
-    remaining
-}
-
 fn registry_url(reference: &str, version: Option<&str>) -> Option<String> {
     let purl: packageurl::PackageUrl<'_> = reference.parse().ok()?;
     let name = purl.name();
@@ -268,31 +311,13 @@ fn registry_url(reference: &str, version: Option<&str>) -> Option<String> {
     }
 }
 
-/// `pkg:maven/groupId/artifactId` of the project a POM builds; `groupId` may come from `<parent>`.
+/// `pkg:maven/groupId/artifactId` of the project a POM builds.
 pub(super) fn maven_reference(pom: &str) -> Option<String> {
-    let coordinates = project_properties(pom);
+    let coordinates = parse_pom(pom).ok()?.coordinates;
     let group = coordinates.get("project.groupId")?;
     let artifact = coordinates.get("project.artifactId")?;
     let literal = |value: &str| !value.is_empty() && !value.contains(['$', '/', '<', ' ']);
     (literal(group) && literal(artifact)).then(|| format!("pkg:maven/{group}/{artifact}"))
-}
-
-/// Maven Central URL of the literal `<parent>` coordinates; property placeholders are not resolved.
-fn parent_pom_url(pom: &str) -> Option<String> {
-    let parent = xml_section(pom, "parent")?;
-    let coordinate = |tag: &str| {
-        xml_section(parent, tag).filter(|value| {
-            !value.is_empty()
-                && !value.contains(['$', '/', '<'])
-                && !value.contains(char::is_whitespace)
-        })
-    };
-    let reference = format!(
-        "pkg:maven/{}/{}",
-        coordinate("groupId")?,
-        coordinate("artifactId")?
-    );
-    registry_url(&reference, Some(coordinate("version")?))
 }
 
 /// URLs a POM declares, before inheritance and property interpolation.
@@ -303,22 +328,6 @@ struct PomUrls {
     scm_tag: Option<String>,
     website: Option<String>,
     issues: Option<String>,
-}
-
-fn pom_urls(pom: &str) -> PomUrls {
-    let project = strip_sections(pom, &POM_NESTED);
-    let scm = xml_section(pom, "scm");
-    PomUrls {
-        scm: ["url", "connection", "developerConnection"]
-            .into_iter()
-            .filter_map(|tag| raw(scm.and_then(|scm| xml_section(scm, tag))))
-            .collect(),
-        scm_tag: raw(scm.and_then(|scm| xml_section(scm, "tag"))),
-        website: raw(xml_section(&project, "url")),
-        issues: raw(
-            xml_section(pom, "issueManagement").and_then(|issues| xml_section(issues, "url"))
-        ),
-    }
 }
 
 /// Whether `parent` builds in the same reactor as `child`: same version and related groupId.
@@ -383,9 +392,10 @@ fn scm_https(value: &str) -> Option<String> {
 fn declared(ecosystem: &str, body: &[u8]) -> Result<Declared> {
     if ecosystem == "maven" {
         let pom = std::str::from_utf8(body).context("POM is not UTF-8")?;
-        let mut properties = pom_properties(pom);
-        properties.extend(project_properties(pom));
-        return Ok(resolve_pom(pom_urls(pom), &properties));
+        let parsed = parse_pom(pom)?;
+        let mut properties = parsed.properties;
+        properties.extend(parsed.coordinates);
+        return Ok(resolve_pom(parsed.urls, &properties));
     }
     let value: serde_json::Value = serde_json::from_slice(body)?;
     Ok(match ecosystem {
@@ -583,12 +593,14 @@ pub(in crate::discovery) fn map(
         }
     }
     let snapshot = store.latest()?;
+    let mut instances = HashMap::new();
+    for instance in &snapshot.instances {
+        instances.entry(instance.id.as_str()).or_insert(instance);
+    }
     let mut requests_before_pacing = http.requests;
     for (url, targets) in packages.into_iter().take(limit) {
-        let reference = snapshot
-            .instances
-            .iter()
-            .find(|instance| instance.id == targets[0].0)
+        let reference = instances
+            .get(targets[0].0.as_str())
             .map(|instance| instance.reference.clone())
             .unwrap_or_default();
         let ecosystem = reference
@@ -632,32 +644,56 @@ pub(in crate::discovery) fn map(
             sha256: document.sha256.clone(),
         }];
         if ecosystem == "maven" {
-            let mut pom = String::from_utf8_lossy(&response.body).into_owned();
-            let mut urls = pom_urls(&pom);
-            let mut properties = pom_properties(&pom);
-            let coordinates = project_properties(&pom);
+            let pom = std::str::from_utf8(&response.body).context("POM is not UTF-8")?;
+            let mut parsed = parse_pom(pom)?;
+            let mut urls = parsed.urls.clone();
+            let mut properties = parsed.properties.clone();
+            let coordinates = parsed.coordinates.clone();
             properties.extend(coordinates.clone());
-            for _ in 0..MAX_PARENT_POMS {
+            let mut invalid_parent = None;
+            let mut parents_read = 0;
+            loop {
                 let effective = resolve_pom(urls.clone(), &properties);
                 if effective.repository.is_some() && effective.issues.is_some() {
                     break;
                 }
-                let Some(parent_url) = parent_pom_url(&pom) else {
-                    break;
+                let parent_url = match &parsed.parent {
+                    PomParent::None => break,
+                    PomParent::Unresolved => {
+                        invalid_parent =
+                            Some("parent POM coordinates cannot be resolved".to_owned());
+                        break;
+                    }
+                    PomParent::Registry(_) if parents_read == MAX_PARENT_POMS => {
+                        invalid_parent =
+                            Some("parent POM chain exceeds the traversal limit".to_owned());
+                        break;
+                    }
+                    PomParent::Registry(url) => url,
                 };
                 if http.requests != requests_before_pacing {
                     std::thread::sleep(std::time::Duration::from_secs(1));
                 }
                 requests_before_pacing = http.requests;
-                let parent = match http.get(&parent_url) {
+                let parent = match http.get(parent_url) {
                     Ok(parent) => parent,
                     Err(error) => {
-                        run.rate_limited |= error.to_string().contains("source limited");
+                        let message = error.to_string();
+                        run.rate_limited |= message.contains("source limited");
+                        invalid_parent = Some(format!("parent POM unavailable: {message}"));
                         break;
                     }
                 };
-                let Ok(parent_pom) = std::str::from_utf8(&parent.body) else {
-                    break;
+                parents_read += 1;
+                let parent_pom = std::str::from_utf8(&parent.body)
+                    .context("parent POM is not UTF-8")
+                    .and_then(parse_pom);
+                let parent_pom = match parent_pom {
+                    Ok(parent_pom) => parent_pom,
+                    Err(error) => {
+                        invalid_parent = Some(error.to_string());
+                        break;
+                    }
                 };
                 let document = record_document(store, &parent.url, &parent.body)?;
                 run.registry_documents += 1;
@@ -667,13 +703,22 @@ pub(in crate::discovery) fn map(
                 });
                 inherit(
                     &mut urls,
-                    pom_urls(parent_pom),
-                    reactor_parent(&coordinates, &project_properties(parent_pom)),
+                    parent_pom.urls.clone(),
+                    reactor_parent(&coordinates, &parent_pom.coordinates),
                 );
-                for (name, value) in pom_properties(parent_pom) {
-                    properties.entry(name).or_insert(value);
+                for (name, value) in &parent_pom.properties {
+                    properties
+                        .entry(name.clone())
+                        .or_insert_with(|| value.clone());
                 }
-                pom = parent_pom.to_owned();
+                parsed = parent_pom;
+            }
+            if let Some(error) = invalid_parent {
+                run.failed.push(RegistryFailure { reference, error });
+                if run.rate_limited {
+                    break;
+                }
+                continue;
             }
             fields = resolve_pom(urls, &properties);
             if run.rate_limited {
@@ -711,11 +756,7 @@ pub(in crate::discovery) fn map(
             fields.issues = None;
         }
         for (instance_id, current) in targets {
-            let Some(instance) = snapshot
-                .instances
-                .iter()
-                .find(|instance| instance.id == instance_id)
-            else {
+            let Some(instance) = instances.get(instance_id.as_str()) else {
                 continue;
             };
             if fingerprint(instance) != current {
@@ -739,212 +780,4 @@ pub(in crate::discovery) fn map(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pom_project_url_ignores_nested_sections_and_scm_maps_the_repository() {
-        let pom = br#"<project><parent><url>https://parent.example/</url></parent>
-<url>https://www.keycloak.org</url><licenses><license><url>https://license.example/</url></license></licenses>
-<scm><url>https://github.com/keycloak/keycloak</url></scm>
-<issueManagement><url>https://github.com/keycloak/keycloak/issues</url></issueManagement></project>"#;
-        let fields = declared("maven", pom).unwrap();
-        assert_eq!(fields.website.as_deref(), Some("https://www.keycloak.org"));
-        assert_eq!(
-            fields.repository.as_deref(),
-            Some("https://github.com/keycloak/keycloak")
-        );
-        assert_eq!(
-            fields.issues.as_deref(),
-            Some("https://github.com/keycloak/keycloak/issues")
-        );
-    }
-
-    #[test]
-    fn forge_links_collapse_to_one_repository_and_placeholders_are_rejected() {
-        let canonical = crate::identity::canonical_repository;
-        for link in [
-            "https://github.com/apache/maven-compiler-plugin/issues",
-            "git+https://github.com/apache/maven-compiler-plugin.git",
-            "https://github.com/apache/maven-compiler-plugin/tree/main",
-        ] {
-            assert_eq!(
-                canonical(link).as_deref(),
-                Some("https://github.com/apache/maven-compiler-plugin")
-            );
-        }
-        assert_eq!(
-            canonical("https://gitlab.com/group/sub/project/-/issues").as_deref(),
-            Some("https://gitlab.com/group/sub/project")
-        );
-        assert!(
-            canonical("https://github.com/apache/maven-jar-plugin/tree/${project.scm.tag}")
-                .is_none()
-        );
-        for link in [
-            "https://gitlab.ow2.org/asm/asm/issues",
-            "https://gitlab.ow2.org/asm/asm/-/merge_requests",
-        ] {
-            assert_eq!(
-                canonical(link).as_deref(),
-                Some("https://gitlab.ow2.org/asm/asm")
-            );
-        }
-        assert!(canonical("https://github.com/apache").is_none());
-        assert_eq!(
-            canonical("https://issues.apache.org/jira/browse/FREEMARKER").as_deref(),
-            Some("https://issues.apache.org/jira/browse/FREEMARKER")
-        );
-    }
-
-    #[test]
-    fn maven_parent_poms_supply_undeclared_scm_and_placeholders_stop_the_chain() {
-        let child = "<project><parent><groupId>io.quarkus</groupId><artifactId>quarkus-extensions-parent</artifactId><version>3.40.1</version></parent><artifactId>quarkus-agroal</artifactId></project>";
-        assert_eq!(
-            parent_pom_url(child).as_deref(),
-            Some(
-                "https://repo1.maven.org/maven2/io/quarkus/quarkus-extensions-parent/3.40.1/quarkus-extensions-parent-3.40.1.pom"
-            )
-        );
-        assert!(
-            parent_pom_url("<project><parent><groupId>a</groupId><artifactId>b</artifactId><version>${revision}</version></parent></project>")
-                .is_none()
-        );
-        let none = BTreeMap::new();
-        let mut urls = pom_urls(child);
-        inherit(
-            &mut urls,
-            pom_urls(
-                "<project><url>https://quarkus.io</url><scm><url>https://github.com/quarkusio/quarkus</url></scm></project>",
-            ),
-            true,
-        );
-        let fields = resolve_pom(urls, &none);
-        assert_eq!(
-            fields.repository.as_deref(),
-            Some("https://github.com/quarkusio/quarkus")
-        );
-        assert_eq!(fields.website.as_deref(), Some("https://quarkus.io"));
-        let mut own =
-            pom_urls("<project><scm><url>https://github.com/own/repo</url></scm></project>");
-        inherit(
-            &mut own,
-            pom_urls("<project><scm><url>https://github.com/parent/repo</url></scm></project>"),
-            true,
-        );
-        assert_eq!(
-            resolve_pom(own, &none).repository.as_deref(),
-            Some("https://github.com/own/repo")
-        );
-    }
-
-    #[test]
-    fn scm_coordinates_map_to_https_only_where_the_forge_serves_the_same_path() {
-        assert_eq!(
-            scm_https("git@github.com:open-telemetry/opentelemetry-java.git").as_deref(),
-            Some("https://github.com/open-telemetry/opentelemetry-java.git")
-        );
-        assert_eq!(
-            scm_https("scm:git:git://github.com/HdrHistogram/HdrHistogram.git").as_deref(),
-            Some("https://github.com/HdrHistogram/HdrHistogram.git")
-        );
-        assert_eq!(
-            scm_https("scm:git:ssh://git@gitlab.com/group/project.git").as_deref(),
-            Some("https://gitlab.com/group/project.git")
-        );
-        assert!(scm_https("git@git.example.internal:team/repo.git").is_none());
-        assert!(scm_https("scm:svn:https://svn.apache.org/repos/asf/commons").is_none());
-        let pom = "<project><scm><url>https://github.com/apache/httpcomponents-client/tree/${project.scm.tag}</url><connection>scm:git:https://git-wip-us.apache.org/repos/asf/httpcomponents-client.git</connection><tag>4.5.14</tag></scm></project>";
-        assert_eq!(
-            resolve_pom(pom_urls(pom), &BTreeMap::new())
-                .repository
-                .as_deref(),
-            Some("https://github.com/apache/httpcomponents-client/tree/4.5.14")
-        );
-        let website_in_url = "<project><scm><connection>scm:git:git://github.com/aeshell/aesh.git</connection><url>https://aeshell.github.io/</url></scm></project>";
-        assert_eq!(
-            resolve_pom(pom_urls(website_in_url), &BTreeMap::new())
-                .repository
-                .as_deref(),
-            Some("https://github.com/aeshell/aesh.git")
-        );
-        let ssh_only =
-            "<project><scm><url>git@github.com:vert-x3/vertx-parent.git</url></scm></project>";
-        assert_eq!(
-            resolve_pom(pom_urls(ssh_only), &BTreeMap::new())
-                .repository
-                .as_deref(),
-            Some("https://github.com/vert-x3/vertx-parent.git")
-        );
-    }
-
-    #[test]
-    fn inherited_pom_urls_use_merged_properties_and_attribute_sections() {
-        let child = "<project><parent><groupId>org.apache.commons</groupId><artifactId>commons-parent</artifactId><version>98</version></parent><artifactId>commons-io</artifactId><version>2.22.0</version><properties><!-- ids --><commons.componentid>io</commons.componentid><commons.jira.id>IO</commons.jira.id><empty/></properties></project>";
-        let parent = "<project><properties><commons.repo.name>commons-${commons.componentid}</commons.repo.name><commons.jira.id>PARENT</commons.jira.id></properties><scm child.scm.url.inherit.append.path=\"false\"><url>https://gitbox.apache.org/repos/asf?p=${commons.repo.name}.git</url></scm><issueManagement><url>https://issues.apache.org/jira/browse/${commons.jira.id}</url></issueManagement><ciManagement><url>https://github.com/apache/${undefined.name}/actions</url></ciManagement></project>";
-        let mut properties = pom_properties(child);
-        properties.extend(project_properties(child));
-        assert_eq!(
-            properties.get("project.artifactId").map(String::as_str),
-            Some("commons-io")
-        );
-        for (name, value) in pom_properties(parent) {
-            properties.entry(name).or_insert(value);
-        }
-        let mut urls = pom_urls(child);
-        inherit(&mut urls, pom_urls(parent), false);
-        let resolved = resolve_pom(urls, &properties);
-        assert_eq!(
-            resolved.repository.as_deref(),
-            Some("https://gitbox.apache.org/repos/asf?p=commons-io.git")
-        );
-        assert_eq!(
-            resolved.issues.as_deref(),
-            Some("https://issues.apache.org/jira/browse/IO")
-        );
-        assert_eq!(
-            interpolate("https://github.com/apache/${undefined.name}", &properties),
-            None
-        );
-        let recursive = BTreeMap::from([("a".to_owned(), "${a}".to_owned())]);
-        assert_eq!(interpolate("${a}", &recursive), None);
-    }
-
-    #[test]
-    fn organisation_parents_do_not_lend_their_own_literal_urls() {
-        let child = "<project><parent><groupId>org.jboss</groupId><artifactId>jboss-parent</artifactId><version>49</version></parent><groupId>org.wildfly.common</groupId><artifactId>wildfly-common</artifactId><version>1.5.4.Final</version></project>";
-        let parent = "<project><groupId>org.jboss</groupId><artifactId>jboss-parent</artifactId><version>49</version><url>https://www.jboss.org</url><scm><url>https://github.com/jboss/jboss-parent-pom</url></scm><issueManagement><url>https://issues.redhat.com/</url></issueManagement></project>";
-        let coordinates = project_properties(child);
-        let reactor = reactor_parent(&coordinates, &project_properties(parent));
-        assert!(!reactor);
-        let mut urls = pom_urls(child);
-        inherit(&mut urls, pom_urls(parent), reactor);
-        let resolved = resolve_pom(urls, &coordinates);
-        assert_eq!(
-            (resolved.repository, resolved.website, resolved.issues),
-            (None, None, None)
-        );
-        let module = "<project><parent><groupId>com.fasterxml.jackson.jakarta.rs</groupId><artifactId>jackson-jakarta-rs-providers</artifactId><version>2.21.7</version></parent><artifactId>jackson-jakarta-rs-base</artifactId></project>";
-        let reactor_pom = "<project><groupId>com.fasterxml.jackson.jakarta.rs</groupId><artifactId>jackson-jakarta-rs-providers</artifactId><version>2.21.7</version></project>";
-        assert!(reactor_parent(
-            &project_properties(module),
-            &project_properties(reactor_pom)
-        ));
-    }
-
-    #[test]
-    fn registry_urls_are_exact_per_ecosystem() {
-        assert_eq!(
-            registry_url("pkg:maven/org.keycloak/keycloak-core", Some("26.8.1")).as_deref(),
-            Some(
-                "https://repo1.maven.org/maven2/org/keycloak/keycloak-core/26.8.1/keycloak-core-26.8.1.pom"
-            )
-        );
-        assert_eq!(
-            registry_url("pkg:pypi/requests", Some("2.31.0")).as_deref(),
-            Some("https://pypi.org/pypi/requests/2.31.0/json")
-        );
-        assert!(registry_url("pkg:pypi/requests", None).is_none());
-        assert!(registry_url("pkg:golang/example.com/x", Some("1.0.0")).is_none());
-    }
-}
+mod tests;

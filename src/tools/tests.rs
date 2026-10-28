@@ -3,7 +3,7 @@ use super::{
     draft::{DecisionLookup, ItemDecision, ResearchDecisions},
     hits::{Disposition, Entry, ReviewPriority, RuleContext, disposition, review_priority},
     normalize_time,
-    raw::{self, FetchTool, JiraApi, Provider, TargetItems},
+    raw::{self, TargetItems},
     screen::{self, SignalPlace},
     workspace,
 };
@@ -12,11 +12,7 @@ use crate::{
     profile::Language,
     research::{Assessment, NotApplicableReason, ResearchTarget},
 };
-use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
-    fs,
-    path::Path,
-};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 fn item(kind: ItemKind, title: &str, body: &str) -> Item {
     Item {
@@ -74,143 +70,6 @@ fn empty_collected(upstream: &str) -> TargetItems {
 }
 
 #[test]
-fn github_requires_terminal_page_and_fetches_old_linked_issues() {
-    let directory = tempfile::tempdir().unwrap();
-    let raw = directory.path();
-    let repo = "github/example/project";
-    let issue = serde_json::json!({"number": 1, "title": "Routine cleanup", "html_url": "https://github.com/example/project/pull/1", "state": "open", "updated_at": "2026-10-20T10:00:00Z", "labels": [], "body": "Fixes #42", "pull_request": {}});
-    let page: Vec<_> = (0..100).map(|_| issue.clone()).collect();
-    write(
-        raw,
-        &format!("{repo}/issues.page-1.json"),
-        &serde_json::to_string(&page).unwrap(),
-    );
-    write(raw, &format!("{repo}/releases.page-1.json"), "[]");
-    write(
-        raw,
-        &format!("{repo}/security-advisories.page-1.json"),
-        "[]",
-    );
-    write(
-        raw,
-        &format!("{repo}/discussions.json"),
-        r#"[{"data":{"search":{"discussionCount":0,"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}]"#,
-    );
-    let target = target("https://github.com/example/project");
-    let incomplete = raw::read_target(raw, &target);
-    assert!(
-        incomplete
-            .missing
-            .iter()
-            .any(|fetch| fetch.path.ends_with("issues.page-2.json"))
-    );
-    assert!(!incomplete.complete());
-    write(raw, &format!("{repo}/issues.page-2.json"), "[]");
-    let linked_missing = raw::read_target(raw, &target);
-    assert!(
-        linked_missing
-            .missing
-            .iter()
-            .any(|fetch| fetch.path.ends_with("linked-issues/42.json")
-                && fetch.tool == FetchTool::GhRestSingle)
-    );
-    assert!(!linked_missing.complete());
-    write(
-        raw,
-        &format!("{repo}/linked-issues/42.json"),
-        r#"{"number":42,"title":"Old report","html_url":"https://github.com/example/project/issues/42","state":"open","updated_at":"2025-01-01T00:00:00Z","labels":[],"body":"An attacker can bypass authentication."}"#,
-    );
-    let collected = raw::read_target(raw, &target);
-    assert!(collected.complete());
-    assert_eq!(collected.linked_issues.len(), 1);
-    assert!(!collected.items.iter().any(|item| item.key.ends_with("#42")));
-    assert!(screen::screen(&collected.items[0], &collected.linked_issues[0].body).is_some());
-    let mut title_only = collected.linked_issues[0].clone();
-    title_only.title = "SSRF in request handling".into();
-    title_only.body = "Details pending".into();
-    assert!(screen::screen(&title_only, "").is_some());
-    assert!(screen::screen_with_linked(&collected.items[0], &title_only.title, true).is_some());
-}
-
-#[test]
-fn github_screens_security_signals_after_the_old_body_limit() {
-    let directory = tempfile::tempdir().unwrap();
-    let raw = directory.path();
-    let repo = "github/example/project";
-    let issue = serde_json::json!({"number": 1, "title": "Parser update", "html_url": "https://github.com/example/project/issues/1", "state": "open", "updated_at": "2026-10-20T10:00:00Z", "labels": [], "body": format!("{} attacker can bypass checks", "x".repeat(9000))});
-    write(
-        raw,
-        &format!("{repo}/issues.page-1.json"),
-        &serde_json::json!([issue]).to_string(),
-    );
-    write(raw, &format!("{repo}/releases.page-1.json"), "[]");
-    write(
-        raw,
-        &format!("{repo}/security-advisories.page-1.json"),
-        "[]",
-    );
-    write(
-        raw,
-        &format!("{repo}/discussions.json"),
-        r#"[{"data":{"search":{"discussionCount":0,"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}]"#,
-    );
-    let collected = raw::read_target(raw, &target("https://github.com/example/project"));
-    assert!(collected.complete());
-    assert!(screen::screen(&collected.items[0], "").is_some());
-}
-
-#[test]
-fn gitlab_and_forgejo_fetch_linked_issues_outside_the_window() {
-    let directory = tempfile::tempdir().unwrap();
-    let raw = directory.path();
-    let gitlab = "gitlab/gitlab.com/example/project";
-    write(raw, &format!("{gitlab}/issues.page-1.json"), "[]");
-    write(raw, &format!("{gitlab}/releases.page-1.json"), "[]");
-    write(
-        raw,
-        &format!("{gitlab}/merge_requests.page-1.json"),
-        r#"[{"iid":1,"title":"Maintenance","web_url":"https://gitlab.com/example/project/-/merge_requests/1","state":"opened","updated_at":"2026-10-20T10:00:00Z","labels":[],"description":"Fixes #42"}]"#,
-    );
-    let gitlab_target = target("https://gitlab.com/example/project");
-    let missing = raw::read_target(raw, &gitlab_target);
-    assert!(missing.missing.iter().any(
-        |fetch| fetch.path.ends_with("linked-issues/42.json") && fetch.tool == FetchTool::Curl
-    ));
-    write(
-        raw,
-        &format!("{gitlab}/linked-issues/42.json"),
-        r#"{"iid":42,"title":"Old issue","web_url":"https://gitlab.com/example/project/-/issues/42","state":"opened","updated_at":"2025-01-01T00:00:00Z","labels":[],"description":"Security issue"}"#,
-    );
-    let linked = raw::read_target(raw, &gitlab_target);
-    assert!(linked.complete(), "{:?}", linked.errors);
-    assert_eq!(linked.linked_issues[0].key, "example/project#42");
-
-    let forgejo = "forgejo/codeberg.org/example/project";
-    write(
-        raw,
-        &format!("{forgejo}/issues.page-1.json"),
-        r#"[{"number":1,"title":"Maintenance","html_url":"https://codeberg.org/example/project/pulls/1","state":"open","updated_at":"2026-10-20T10:00:00Z","labels":[],"body":"Fixes #42","pull_request":{}}]"#,
-    );
-    write(raw, &format!("{forgejo}/releases.page-1.json"), "[]");
-    let forgejo_target = target("https://codeberg.org/example/project");
-    let missing = raw::read_target(raw, &forgejo_target);
-    assert!(
-        missing
-            .missing
-            .iter()
-            .any(|fetch| fetch.path.ends_with("linked-issues/42.json"))
-    );
-    write(
-        raw,
-        &format!("{forgejo}/linked-issues/42.json"),
-        r#"{"number":42,"title":"Old issue","html_url":"https://codeberg.org/example/project/issues/42","state":"open","updated_at":"2025-01-01T00:00:00Z","labels":[],"body":"Security issue"}"#,
-    );
-    let linked = raw::read_target(raw, &forgejo_target);
-    assert!(linked.complete(), "{:?}", linked.errors);
-    assert_eq!(linked.linked_issues[0].key, "example/project#42");
-}
-
-#[test]
 fn multi_component_review_requires_an_explicit_scope() {
     let upstream = "https://github.com/example/project";
     let make_prepared = || {
@@ -243,6 +102,7 @@ fn multi_component_review_requires_an_explicit_scope() {
     let mut decisions = ResearchDecisions {
         schema_version: 1,
         decisions: vec![ItemDecision {
+            upstream: upstream.into(),
             key: "example/project#1".into(),
             updated_at: "2026-10-20T10:00:00+00:00".into(),
             context_sha256: "a".repeat(64),
@@ -354,12 +214,6 @@ fn evaluation_exposes_false_negatives_and_top_k_without_changing_decisions() {
     assert_eq!(result["recall"], 0.5);
     assert_eq!(result["precision_at_top"], 1.0);
     assert_eq!(result["false_negative_keys"][0], "c");
-}
-
-fn write(directory: &Path, relative: &str, contents: &str) {
-    let path = directory.join(relative);
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(path, contents).unwrap();
 }
 
 #[test]
@@ -525,8 +379,134 @@ fn unlinked_security_updates_and_releases_need_review() {
     };
     assert!(matches!(
         disposition(&release, &found, &context),
-        Disposition::Rule(ref outcome) if outcome.assessment == Assessment::Informational
+        Disposition::Review { .. }
     ));
+}
+
+#[test]
+fn published_advisory_does_not_hide_independent_security_claims() {
+    use super::advisories::Resolution;
+    let mut collected = empty_collected("https://github.com/example/project");
+    collected
+        .published_identifiers
+        .insert("CVE-2026-12345".into());
+    let resolutions = BTreeMap::from([(
+        "CVE-2026-12345".into(),
+        Resolution {
+            published: true,
+            ..Default::default()
+        },
+    )]);
+    let selected = HashSet::new();
+    let context = RuleContext {
+        collected: &collected,
+        selected_keys: &selected,
+        resolutions: &resolutions,
+        target_instances: &[],
+        language: Language::En,
+    };
+    for (kind, title) in [
+        (ItemKind::Release, "v2.0.1"),
+        (ItemKind::PullRequest, "build(deps): bump example"),
+    ] {
+        let report = item(
+            kind,
+            title,
+            "CVE-2026-12345. An attacker can bypass authentication.",
+        );
+        let found = screen::screen(&report, "").unwrap();
+        assert!(matches!(
+            disposition(&report, &found, &context),
+            Disposition::Review { .. }
+        ));
+
+        let relay = item(kind, title, "CVE-2026-12345");
+        let found = screen::screen(&relay, "").unwrap();
+        assert!(matches!(
+            disposition(&relay, &found, &context),
+            Disposition::Rule(_)
+        ));
+    }
+}
+
+#[test]
+fn truncated_identifiers_require_review_for_releases_and_dependency_updates() {
+    use super::advisories::Resolution;
+
+    let ids: Vec<String> = (1..=33)
+        .map(|number| format!("CVE-2026-{number:04}"))
+        .collect();
+    let mut collected = empty_collected("https://github.com/example/project");
+    collected
+        .published_identifiers
+        .extend(ids[..32].iter().cloned());
+    let resolutions: BTreeMap<String, Resolution> = ids[..32]
+        .iter()
+        .map(|id| {
+            (
+                id.clone(),
+                Resolution {
+                    published: true,
+                    ..Resolution::default()
+                },
+            )
+        })
+        .collect();
+    let selected = HashSet::new();
+    let context = RuleContext {
+        collected: &collected,
+        selected_keys: &selected,
+        resolutions: &resolutions,
+        target_instances: &[],
+        language: Language::En,
+    };
+    let duplicates = format!("{} {}", ids[..32].join(" "), ids[0]);
+    assert!(
+        !screen::screen(&item(ItemKind::Release, "v2.0.1", &duplicates), "")
+            .unwrap()
+            .identifiers_truncated
+    );
+    for (kind, title) in [
+        (ItemKind::Release, "v2.0.1"),
+        (ItemKind::PullRequest, "build(deps): bump example"),
+    ] {
+        let complete = item(kind, title, &ids[..32].join(" "));
+        let complete_screen = screen::screen(&complete, "").unwrap();
+        assert!(!complete_screen.identifiers_truncated);
+        assert!(matches!(
+            disposition(&complete, &complete_screen, &context),
+            Disposition::Rule(_)
+        ));
+
+        let incomplete = item(kind, title, &ids.join(" "));
+        let incomplete_screen = screen::screen(&incomplete, "").unwrap();
+        assert_eq!(incomplete_screen.identifiers.len(), 32);
+        assert!(incomplete_screen.identifiers_truncated);
+        assert!(matches!(
+            disposition(&incomplete, &incomplete_screen, &context),
+            Disposition::Review { .. }
+        ));
+    }
+    let release = item(ItemKind::Release, "v2.0.1", &ids.join(" "));
+    let screen = screen::screen(&release, "").unwrap();
+    let disposition = disposition(&release, &screen, &context);
+    let prepared = super::hits::Prepared {
+        project_id: "project".into(),
+        snapshot_id: "snapshot".into(),
+        targets: vec![super::hits::PreparedTarget {
+            target: target("https://github.com/example/project"),
+            collected,
+            not_selected: 0,
+            entries: vec![Entry {
+                disposition,
+                item: release,
+                screen,
+            }],
+        }],
+        resolutions,
+    };
+    let packet = serde_json::to_value(super::hits::packet(&prepared, None)).unwrap();
+    assert_eq!(packet["review"][0]["identifiers_truncated"], true);
 }
 
 #[test]
@@ -609,194 +589,9 @@ fn repository_advisories_are_evaluated_against_the_target_instances() {
 }
 
 #[test]
-fn providers_map_to_their_raw_directories() {
-    assert_eq!(
-        raw::provider_for("https://github.com/example/project.git"),
-        Provider::GitHub {
-            owner: "example".into(),
-            repository: "project".into(),
-            mirror: false
-        }
-    );
-    assert_eq!(
-        raw::provider_for("https://gitbox.apache.org/repos/asf?p=commons-io.git"),
-        Provider::GitHub {
-            owner: "apache".into(),
-            repository: "commons-io".into(),
-            mirror: true
-        }
-    );
-    assert!(matches!(
-        raw::provider_for("https://issues.jboss.org/browse/WFLY"),
-        Provider::Jira { api: JiraApi::SearchJqlV3, ref host, ref project, .. }
-            if host == "redhat.atlassian.net" && project == "WFLY"
-    ));
-    assert!(matches!(
-        raw::provider_for("https://gitlab.com/group/sub/project/-/issues"),
-        Provider::GitLab { ref project, .. } if project == "group/sub/project"
-    ));
-    let Provider::Manual { directory, .. } =
-        raw::provider_for("https://sourceforge.net/projects/../../etc")
-    else {
-        panic!("unsupported host is manual");
-    };
-    assert!(!directory.contains(".."));
-}
-
-#[test]
-fn github_responses_are_parsed_and_missing_files_name_their_request() {
-    let directory = tempfile::tempdir().unwrap();
-    let raw_dir = directory.path();
-    let target = target("https://github.com/example/project");
-    let partial = raw::read_target(raw_dir, &target);
-    assert_eq!(partial.missing.len(), 4);
-    assert!(
-        partial
-            .missing
-            .iter()
-            .any(|missing| missing.tool == FetchTool::GhGraphqlDiscussions
-                && missing.request == "repo:example/project updated:>=2026-10-19T00:00:00Z")
-    );
-
-    write(
-        raw_dir,
-        "github/example/project/issues.page-1.json",
-        r#"[[
-          {"number": 7, "title": "Token reuse", "html_url": "https://github.com/example/project/issues/7",
-           "state": "open", "updated_at": "2026-10-20T10:00:00Z", "labels": [{"name": "security"}], "body": "An attacker can reuse a token"},
-          {"number": 8, "title": "Check audience", "html_url": "https://github.com/example/project/pull/8",
-           "state": "closed", "updated_at": "2026-10-20T11:00:00Z", "labels": [], "body": "Closes #7",
-           "pull_request": {"url": "x"}},
-          {"number": 9, "title": "Old", "html_url": "https://github.com/example/project/issues/9",
-           "state": "open", "updated_at": "2026-10-01T11:00:00Z", "labels": [], "body": null}
-        ]]"#,
-    );
-    write(
-        raw_dir,
-        "github/example/project/releases.page-1.json",
-        "[[]]",
-    );
-    write(
-        raw_dir,
-        "github/example/project/security-advisories.page-1.json",
-        r#"[[{"ghsa_id": "GHSA-abcd-1234-wxyz", "cve_id": "CVE-2026-22222", "html_url": "https://github.com/example/project/security/advisories/GHSA-abcd-1234-wxyz",
-              "summary": "Old advisory", "description": null, "updated_at": "2025-01-01T00:00:00Z", "withdrawn_at": null, "vulnerabilities": []}]]"#,
-    );
-    write(
-        raw_dir,
-        "github/example/project/discussions.json",
-        r#"[{"data": {"search": {"discussionCount": 0, "nodes": [{}], "pageInfo": {"hasNextPage": false, "endCursor": null}}}}]"#,
-    );
-    let complete = raw::read_target(raw_dir, &target);
-    assert!(complete.complete(), "{:?}", complete.errors);
-    let keys: Vec<&str> = complete
-        .items
-        .iter()
-        .map(|item| item.key.as_str())
-        .collect();
-    assert_eq!(keys, vec!["example/project#7", "example/project#8"]);
-    assert_eq!(complete.items[1].kind, ItemKind::PullRequest);
-    assert_eq!(complete.items[1].closes, vec!["example/project#7"]);
-    assert!(complete.published_identifiers.contains("CVE-2026-22222"));
-
-    write(
-        raw_dir,
-        "github/example/project/discussions.json",
-        r#"[{"data":{"search":{"discussionCount":1,"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}]"#,
-    );
-    let incomplete_count = raw::read_target(raw_dir, &target);
-    assert!(
-        incomplete_count
-            .errors
-            .iter()
-            .any(|error| error.contains("discussion results are incomplete"))
-    );
-
-    write(
-        raw_dir,
-        "github/example/project/discussions.json",
-        r#"[{"data":{"search":{"discussionCount":1,"nodes":[],"pageInfo":{"hasNextPage":true,"endCursor":"next"}}}}]"#,
-    );
-    assert!(!raw::read_target(raw_dir, &target).complete());
-
-    write(
-        raw_dir,
-        "github/example/project/releases.page-1.json",
-        r#"{"message": "Not Found", "status": "404"}"#,
-    );
-    assert!(!raw::read_target(raw_dir, &target).errors.is_empty());
-
-    write(
-        raw_dir,
-        "github/example/project/releases.page-1.json",
-        " \n",
-    );
-    let truncated = raw::read_target(raw_dir, &target);
-    assert!(truncated.errors.iter().any(|error| {
-        error.contains("github/example/project/releases.page-1.json")
-            && error.contains("empty response file")
-    }));
-    write(
-        raw_dir,
-        "github/example/project/releases.page-1.json",
-        "[[]]",
-    );
-    write(
-        raw_dir,
-        "github/example/project/discussions.json",
-        r#"[{"data":{"search":{"discussionCount":0,"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}]"#,
-    );
-    write(
-        raw_dir,
-        "github/example/project/issues.page-1.json",
-        r#"[[{"number":7,"title":"Issue","html_url":"https://github.com/example/project/issues/7","state":"open","updated_at":"invalid","labels":[],"body":"A security issue"}]]"#,
-    );
-    let bad_date = raw::read_target(raw_dir, &target);
-    assert!(!bad_date.complete());
-    assert!(
-        bad_date
-            .errors
-            .iter()
-            .any(|error| error.contains("invalid update timestamp"))
-    );
-}
-
-#[test]
-fn jira_v3_pages_follow_the_next_page_token() {
-    let directory = tempfile::tempdir().unwrap();
-    let raw_dir = directory.path();
-    let target = target("https://hibernate.atlassian.net/browse/HHH");
-    write(
-        raw_dir,
-        "jira/hibernate.atlassian.net/HHH.page-1.json",
-        r#"{"issues": [{"key": "HHH-1", "fields": {"summary": "SQL injection in order by", "updated": "2026-10-20T10:00:00.000+0000",
-            "status": {"name": "Open"}, "issuetype": {"name": "Bug"}, "labels": [],
-            "description": {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Crafted input"}]}]}}}],
-            "isLast": false, "nextPageToken": "abc=="}"#,
-    );
-    let first = raw::read_target(raw_dir, &target);
-    assert_eq!(first.items.len(), 1);
-    assert_eq!(
-        first.items[0].url,
-        "https://hibernate.atlassian.net/browse/HHH-1"
-    );
-    assert!(first.items[0].body.contains("Crafted input"));
-    assert_eq!(first.missing.len(), 1);
-    assert!(
-        first.missing[0]
-            .request
-            .ends_with("&nextPageToken=abc%3D%3D")
-    );
-    assert!(
-        first.missing[0]
-            .request
-            .contains("/rest/api/3/search/jql?jql=")
-    );
-}
-
-#[test]
 fn decisions_are_validated_and_stale_ones_are_reported() {
     let decision = ItemDecision {
+        upstream: "https://github.com/example/project".into(),
         key: "example/project#7".into(),
         updated_at: "2026-10-20T10:00:00Z".into(),
         context_sha256: "a".repeat(64),
@@ -841,6 +636,82 @@ fn decisions_are_validated_and_stale_ones_are_reported() {
 }
 
 #[test]
+fn decisions_with_the_same_key_are_scoped_to_the_upstream() {
+    let github = "https://github.com/example/project";
+    let gitlab = "https://gitlab.com/example/project";
+    let make_prepared = || super::hits::Prepared {
+        project_id: "project".into(),
+        snapshot_id: "snapshot".into(),
+        targets: [github, gitlab]
+            .into_iter()
+            .map(|upstream| {
+                let mut issue = item(
+                    ItemKind::Issue,
+                    "Security issue",
+                    "Security issue in parser.",
+                );
+                issue.url = format!("{upstream}/issues/1");
+                super::hits::PreparedTarget {
+                    target: target(upstream),
+                    collected: empty_collected(upstream),
+                    not_selected: 0,
+                    entries: vec![Entry {
+                        screen: screen::screen(&issue, "").unwrap(),
+                        item: issue,
+                        disposition: Disposition::Review {
+                            unpublished: vec![],
+                        },
+                    }],
+                }
+            })
+            .collect(),
+        resolutions: BTreeMap::new(),
+    };
+    let mut decisions = ResearchDecisions {
+        schema_version: 1,
+        decisions: vec![ItemDecision {
+            upstream: github.into(),
+            key: "example/project#1".into(),
+            updated_at: "2026-10-20T10:00:00+00:00".into(),
+            context_sha256: "a".repeat(64),
+            assessment: Assessment::Ignore,
+            not_applicable_reason: None,
+            rationale: "GitHub item is unrelated.".into(),
+            source_facts: SourceFacts::default(),
+            instance_ids: vec![],
+            all_instances: false,
+        }],
+    };
+    decisions.validate().unwrap();
+    let packet = super::hits::packet(&make_prepared(), Some(&decisions));
+    assert_eq!(packet.review.len(), 1);
+    assert_eq!(packet.review[0].upstream, gitlab);
+    assert!(super::draft::draft(make_prepared(), &decisions, false).is_err());
+
+    let mut gitlab_decision = decisions.decisions[0].clone();
+    gitlab_decision.upstream = gitlab.into();
+    gitlab_decision.assessment = Assessment::Review;
+    gitlab_decision.rationale = "GitLab item needs review.".into();
+    decisions.decisions.push(gitlab_decision);
+    decisions.validate().unwrap();
+    let (batch, _) = super::draft::draft(make_prepared(), &decisions, false).unwrap();
+    assert_eq!(batch.events.len(), 2);
+    assert_eq!(batch.events[0].upstream, github);
+    assert_eq!(batch.events[0].assessment, Assessment::Ignore);
+    assert_eq!(batch.events[1].upstream, gitlab);
+    assert_eq!(batch.events[1].assessment, Assessment::Review);
+
+    decisions.decisions.push(decisions.decisions[0].clone());
+    assert!(decisions.validate().is_err());
+    decisions.decisions.pop();
+    decisions.decisions[0].upstream = "http://example.org/project".into();
+    assert!(decisions.validate().is_err());
+    let mut missing_upstream = serde_json::to_value(&decisions.decisions[0]).unwrap();
+    missing_upstream.as_object_mut().unwrap().remove("upstream");
+    assert!(serde_json::from_value::<ItemDecision>(missing_upstream).is_err());
+}
+
+#[test]
 fn workspace_init_creates_the_monitor_layout_and_rejects_bad_names() {
     let directory = tempfile::tempdir().unwrap();
     let layout = workspace::init(directory.path(), "keycloak", "2026-10-27").unwrap();
@@ -861,4 +732,40 @@ fn workspace_init_creates_the_monitor_layout_and_rejects_bad_names() {
     assert!(workspace::init(directory.path(), "Keycloak", "2026-10-27").is_err());
     assert!(workspace::init(directory.path(), "../x", "2026-10-27").is_err());
     assert!(workspace::init(directory.path(), "keycloak", "27/10/2026").is_err());
+}
+
+#[test]
+fn truncated_seen_item_requires_a_review_decision() {
+    let report = item(
+        ItemKind::Issue,
+        "Security report",
+        &(0..33)
+            .map(|n| format!("CVE-2026-{:04}", n + 1000))
+            .collect::<Vec<_>>()
+            .join(" "),
+    );
+    let screen = screen::screen(&report, "").unwrap();
+    assert!(screen.identifiers_truncated);
+    let mut research_target = target("https://github.com/example/project");
+    research_target.seen.push(crate::research::SeenEvent {
+        external_id: report.key.clone(),
+        url: report.url.clone(),
+        content_sha256: "a".repeat(64),
+        updated_at: report.updated_at.clone(),
+        context_current: true,
+        assessment: Some(Assessment::Ignore),
+        not_applicable_reason: None,
+        rationale: String::new(),
+    });
+    assert!(!super::hits::already_reviewed(
+        &research_target,
+        &report,
+        &screen
+    ));
+    research_target.seen[0].assessment = Some(Assessment::Review);
+    assert!(super::hits::already_reviewed(
+        &research_target,
+        &report,
+        &screen
+    ));
 }

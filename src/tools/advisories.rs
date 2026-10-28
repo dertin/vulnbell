@@ -4,7 +4,10 @@
 use crate::{
     model::Instance,
     network::Http,
-    sources::{RangeMatch, github_range_match, osv_entry_contains, repository_package_is},
+    sources::{
+        RangeMatch, github_range_match, osv_package_identity, osv_ranges_match,
+        repository_package_match,
+    },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -50,9 +53,11 @@ pub struct Resolution {
 impl Resolution {
     /// Whether a monitored instance is, or may be, inside an affected range.
     pub fn may_affect_build(&self) -> bool {
-        self.in_build
-            .iter()
-            .any(|found| matches!(found.status, BuildStatus::Affected | BuildStatus::Unknown))
+        !self.errors.is_empty()
+            || self
+                .in_build
+                .iter()
+                .any(|found| matches!(found.status, BuildStatus::Affected | BuildStatus::Unknown))
     }
 }
 
@@ -180,6 +185,14 @@ fn github(id: &str, instances: &[Instance], http: &mut Http<'_>, resolution: &mu
                 name: Some(name),
             }) = vulnerability.package
             else {
+                for instance in instances {
+                    record_match(
+                        resolution,
+                        instance,
+                        BuildStatus::Unknown,
+                        "package identity unavailable",
+                    );
+                }
                 continue;
             };
             resolution.packages.push(format!("{ecosystem}:{name}"));
@@ -194,14 +207,25 @@ fn github(id: &str, instances: &[Instance], http: &mut Http<'_>, resolution: &mu
                         .map(str::to_owned)
                 });
             for instance in instances {
-                if !repository_package_is(instance, &ecosystem, &name) {
-                    continue;
+                match repository_package_match(instance, &ecosystem, &name) {
+                    Some(true) => {}
+                    Some(false) => continue,
+                    None => {
+                        record_match(
+                            resolution,
+                            instance,
+                            BuildStatus::Unknown,
+                            "package identity unavailable",
+                        );
+                        continue;
+                    }
                 }
                 let status = instance
                     .resolved_version
                     .as_deref()
-                    .and_then(|version| crate::identity::normalized_version(version).ok())
-                    .and_then(|version| github_range_match(&range, patched.as_deref(), &version))
+                    .and_then(|version| {
+                        github_range_match(&range, patched.as_deref(), version, &ecosystem)
+                    })
                     .map(|found| match found {
                         RangeMatch::Outside => BuildStatus::Outside,
                         RangeMatch::FixedOnLine => BuildStatus::FixedOnLine,
@@ -242,12 +266,16 @@ fn osv(id: &str, instances: &[Instance], http: &mut Http<'_>, resolution: &mut R
             .unwrap_or_default();
         resolution.title = super::truncate_chars(title, TITLE_LIMIT);
     }
+    osv_record(&record, instances, resolution);
+}
+
+pub(super) fn osv_record(record: &Value, instances: &[Instance], resolution: &mut Resolution) {
     let entries = record
         .get("affected")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    for entry in entries {
+    for entry in &entries {
         let ecosystem = entry
             .pointer("/package/ecosystem")
             .and_then(Value::as_str)
@@ -256,74 +284,34 @@ fn osv(id: &str, instances: &[Instance], http: &mut Http<'_>, resolution: &mut R
             .pointer("/package/name")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        if name.is_empty() {
-            continue;
-        }
-        resolution.packages.push(format!("{ecosystem}:{name}"));
-        let entry_purl = entry
-            .pointer("/package/purl")
-            .and_then(Value::as_str)
-            .map(purl_base)
-            .or_else(|| osv_purl(ecosystem, name));
-        let Some(entry_purl) = entry_purl else {
-            continue;
-        };
-        for instance in instances {
-            let same = instance
-                .purl
-                .as_deref()
-                .is_some_and(|purl| purl_base(purl).eq_ignore_ascii_case(&entry_purl));
-            if !same {
-                continue;
-            }
-            let status = instance
-                .resolved_version
-                .as_deref()
-                .and_then(|version| crate::identity::normalized_version(version).ok())
-                .and_then(|version| osv_entry_contains(&entry, &version))
-                .map(|contains| {
-                    if contains {
-                        BuildStatus::Affected
-                    } else {
-                        BuildStatus::Outside
-                    }
-                })
-                .unwrap_or(BuildStatus::Unknown);
-            record_match(resolution, instance, status, "OSV ranges");
+        if !name.is_empty() {
+            resolution.packages.push(format!("{ecosystem}:{name}"));
+        } else if let Some(purl) = entry.pointer("/package/purl").and_then(Value::as_str) {
+            resolution.packages.push(purl.to_owned());
         }
     }
-}
-
-fn purl_base(purl: &str) -> String {
-    purl.split(['@', '?', '#'])
-        .next()
-        .unwrap_or(purl)
-        .to_owned()
-}
-
-/// Package URL without version for an OSV ecosystem and package name.
-fn osv_purl(ecosystem: &str, name: &str) -> Option<String> {
-    let purl = match ecosystem {
-        "crates.io" => format!("pkg:cargo/{name}"),
-        "Maven" => {
-            let (group, artifact) = name.split_once(':')?;
-            format!("pkg:maven/{group}/{artifact}")
+    for instance in instances {
+        let version = instance.resolved_version.as_deref();
+        let purl = instance.purl.as_deref();
+        if entries
+            .iter()
+            .all(|entry| osv_package_identity(&entry["package"], purl, version) == Some(false))
+        {
+            continue;
         }
-        "npm" => match name.strip_prefix('@') {
-            Some(scoped) => format!("pkg:npm/%40{scoped}"),
-            None => format!("pkg:npm/{name}"),
-        },
-        "PyPI" => format!(
-            "pkg:pypi/{}",
-            name.to_ascii_lowercase().replace(['_', '.'], "-")
-        ),
-        "Go" => format!("pkg:golang/{name}"),
-        "RubyGems" => format!("pkg:gem/{name}"),
-        "NuGet" => format!("pkg:nuget/{name}"),
-        "Packagist" => format!("pkg:composer/{name}"),
-        _ => return None,
-    };
-    Some(purl)
+        let status = purl
+            .zip(version)
+            .and_then(|(purl, version)| osv_ranges_match(record, purl, version))
+            .map(|contains| {
+                if contains {
+                    BuildStatus::Affected
+                } else {
+                    BuildStatus::Outside
+                }
+            })
+            .unwrap_or(BuildStatus::Unknown);
+        record_match(resolution, instance, status, "OSV ranges");
+    }
 }
 
 fn cve_record(id: &str, http: &mut Http<'_>, resolution: &mut Resolution) {
@@ -346,3 +334,6 @@ fn cve_record(id: &str, http: &mut Http<'_>, resolution: &mut Resolution) {
         resolution.title = super::truncate_chars(title, TITLE_LIMIT);
     }
 }
+
+#[cfg(test)]
+mod tests;

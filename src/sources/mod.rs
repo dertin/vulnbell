@@ -1,12 +1,19 @@
 use crate::{
-    model::{
-        Applicability, Case, Claim, Coverage, CoverageState, Evidence, EvidenceKind, Instance,
-    },
+    model::{Applicability, Case, Claim, Coverage, CoverageState, EvidenceKind, Instance},
     network::Http,
 };
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
+
+mod repository;
+pub use repository::case_repository_advisory;
+use repository::repository_advisories;
+pub(crate) use repository::{
+    RangeMatch, github_range_match, repository_package_is, repository_package_match,
+};
+#[cfg(test)]
+use repository::{RepositoryAdvisory, github_repository, same_package};
 
 #[derive(Default)]
 pub struct Intelligence {
@@ -263,14 +270,21 @@ fn osv(instances: &[Instance], http: &mut Http<'_>, intelligence: &mut Intellige
                             EvidenceKind::Advisory,
                         )?;
                         for instance in instances {
-                            let excluded = match (&instance.purl, &instance.resolved_version) {
+                            let applicability = match (&instance.purl, &instance.resolved_version) {
                                 (Some(purl), Some(version)) => {
-                                    osv_ranges_exclude(&document, purl, version)
+                                    match osv_ranges_match(&document, purl, version) {
+                                        Some(true) => Applicability::Affected,
+                                        Some(false) => Applicability::NotAffected,
+                                        None => Applicability::Unknown,
+                                    }
                                 }
-                                _ => false,
+                                _ => Applicability::Unknown,
                             };
+                            if applicability == Applicability::Unknown {
+                                complete = false;
+                            }
                             let mut evidence = evidence.clone();
-                            if excluded {
+                            if applicability == Applicability::NotAffected {
                                 evidence.kind = EvidenceKind::NonApplicability;
                             }
                             intelligence.claims.push(Claim {
@@ -282,11 +296,7 @@ fn osv(instances: &[Instance], http: &mut Http<'_>, intelligence: &mut Intellige
                                     .summary
                                     .clone()
                                     .unwrap_or_else(|| advisory.id.clone()),
-                                applicability: if excluded {
-                                    Applicability::NotAffected
-                                } else {
-                                    Applicability::Affected
-                                },
+                                applicability,
                                 evidence,
                                 known_exploited: false,
                             });
@@ -298,7 +308,7 @@ fn osv(instances: &[Instance], http: &mut Http<'_>, intelligence: &mut Intellige
                 }
             }
             for instance in instances {
-                intelligence.coverage.push(Coverage::new("osv", &instance.id, if complete { CoverageState::Checked } else { CoverageState::Partial }, "exact-version batch query; withdrawn records excluded; detail/pagination failures reduce coverage"));
+                intelligence.coverage.push(Coverage::new("osv", &instance.id, if complete { CoverageState::Checked } else { CoverageState::Partial }, "exact-version batch query; withdrawn records excluded; indeterminate details or detail/pagination failures reduce coverage"));
             }
         }
     }
@@ -331,6 +341,11 @@ fn ghsa(instance: &Instance, http: &mut Http<'_>, intelligence: &mut Intelligenc
             "unsupported ecosystem mapping",
         ));
         return Ok(());
+    };
+    let name = if ecosystem == "maven" {
+        name.replace('/', ":")
+    } else {
+        name
     };
     let affects = format!(
         "{name}@{}",
@@ -387,503 +402,172 @@ fn ghsa(instance: &Instance, http: &mut Http<'_>, intelligence: &mut Intelligenc
     Ok(())
 }
 
-#[derive(Deserialize)]
-struct RepositoryAdvisory {
-    ghsa_id: String,
-    cve_id: Option<String>,
-    summary: String,
-    withdrawn_at: Option<String>,
-    #[serde(default)]
-    vulnerabilities: Vec<RepositoryVulnerability>,
-}
-#[derive(Deserialize)]
-struct RepositoryVulnerability {
-    package: Option<RepositoryPackage>,
-    vulnerable_version_range: Option<String>,
-    patched_versions: Option<String>,
-}
-#[derive(Deserialize)]
-struct RepositoryPackage {
-    ecosystem: String,
-    name: Option<String>,
-}
-
-/// Match an official published GitHub repository advisory to an existing case's exact instances.
-/// Arbitrary web documents and advisory links to other repositories remain context only.
-pub fn case_repository_advisory(
-    case: &Case,
-    url: &str,
-    bytes: &[u8],
-    evidence: &Evidence,
-) -> Option<(String, Vec<Claim>)> {
-    let Ok(url) = url::Url::parse(url) else {
-        return None;
-    };
-    if url.scheme() != "https"
-        || url.host_str() != Some("api.github.com")
-        || url.query().is_some()
-        || url.fragment().is_some()
-        || url.port().is_some()
-        || !url.username().is_empty()
-        || url.password().is_some()
-    {
-        return None;
-    }
-    let segments: Vec<&str> = url.path_segments().into_iter().flatten().collect();
-    let ["repos", owner, repository, "security-advisories", id] = segments.as_slice() else {
-        return None;
-    };
-    let expected = format!("https://github.com/{owner}/{repository}/security/advisories/{id}");
-    if !case
-        .upstream_events
-        .iter()
-        .any(|event| event.url == expected)
-    {
-        return None;
-    }
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
-        return None;
-    };
-    let state = value.get("state").and_then(serde_json::Value::as_str)?;
-    if state != "published" && state != "withdrawn" {
-        return None;
-    }
-    let withdrawn = state == "withdrawn";
-    let Ok(advisory) = serde_json::from_value::<RepositoryAdvisory>(value) else {
-        return None;
-    };
-    if advisory.ghsa_id != *id {
-        return None;
-    }
-    if withdrawn || advisory.withdrawn_at.is_some() {
-        return Some((id.to_string(), Vec::new()));
-    }
-    let expected_repository = format!("{owner}/{repository}");
-    let mut claims = Vec::new();
-    for instance in &case.instances {
-        if instance
-            .upstream
-            .as_deref()
-            .and_then(github_repository)
-            .as_deref()
-            != Some(expected_repository.as_str())
-        {
-            continue;
-        }
-        let Some(version) = instance
-            .resolved_version
-            .as_deref()
-            .and_then(|value| crate::identity::normalized_version(value).ok())
-        else {
-            continue;
-        };
-        let affected = advisory.vulnerabilities.iter().any(|vulnerability| {
-            let Some(package) = &vulnerability.package else {
-                return false;
-            };
-            package
-                .name
-                .as_deref()
-                .is_some_and(|name| repository_package_is(instance, &package.ecosystem, name))
-                && vulnerability
-                    .vulnerable_version_range
-                    .as_deref()
-                    .and_then(|range| {
-                        github_range_match(
-                            range,
-                            vulnerability.patched_versions.as_deref(),
-                            &version,
-                        )
-                    })
-                    == Some(RangeMatch::Affected)
-        });
-        if affected {
-            let mut evidence = evidence.clone();
-            evidence.kind = EvidenceKind::Advisory;
-            claims.push(Claim {
-                id: advisory.ghsa_id.clone(),
-                source: "github_repository".into(),
-                aliases: advisory.cve_id.iter().cloned().collect(),
-                instance_id: instance.id.clone(),
-                summary: advisory.summary.clone(),
-                applicability: Applicability::Affected,
-                evidence,
-                known_exploited: false,
-            });
-        }
-    }
-    Some((id.to_string(), claims))
-}
-
-/// Advisories that maintainers publish in their repository reach the global GitHub database
-/// and OSV only after GitHub reviews them; until then the repository is the vendor's statement.
-fn repository_advisories(
-    instances: &[Instance],
-    http: &mut Http<'_>,
-    intelligence: &mut Intelligence,
-    research: &crate::profile::Research,
-    previous_cases: &[Case],
-) {
-    // A previously observed repository advisory is a concrete reason to refresh that source
-    // even for a deferred dependency; this does not expand its issues/PR tracker scope.
-    let previously_claimed: std::collections::HashSet<&str> = previous_cases
-        .iter()
-        .flat_map(|case| &case.claims)
-        .filter(|claim| claim.source == "github_repository")
-        .map(|claim| claim.instance_id.as_str())
-        .collect();
-    let mut by_repository: BTreeMap<String, Vec<(&Instance, &'static str, String)>> =
-        BTreeMap::new();
-    for instance in instances.iter().filter(|instance| {
-        research.tracks(instance) || previously_claimed.contains(instance.id.as_str())
-    }) {
-        if instance.resolved_version.is_none() {
-            continue;
-        }
-        let Some(repository) = instance.upstream.as_deref().and_then(github_repository) else {
-            continue;
-        };
-        let Ok(Some((ecosystem, name))) = github_package(instance) else {
-            continue;
-        };
-        by_repository
-            .entry(repository)
-            .or_default()
-            .push((instance, ecosystem, name));
-    }
-    for (repository, members) in by_repository {
-        let (state, detail) = match repository_claims(
-            &repository,
-            &members,
-            http,
-            &mut intelligence.claims,
-        ) {
-            Ok(unevaluable) if unevaluable.is_empty() => (
-                CoverageState::Checked,
-                format!("published security advisories of {repository}"),
-            ),
-            Ok(unevaluable) => (
-                CoverageState::Partial,
-                format!(
-                    "published security advisories of {repository}; ranges not evaluable without guessing: {}",
-                    unevaluable.join(", ")
-                ),
-            ),
-            Err(error) => (CoverageState::Partial, error.to_string()),
-        };
-        for (instance, _, _) in members {
-            intelligence.coverage.push(Coverage::new(
-                "repository_advisories",
-                &instance.id,
-                state,
-                &detail,
-            ));
-        }
-    }
-}
-
-/// Pushes affected claims and returns the advisory IDs whose range could not be evaluated.
-fn repository_claims(
-    repository: &str,
-    members: &[(&Instance, &'static str, String)],
-    http: &mut Http<'_>,
-    claims: &mut Vec<Claim>,
-) -> Result<Vec<String>> {
-    let mut unevaluable = Vec::new();
-    for page in 1..=10 {
-        let url = format!(
-            "https://api.github.com/repos/{repository}/security-advisories?state=published&per_page=100&page={page}"
-        );
-        let response = http.get(&url)?;
-        let advisories: Vec<RepositoryAdvisory> = response.json()?;
-        let length = advisories.len();
-        let evidence = http.store.record_evidence(
-            &response.body,
-            "github_repository_advisories",
-            Some(url),
-            EvidenceKind::Advisory,
-        )?;
-        for advisory in advisories {
-            if advisory.withdrawn_at.is_some() {
-                continue;
-            }
-            for (instance, ecosystem, name) in members {
-                let Some(Ok(version)) = instance
-                    .resolved_version
-                    .as_deref()
-                    .map(crate::identity::normalized_version)
-                else {
-                    continue;
-                };
-                let mut strongest = RangeMatch::Outside;
-                for vulnerability in &advisory.vulnerabilities {
-                    let Some(package) = &vulnerability.package else {
-                        continue;
-                    };
-                    if package.ecosystem != *ecosystem
-                        || !package.name.as_deref().is_some_and(|advisory_name| {
-                            same_package(ecosystem, advisory_name, name)
-                        })
-                    {
-                        continue;
-                    }
-                    match vulnerability
-                        .vulnerable_version_range
-                        .as_deref()
-                        .and_then(|range| {
-                            github_range_match(
-                                range,
-                                vulnerability.patched_versions.as_deref(),
-                                &version,
-                            )
-                        }) {
-                        Some(found) => strongest = strongest.max(found),
-                        None => unevaluable.push(advisory.ghsa_id.clone()),
-                    }
-                }
-                let (applicability, kind) = match strongest {
-                    RangeMatch::Outside => continue,
-                    RangeMatch::FixedOnLine => {
-                        (Applicability::NotAffected, EvidenceKind::NonApplicability)
-                    }
-                    RangeMatch::Affected => (Applicability::Affected, EvidenceKind::Advisory),
-                };
-                let mut evidence = evidence.clone();
-                evidence.kind = kind;
-                claims.push(Claim {
-                    id: advisory.ghsa_id.clone(),
-                    source: "github_repository".into(),
-                    aliases: advisory.cve_id.iter().cloned().collect(),
-                    instance_id: instance.id.clone(),
-                    summary: advisory.summary.clone(),
-                    applicability,
-                    evidence,
-                    known_exploited: false,
-                });
-            }
-        }
-        if length < 100 && !response.truncated {
-            unevaluable.sort_unstable();
-            unevaluable.dedup();
-            return Ok(unevaluable);
-        }
-    }
-    bail!("more than 10 pages of repository advisories")
-}
-
-/// `owner/repo` of a GitHub repository URL.
-fn github_repository(upstream: &str) -> Option<String> {
-    let path = upstream.strip_prefix("https://github.com/")?;
-    let mut segments = path.split('/').filter(|segment| !segment.is_empty());
-    let owner = segments.next()?;
-    let repository = segments.next()?.trim_end_matches(".git");
-    if repository.is_empty() {
-        return None;
-    }
-    Some(format!("{owner}/{repository}"))
-}
-
-/// Whether a package named by a repository advisory is this instance.
-pub(crate) fn repository_package_is(
-    instance: &Instance,
-    advisory_ecosystem: &str,
-    advisory_name: &str,
-) -> bool {
-    matches!(
-        github_package(instance),
-        Ok(Some((ecosystem, name)))
-            if ecosystem == advisory_ecosystem && same_package(ecosystem, advisory_name, &name)
-    )
-}
-
-pub(crate) fn same_package(ecosystem: &str, advisory_name: &str, name: &str) -> bool {
-    match ecosystem {
-        "maven" => advisory_name.replace(':', "/") == name,
-        "pip" => {
-            let normalize = |value: &str| value.to_ascii_lowercase().replace(['_', '.'], "-");
-            normalize(advisory_name) == normalize(name)
-        }
-        _ => advisory_name == name,
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum RangeMatch {
-    Outside,
-    /// The range alone contains the version, but `patched_versions` closes it before.
-    FixedOnLine,
-    Affected,
-}
-
-/// GitHub ranges are comma-separated comparators (`>= 3.0.0, < 3.6.0`) or a list of exact
-/// versions (`0.23.44,0.23.45`). Maintainers often state only a lower bound and leave the end
-/// to `patched_versions`. `None` when any term needs guessing or the bounds contradict.
-pub(crate) fn github_range_match(
-    range: &str,
-    patched: Option<&str>,
-    version: &semver::Version,
-) -> Option<RangeMatch> {
-    let terms: Vec<&str> = range
-        .split(',')
-        .map(str::trim)
-        .filter(|term| !term.is_empty())
-        .collect();
-    if terms.is_empty() {
-        return None;
-    }
-    if terms
-        .iter()
-        .all(|term| term.starts_with(|first: char| first.is_ascii_digit()))
-    {
-        let mut listed = RangeMatch::Outside;
-        for term in terms {
-            if &crate::identity::normalized_version(term).ok()? == version {
-                listed = RangeMatch::Affected;
-            }
-        }
-        return Some(listed);
-    }
-    let mut contains = true;
-    let mut lower: Option<semver::Version> = None;
-    let mut upper: Option<semver::Version> = None;
-    for term in terms {
-        let (operator, value) = ["<=", ">=", "<", ">", "="]
-            .into_iter()
-            .find_map(|operator| Some((operator, term.strip_prefix(operator)?.trim())))?;
-        if value.contains(char::is_whitespace) {
-            return None;
-        }
-        let bound = crate::identity::normalized_version(value).ok()?;
-        contains &= match operator {
-            "<=" => version <= &bound,
-            ">=" => version >= &bound,
-            "<" => version < &bound,
-            ">" => version > &bound,
-            _ => version == &bound,
-        };
-        if operator != "<" && operator != "<=" && lower.as_ref().is_none_or(|kept| &bound > kept) {
-            lower = Some(bound.clone());
-        }
-        if operator != ">" && operator != ">=" && upper.as_ref().is_none_or(|kept| &bound < kept) {
-            upper = Some(bound);
-        }
-    }
-    if let (Some(lower), Some(upper)) = (&lower, &upper)
-        && lower > upper
-    {
-        return None;
-    }
-    if !contains {
-        return Some(RangeMatch::Outside);
-    }
-    match patched.map(str::trim).filter(|patched| !patched.is_empty()) {
-        Some(patched) if upper.is_none() => {
-            patched_line_excludes(patched, version).map(|excluded| {
-                if excluded {
-                    RangeMatch::FixedOnLine
-                } else {
-                    RangeMatch::Affected
-                }
-            })
-        }
-        // A sole fix inside the range at or below the version contradicts the range
-        // (`>= 2.21.0, <= 2.22.0` patched in `2.21.5`, or a typo such as `< 26.37.1` patched in
-        // `26.7.1`); which side the maintainer meant cannot be told.
-        Some(patched)
-            if sole_fix(patched).is_some_and(|fix| {
-                &fix <= version && lower.as_ref().is_none_or(|lower| &fix >= lower)
-            }) =>
-        {
-            None
-        }
-        _ => Some(RangeMatch::Affected),
-    }
-}
-
-fn sole_fix(patched: &str) -> Option<semver::Version> {
-    let mut items = patched
-        .split(',')
-        .map(str::trim)
-        .filter(|item| !item.is_empty());
-    let item = items.next()?;
-    if items.next().is_some() {
-        return None;
-    }
-    crate::identity::normalized_version(item.trim_start_matches(['>', '=', '~', '^']).trim()).ok()
-}
-
-/// Whether the version is at or past the fix of its release line; a fix per line is common
-/// (`0.104.0-alpha.5, 0.103.10`). `None` when the line cannot be told.
-fn patched_line_excludes(patched: &str, version: &semver::Version) -> Option<bool> {
-    let mut fixes = Vec::new();
-    for item in patched
-        .split(',')
-        .map(str::trim)
-        .filter(|item| !item.is_empty())
-    {
-        let value = item.trim_start_matches(['>', '=', '~', '^']).trim();
-        fixes.push(crate::identity::normalized_version(value).ok()?);
-    }
-    if let [fix] = fixes.as_slice() {
-        return Some(version >= fix);
-    }
-    let line = |value: &semver::Version| {
-        if value.major == 0 {
-            (0, value.minor)
-        } else {
-            (value.major, 0)
-        }
-    };
-    if let Some(fix) = fixes.iter().find(|fix| line(fix) == line(version)) {
-        return Some(version >= fix);
-    }
-    if !fixes.is_empty() && fixes.iter().all(|fix| version > fix) {
-        return Some(true);
-    }
-    None
-}
 pub fn encode(value: &str) -> String {
     url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
-/// GHSA ranges without a patched version reach OSV as an open `introduced: "0"` range; the real
-/// bound survives only in `database_specific.last_known_affected_version_range`, so OSV matches
-/// every later version. True only when every entry for this package can be evaluated and none
-/// contains the version; any doubt keeps the match.
-fn osv_ranges_exclude(advisory: &serde_json::Value, purl: &str, version: &str) -> bool {
-    let Ok(version) = crate::identity::normalized_version(version) else {
-        return false;
-    };
-    let base = purl.split(['@', '?', '#']).next().unwrap_or(purl);
-    let Some(entries) = advisory
-        .get("affected")
-        .and_then(serde_json::Value::as_array)
-    else {
-        return false;
-    };
+/// Evaluate all entries for the package. Unreadable entries prevent exclusion.
+pub(crate) fn osv_ranges_match(
+    advisory: &serde_json::Value,
+    purl: &str,
+    version: &str,
+) -> Option<bool> {
+    let raw_version = version;
+    let target: packageurl::PackageUrl<'_> = purl.parse().ok()?;
+    let entries = advisory.get("affected")?.as_array()?;
     let mut matched = false;
+    let mut unknown = false;
     for entry in entries {
-        match entry
-            .pointer("/package/purl")
-            .and_then(serde_json::Value::as_str)
-        {
-            Some(entry_purl) if entry_purl.split(['@', '?', '#']).next() == Some(base) => {}
-            Some(_) => continue,
-            None => return false,
+        match osv_package_identity(&entry["package"], Some(purl), Some(raw_version)) {
+            Some(true) => {}
+            Some(false) => continue,
+            None => {
+                unknown = true;
+                continue;
+            }
         }
         matched = true;
-        if osv_entry_contains(entry, &version) != Some(false) {
-            return false;
+        match osv_entry_contains(entry, raw_version, target.ty()) {
+            Some(true) => return Some(true),
+            Some(false) => {}
+            None => unknown = true,
         }
     }
-    matched
+    if matched && !unknown {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn osv_package_identity(
+    package: &serde_json::Value,
+    purl: Option<&str>,
+    version: Option<&str>,
+) -> Option<bool> {
+    let target: packageurl::PackageUrl<'_> = purl?.parse().ok()?;
+    let entry_purl = package
+        .get("purl")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            osv_purl(
+                package.get("ecosystem")?.as_str()?,
+                package.get("name")?.as_str()?,
+            )
+        })?;
+    let entry: packageurl::PackageUrl<'_> = entry_purl.parse().ok()?;
+    let names_match = if entry.ty() == "pypi" && target.ty() == "pypi" {
+        normalize_pypi(entry.name()) == normalize_pypi(target.name())
+    } else {
+        entry.name() == target.name()
+    };
+    if entry.ty() != target.ty() || entry.namespace() != target.namespace() || !names_match {
+        if entry.ty() == target.ty()
+            && entry.name().eq_ignore_ascii_case(target.name())
+            && entry
+                .namespace()
+                .unwrap_or("")
+                .eq_ignore_ascii_case(target.namespace().unwrap_or(""))
+        {
+            return None;
+        }
+        return Some(false);
+    }
+    if (!entry.qualifiers().is_empty() && entry.qualifiers() != target.qualifiers())
+        || (entry.subpath().is_some() && entry.subpath() != target.subpath())
+    {
+        return None;
+    }
+    if let Some(entry_version) = entry.version() {
+        let target_version = version?;
+        if entry_version != target_version
+            && crate::identity::normalized_version(entry_version)
+                .ok()
+                .zip(crate::identity::normalized_version(target_version).ok())
+                .is_none_or(|(entry, target)| entry != target)
+        {
+            return None;
+        }
+    }
+    Some(true)
+}
+
+pub(crate) fn normalize_pypi(name: &str) -> String {
+    let mut result = String::new();
+    for character in name.chars() {
+        if matches!(character, '-' | '_' | '.') {
+            if !result.ends_with('-') {
+                result.push('-');
+            }
+        } else {
+            result.push(character.to_ascii_lowercase());
+        }
+    }
+    result
+}
+
+/// Package URL without version for an OSV ecosystem and package name.
+pub(crate) fn osv_purl(ecosystem: &str, name: &str) -> Option<String> {
+    let purl = match ecosystem {
+        "crates.io" => format!("pkg:cargo/{name}"),
+        "Maven" => {
+            let (group, artifact) = name.split_once(':')?;
+            format!("pkg:maven/{group}/{artifact}")
+        }
+        "npm" => match name.strip_prefix('@') {
+            Some(scoped) => format!("pkg:npm/%40{scoped}"),
+            None => format!("pkg:npm/{name}"),
+        },
+        "PyPI" => format!("pkg:pypi/{}", normalize_pypi(name)),
+        "Go" => format!("pkg:golang/{name}"),
+        "RubyGems" => format!("pkg:gem/{name}"),
+        "NuGet" => format!("pkg:nuget/{name}"),
+        "Packagist" => format!("pkg:composer/{name}"),
+        _ => return None,
+    };
+    Some(purl)
+}
+
+pub(crate) fn precedence_version(value: &str) -> Option<semver::Version> {
+    let mut version = crate::identity::normalized_version(value).ok()?;
+    version.build = semver::BuildMetadata::EMPTY;
+    Some(version)
+}
+
+pub(crate) fn ecosystem_version_orderable(ecosystem: &str, value: &str) -> bool {
+    match ecosystem.to_ascii_lowercase().as_str() {
+        "cargo" | "crates.io" | "rust" | "npm" => semver::Version::parse(value).is_ok(),
+        "maven" | "pypi" | "pip" | "go" | "golang" | "rubygems" | "gem" | "nuget" | "packagist"
+        | "composer" => {
+            let parts: Vec<&str> = value.split('.').collect();
+            (2..=3).contains(&parts.len())
+                && parts
+                    .iter()
+                    .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+                && crate::identity::normalized_version(value).is_ok()
+        }
+        _ => false,
+    }
 }
 
 /// `None` when the entry cannot be evaluated without guessing (Git ranges, unparsable versions,
 /// compound GHSA bounds).
 pub(crate) fn osv_entry_contains(
     entry: &serde_json::Value,
-    version: &semver::Version,
+    raw_version: &str,
+    ecosystem: &str,
 ) -> Option<bool> {
+    let exact_listed = entry
+        .get("versions")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|listed| {
+            listed
+                .iter()
+                .any(|value| value.as_str() == Some(raw_version))
+        });
+    let Some(version) = crate::identity::normalized_version(raw_version).ok() else {
+        return exact_listed.then_some(true);
+    };
     let parse = |value: &str| {
         if value == "0" {
             Some(semver::Version::new(0, 0, 0))
@@ -891,25 +575,8 @@ pub(crate) fn osv_entry_contains(
             crate::identity::normalized_version(value).ok()
         }
     };
-    let ranges = entry.get("ranges")?.as_array()?;
-    let ghsa_bound = entry
-        .pointer("/database_specific/last_known_affected_version_range")
-        .and_then(serde_json::Value::as_str);
-    let open_only = ranges.iter().all(|range| {
-        range
-            .get("events")
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(|events| {
-                events.len() == 1
-                    && events[0]
-                        .get("introduced")
-                        .and_then(serde_json::Value::as_str)
-                        == Some("0")
-            })
-    });
-    // The enumerated versions of an open GHSA range repeat the conversion error.
-    if !(open_only && ghsa_bound.is_some())
-        && entry
+    let listed = exact_listed
+        || entry
             .get("versions")
             .and_then(serde_json::Value::as_array)
             .is_some_and(|listed| {
@@ -917,33 +584,75 @@ pub(crate) fn osv_entry_contains(
                     .iter()
                     .filter_map(serde_json::Value::as_str)
                     .filter_map(parse)
-                    .any(|listed| &listed == version)
-            })
-    {
-        return Some(true);
+                    .any(|listed| listed == version)
+            });
+    let Some(ranges) = entry.get("ranges").and_then(serde_json::Value::as_array) else {
+        return listed.then_some(true);
+    };
+    let ghsa_bound = entry
+        .pointer("/database_specific/last_known_affected_version_range")
+        .and_then(serde_json::Value::as_str);
+    if ranges.is_empty() {
+        return listed.then_some(true);
     }
+    let version = precedence_version(raw_version)?;
+    let parse = |value: &str| {
+        if value == "0" {
+            semver::Version::parse("0.0.0-0").ok()
+        } else {
+            precedence_version(value)
+        }
+    };
+    let mut unknown = false;
     for range in ranges {
-        if range.get("type")?.as_str()? == "GIT" {
+        if !matches!(range.get("type")?.as_str()?, "ECOSYSTEM" | "SEMVER") {
             return None;
         }
+        if range["type"] == "ECOSYSTEM" {
+            let safe = ecosystem_version_orderable(ecosystem, raw_version)
+                && range.get("events")?.as_array()?.iter().all(|event| {
+                    event.as_object().is_some_and(|fields| {
+                        fields.values().all(|value| {
+                            value.as_str().is_some_and(|value| {
+                                value == "0" || ecosystem_version_orderable(ecosystem, value)
+                            })
+                        })
+                    })
+                })
+                && ghsa_bound.is_none_or(|bound| {
+                    let value = bound.trim().trim_start_matches(['<', '=']).trim();
+                    ecosystem_version_orderable(ecosystem, value)
+                });
+            if !safe {
+                unknown = true;
+                continue;
+            }
+        }
         let mut start: Option<semver::Version> = None;
-        for event in range.get("events")?.as_array()? {
-            let (kind, value) = event.as_object()?.iter().next()?;
+        let events = range.get("events")?.as_array()?;
+        if events.is_empty() {
+            return None;
+        }
+        for event in events {
+            let fields = event.as_object()?;
+            if fields.len() != 1 {
+                return None;
+            }
+            let (kind, value) = fields.iter().next()?;
             let bound = parse(value.as_str()?)?;
             match kind.as_str() {
-                "introduced" => start = Some(bound),
-                "fixed" | "limit" => {
-                    if start
-                        .take()
-                        .is_some_and(|start| &start <= version && version < &bound)
-                    {
-                        return Some(true);
+                "introduced" => {
+                    if start.replace(bound).is_some() {
+                        return None;
                     }
                 }
-                "last_affected" => {
-                    if start
-                        .take()
-                        .is_some_and(|start| &start <= version && version <= &bound)
+                "fixed" | "limit" | "last_affected" => {
+                    let begin = start.take()?;
+                    if bound < begin {
+                        return None;
+                    }
+                    if begin <= version
+                        && (version < bound || kind == "last_affected" && version == bound)
                     {
                         return Some(true);
                     }
@@ -951,8 +660,11 @@ pub(crate) fn osv_entry_contains(
                 _ => return None,
             }
         }
-        if start.is_some_and(|start| &start <= version) {
-            let bound = ghsa_bound?.trim();
+        if start.is_some_and(|start| start <= version) {
+            let Some(bound) = ghsa_bound else {
+                return Some(true);
+            };
+            let bound = bound.trim();
             if bound.contains(',') {
                 return None;
             }
@@ -961,12 +673,18 @@ pub(crate) fn osv_entry_contains(
                 None => (false, bound.strip_prefix('<')?),
             };
             let upper = parse(value.trim())?;
-            if version < &upper || inclusive && version == &upper {
+            if version < upper || inclusive && version == upper {
                 return Some(true);
             }
         }
     }
-    Some(false)
+    if listed && unknown {
+        Some(true)
+    } else if listed || unknown {
+        None
+    } else {
+        Some(false)
+    }
 }
 fn cpe_applies(candidate: &CpeMatch, product: &str, version: &str) -> Result<Option<bool>> {
     if !candidate.vulnerable || !candidate.criteria.starts_with(&format!("{product}:")) {

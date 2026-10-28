@@ -6,7 +6,7 @@ use crate::{
 use anyhow::{Context, Result, bail};
 use rusqlite::{OptionalExtension, params};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     io::Read,
     path::Path,
 };
@@ -53,7 +53,11 @@ pub(super) fn first_party(roots: &[String]) -> BTreeSet<String> {
         .filter_map(|root| {
             crate::read_limited(&Path::new(root).join("pom.xml"), 2 * 1024 * 1024).ok()
         })
-        .filter_map(|pom| registry::maven_reference(&String::from_utf8_lossy(&pom)))
+        .filter_map(|pom| {
+            std::str::from_utf8(&pom)
+                .ok()
+                .and_then(registry::maven_reference)
+        })
         .collect()
 }
 
@@ -359,6 +363,7 @@ pub(super) fn apply(store: &Store, scope: &str, instances: &mut [Instance]) -> R
 /// documentation or registry records.
 pub(super) fn mapped(store: &Store, scope: &str) -> Result<Vec<(String, String)>> {
     let mut sources = Vec::new();
+    let mut seen = HashSet::new();
     if store.meta("last_snapshot")?.is_none() {
         return Ok(sources);
     }
@@ -388,9 +393,11 @@ pub(super) fn mapped(store: &Store, scope: &str) -> Result<Vec<(String, String)>
                     .url
                     .as_deref()
                     .and_then(crate::identity::canonical_repository)
-                && !sources.contains(&(observation.instance_id.clone(), url.clone()))
             {
-                sources.push((observation.instance_id.clone(), url));
+                let entry = (observation.instance_id.clone(), url);
+                if seen.insert(entry.clone()) {
+                    sources.push(entry);
+                }
             }
         }
     }

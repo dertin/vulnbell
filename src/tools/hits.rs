@@ -14,7 +14,7 @@ use crate::{
     output::text::{self, fill},
     profile::Language,
     research::{Assessment, NotApplicableReason, ResearchTarget},
-    sources::{RangeMatch, github_range_match, repository_package_is},
+    sources::{RangeMatch, github_range_match, repository_package_match},
     store::Store,
 };
 use anyhow::Result;
@@ -88,58 +88,52 @@ pub fn prepare_with_recheck(
     offline: bool,
     recheck: bool,
 ) -> Result<Prepared> {
+    prepare_for_upstream(store, raw, offline, recheck, None)
+}
+
+pub fn prepare_for_upstream(
+    store: &Store,
+    raw: &Path,
+    offline: bool,
+    recheck: bool,
+    upstream: Option<&str>,
+) -> Result<Prepared> {
     let plan = crate::research::full_plan(store)?;
+    if upstream.is_some_and(|url| !plan.targets.iter().any(|target| target.upstream == url)) {
+        anyhow::bail!("upstream is outside the current research plan");
+    }
     let snapshot = store.latest()?;
+    let instance_index = crate::research::index_instances(&snapshot.instances);
     let mut screened_targets: Vec<Screened> = Vec::new();
     let mut cited: BTreeSet<String> = BTreeSet::new();
-    for target in plan.targets {
-        let mut collected = raw::read_target(raw, &target);
-        let issue_bodies: HashMap<String, (String, bool)> = collected
+    let mut raw_budget = raw::RawBudget::default();
+    for target in plan
+        .targets
+        .into_iter()
+        .filter(|target| upstream.is_none_or(|url| target.upstream == url))
+    {
+        let mut collected = raw::read_target_with_budget(raw, &target, &mut raw_budget);
+        let issue_signals: HashMap<String, screen::LinkedSignals> = collected
             .items
             .iter()
             .chain(&collected.linked_issues)
             .filter(|item| item.kind == ItemKind::Issue)
-            .map(|item| {
-                (
-                    item.key.clone(),
-                    (
-                        format!(
-                            "{}\n{}\n{}",
-                            item.title,
-                            item.labels.join(" "),
-                            screen::clean(&item.body)
-                        ),
-                        screen::screen(item, "").is_some(),
-                    ),
-                )
-            })
+            .map(|item| (item.key.clone(), screen::LinkedSignals::from_issue(item)))
             .collect();
         let mut not_selected = 0;
         let mut selected_keys = HashSet::new();
         let mut items = Vec::new();
         for item in std::mem::take(&mut collected.items) {
-            let linked_issues: Vec<&(String, bool)> = item
-                .closes
-                .iter()
-                .filter_map(|key| issue_bodies.get(key))
-                .collect();
-            let linked: String = linked_issues
-                .iter()
-                .map(|(text, _)| text.as_str())
-                .collect::<Vec<_>>()
-                .join("\n");
-            let linked_selected = linked_issues.iter().any(|(_, selected)| *selected);
-            let Some(screen) = screen::screen_with_linked(&item, &linked, linked_selected) else {
+            let mut linked = screen::LinkedSignals::default();
+            for issue in item.closes.iter().filter_map(|key| issue_signals.get(key)) {
+                linked.merge(issue);
+            }
+            let Some(screen) = screen::screen_with_signals(&item, &linked) else {
                 not_selected += 1;
                 collected.items.push(item);
                 continue;
             };
-            let unchanged = !recheck
-                && target.seen.iter().any(|seen| {
-                    seen.context_current
-                        && seen.url == item.url
-                        && super::same_instant(&seen.updated_at, &item.updated_at)
-                });
+            let unchanged = !recheck && already_reviewed(&target, &item, &screen);
             if !unchanged {
                 cited.extend(screen.identifiers.iter().cloned());
             }
@@ -161,11 +155,8 @@ pub fn prepare_with_recheck(
     let language = crate::output::report_language(store);
     let mut targets = Vec::new();
     for screened in screened_targets {
-        let target_instances: Vec<&Instance> = snapshot
-            .instances
-            .iter()
-            .filter(|instance| screened.target.instance_ids.contains(&instance.id))
-            .collect();
+        let target_instances =
+            crate::research::select_instances(&screened.target.instance_ids, &instance_index);
         let context = RuleContext {
             collected: &screened.collected,
             selected_keys: &screened.selected_keys,
@@ -204,6 +195,15 @@ pub fn prepare_with_recheck(
     })
 }
 
+pub(super) fn already_reviewed(target: &ResearchTarget, item: &Item, screen: &Screen) -> bool {
+    target.seen.iter().any(|seen| {
+        seen.context_current
+            && seen.url == item.url
+            && super::same_instant(&seen.updated_at, &item.updated_at)
+            && (!screen.identifiers_truncated || seen.assessment == Some(Assessment::Review))
+    })
+}
+
 pub(super) struct RuleContext<'a> {
     pub(super) collected: &'a TargetItems,
     pub(super) selected_keys: &'a HashSet<String>,
@@ -227,11 +227,17 @@ pub(super) fn disposition(item: &Item, screen: &Screen, context: &RuleContext<'_
         })
         .cloned()
         .collect();
+    if screen.identifiers_truncated {
+        return Disposition::Review { unpublished };
+    }
     if item.kind == ItemKind::Advisory {
         return advisory_rule(item, context);
     }
     if item.kind == ItemKind::Release {
-        if !screen.identifiers.is_empty() && unpublished.is_empty() {
+        if screen.sole_advisory_identifiers
+            && !screen.identifiers.is_empty()
+            && unpublished.is_empty()
+        {
             return Disposition::Rule(RuleOutcome {
                 assessment: Assessment::Informational,
                 reason: None,
@@ -257,6 +263,7 @@ pub(super) fn disposition(item: &Item, screen: &Screen, context: &RuleContext<'_
         });
     }
     if screen.dependency_update
+        && screen.sole_advisory_identifiers
         && let Some(outcome) = dependency_relay(screen, context)
     {
         return Disposition::Rule(outcome);
@@ -338,16 +345,25 @@ fn advisory_rule(item: &Item, context: &RuleContext<'_>) -> Disposition {
     let mut matches: Vec<(&Instance, BuildStatus)> = Vec::new();
     for package in &advisory.packages {
         for instance in context.target_instances {
-            if !repository_package_is(instance, &package.ecosystem, &package.name) {
-                continue;
+            match repository_package_match(instance, &package.ecosystem, &package.name) {
+                Some(true) => {}
+                Some(false) => continue,
+                None => {
+                    matches.push((instance, BuildStatus::Unknown));
+                    continue;
+                }
             }
             let patched = Some(package.patched.as_str()).filter(|patched| !patched.is_empty());
             let status = instance
                 .resolved_version
                 .as_deref()
-                .and_then(|version| crate::identity::normalized_version(version).ok())
                 .and_then(|version| {
-                    github_range_match(&package.vulnerable_range, patched, &version)
+                    github_range_match(
+                        &package.vulnerable_range,
+                        patched,
+                        version,
+                        &package.ecosystem,
+                    )
                 })
                 .map(|found| match found {
                     RangeMatch::Outside => BuildStatus::Outside,
@@ -486,6 +502,8 @@ pub struct ReviewItem {
     pub priority: ReviewPriority,
     pub signals: Vec<SignalPlace>,
     pub identifiers: Vec<String>,
+    /// Review the full source when additional identifiers were omitted.
+    pub identifiers_truncated: bool,
     pub dependency_update: bool,
     pub snippets: Vec<String>,
     pub closes: Vec<String>,
@@ -651,6 +669,7 @@ pub fn packet_with_recheck(
                 priority: review_priority(entry, resolutions, &prepared_target.target.instance_ids),
                 signals: entry.screen.places.clone(),
                 identifiers: entry.screen.identifiers.clone(),
+                identifiers_truncated: entry.screen.identifiers_truncated,
                 dependency_update: entry.screen.dependency_update,
                 snippets: entry.screen.snippets.clone(),
                 closes: entry.item.closes.clone(),

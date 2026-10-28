@@ -7,195 +7,122 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
+use serde::Deserialize;
+use std::collections::{BTreeMap, HashMap, HashSet};
 pub(crate) mod automation;
+mod contracts;
 pub(crate) mod release;
+pub use contracts::{
+    Assessment, EventKind, FollowSuggestion, NotApplicableReason, ResearchBatch, ResearchComponent,
+    ResearchEvent, ResearchPlan, ResearchTarget, ReviewCoverage, SeenEvent, SourceContinuation,
+    SourceReview,
+};
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ResearchBatch {
-    pub schema_version: u32,
-    pub project_id: String,
-    pub snapshot_id: String,
-    pub sources: Vec<SourceReview>,
-    pub events: Vec<ResearchEvent>,
+pub(crate) type InstanceIndex<'a> = HashMap<&'a str, Vec<(usize, &'a Instance)>>;
+
+pub(crate) fn index_instances(instances: &[Instance]) -> InstanceIndex<'_> {
+    let mut index = HashMap::new();
+    for (position, instance) in instances.iter().enumerate() {
+        index
+            .entry(instance.id.as_str())
+            .or_insert_with(Vec::new)
+            .push((position, instance));
+    }
+    index
 }
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct SourceReview {
-    pub upstream: String,
-    pub from: String,
-    pub until: String,
-    pub coverage: ReviewCoverage,
-    pub detail: String,
-    pub continuation: Option<SourceContinuation>,
+
+pub(crate) fn select_instances<'a>(
+    instance_ids: &[String],
+    index: &InstanceIndex<'a>,
+) -> Vec<&'a Instance> {
+    let mut seen = HashSet::new();
+    let mut selected = Vec::new();
+    for id in instance_ids {
+        if seen.insert(id.as_str())
+            && let Some(instances) = index.get(id.as_str())
+        {
+            selected.extend(instances.iter().copied());
+        }
+    }
+    selected.sort_unstable_by_key(|(position, _)| *position);
+    selected.into_iter().map(|(_, instance)| instance).collect()
 }
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct SourceContinuation {
-    pub cursor: String,
-    pub url: Option<String>,
+
+#[cfg(test)]
+mod index_tests {
+    use super::{event_hash, index_instances, select_instances, tracker_context};
+    use crate::{model::Instance, profile::Component};
+
+    #[test]
+    fn selection_and_hashes_follow_snapshot_order() {
+        let instance = |name: &str, version: &str| {
+            Instance::declared(&Component {
+                reference: name.into(),
+                version: Some(version.into()),
+                usage: Default::default(),
+                upstream: None,
+                feeds: vec![],
+            })
+        };
+        let first = instance("a", "1.0.0");
+        let mut duplicate = first.clone();
+        duplicate.resolved_version = Some("2.0.0".into());
+        let second = instance("b", "1.0.0");
+        let instances = vec![first.clone(), second.clone(), duplicate];
+        let ids = vec![
+            second.id.clone(),
+            first.id.clone(),
+            first.id.clone(),
+            "absent".into(),
+        ];
+        let old_selection: Vec<_> = instances
+            .iter()
+            .filter(|item| ids.contains(&item.id))
+            .collect();
+        let index = index_instances(&instances);
+        let selection = select_instances(&ids, &index);
+        assert_eq!(selection.len(), old_selection.len());
+        for (actual, expected) in selection.iter().zip(&old_selection) {
+            assert_eq!(actual.context_fingerprint(), expected.context_fingerprint());
+        }
+
+        let old_event_facts: Vec<_> = old_selection
+            .iter()
+            .map(|item| (&item.id, item.context_fingerprint()))
+            .collect();
+        let expected_event = crate::digest(
+            &serde_json::to_vec(&(b"observation".as_slice(), old_event_facts)).unwrap(),
+        );
+        assert_eq!(
+            event_hash(b"observation", &ids, &index).unwrap(),
+            expected_event
+        );
+
+        let mut old_tracker_facts: Vec<_> = old_selection
+            .iter()
+            .map(|item| {
+                (
+                    &item.id,
+                    item.context_fingerprint(),
+                    None::<(&String, &String)>,
+                )
+            })
+            .collect();
+        old_tracker_facts.sort_by(|a, b| a.0.cmp(b.0));
+        let expected_tracker = crate::digest(&serde_json::to_vec(&old_tracker_facts).unwrap());
+        assert_eq!(
+            tracker_context(&ids, &index, false).unwrap(),
+            expected_tracker
+        );
+    }
 }
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ReviewCoverage {
-    Complete,
-    Partial,
-    Unavailable,
-}
-/// `not_applicable`: a security claim that, per the cited source, does not affect the monitored
-/// version or build. It requires `not_applicable_reason`, is counted and remembered, and opens no case.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum Assessment {
-    Review,
-    Informational,
-    NotApplicable,
-    Ignore,
-}
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum NotApplicableReason {
-    /// The monitored resolved version already contains the fix.
-    FixedInMonitoredVersion,
-    /// Only other release lines or unreleased branches are affected.
-    AffectsOtherVersion,
-    /// The affected module, feature or platform is absent from the monitored build.
-    ComponentNotInBuild,
-}
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum EventKind {
-    Issue,
-    PullRequest,
-    MergeRequest,
-    MergeProposal,
-    Comment,
-    Review,
-    News,
-    Discussion,
-    Documentation,
-    Changelog,
-    Release,
-    Advisory,
-    Commit,
-}
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ResearchEvent {
-    pub upstream: String,
-    pub instance_ids: Vec<String>,
-    /// Candidate instances examined when choosing the case scope. Older observations omit this
-    /// and retain their original instance-based freshness semantics.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub reviewed_instance_ids: Vec<String>,
-    pub provider: String,
-    pub external_id: String,
-    pub kind: EventKind,
-    pub url: String,
-    pub title: String,
-    pub excerpt: String,
-    /// Original RFC3339 timestamp or YYYY-MM-DD when the source provides only a date.
-    /// Empty means unknown. Unknown/day precision keeps coverage partial and never advances checkpoints.
-    pub updated_at: String,
-    pub assessment: Assessment,
-    /// Required with `not_applicable`; forbidden otherwise.
-    #[serde(default)]
-    pub not_applicable_reason: Option<NotApplicableReason>,
-    pub rationale: String,
-    /// Answers to the research questions as the item states them. `fixed_in_monitored_version`
-    /// requires `fixed_in`, and `affects_other_version` requires `affected_versions`.
-    #[serde(default)]
-    pub source_facts: SourceFacts,
-}
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ResearchComponent {
-    pub instance_id: String,
-    #[serde(rename = "ref")]
-    pub reference: String,
-    pub requested_version: Option<String>,
-    pub resolved_version: Option<String>,
-    pub origin: crate::model::Origin,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub release: Option<crate::model::ReleaseDate>,
-}
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ResearchTarget {
-    pub upstream: String,
-    /// Fingerprint of the exact monitored instances in this target.
-    pub context_sha256: String,
-    pub instance_ids: Vec<String>,
-    pub components: Vec<ResearchComponent>,
-    pub from: String,
-    pub until: String,
-    pub last_complete_review: Option<String>,
-    pub seen: Vec<SeenEvent>,
-    pub seen_truncated: bool,
-    pub continuation: Option<SourceContinuation>,
-    /// Persisted incomplete source review, including its stated blocker and pinned window.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub progress: Option<SourceReview>,
-    /// Older progress is retained as context but must not be resumed against changed artifacts.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stale_progress: Option<SourceReview>,
-    /// True when the source window was reopened because its monitored context changed.
-    #[serde(default)]
-    pub context_reopened: bool,
-}
-/// An imported event with the agent's previous reading, so an item whose `updated_at` is unchanged
-/// needs no new review.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SeenEvent {
-    pub external_id: String,
-    pub url: String,
-    pub content_sha256: String,
-    pub updated_at: String,
-    /// False when the monitored instances changed since the recorded assessment or the target
-    /// gained instances the event does not cover; the event then needs a new review even with the
-    /// same `updated_at`.
-    pub context_current: bool,
-    pub assessment: Option<Assessment>,
-    pub not_applicable_reason: Option<NotApplicableReason>,
-    /// First 300 characters of the recorded rationale.
-    pub rationale: String,
-}
+
 #[derive(Deserialize)]
 struct RecordedEvent {
     assessment: Assessment,
     #[serde(default)]
     not_applicable_reason: Option<NotApplicableReason>,
     rationale: String,
-}
-#[derive(Debug, Serialize)]
-pub struct ResearchPlan {
-    pub schema_version: u32,
-    pub project_id: String,
-    pub snapshot_id: String,
-    pub targets: Vec<ResearchTarget>,
-    /// Inventory instances outside tracker exploration; advisories are still scanned separately.
-    pub tracker_scope: crate::profile::TrackerScope,
-    pub deferred_transitive_instances: usize,
-    pub deferred_unknown_instances: usize,
-    /// No inventory instance was selected for tracker research.
-    pub scope_unselected: bool,
-    /// Evidence-backed candidates for focused investigation; these do not change the scope.
-    pub follow_suggestions: Vec<FollowSuggestion>,
-    pub follow_suggestions_total: usize,
-    pub required_agent_sites: Vec<String>,
-    pub policy: String,
-    pub next_cursor: Option<String>,
-}
-#[derive(Debug, Serialize)]
-pub struct FollowSuggestion {
-    #[serde(rename = "ref")]
-    pub reference: String,
-    pub version: Option<String>,
-    pub case_id: String,
-    pub advisory_id: String,
-    pub applicability: Applicability,
-    pub evidence: crate::model::Evidence,
 }
 pub fn plan_page(store: &Store, after: &str, limit: usize) -> Result<ResearchPlan> {
     if !(1..=20).contains(&limit) {
@@ -215,6 +142,7 @@ fn build_plan(
 ) -> Result<ResearchPlan> {
     use rusqlite::OptionalExtension;
     let snapshot = store.latest()?;
+    let instance_index = index_instances(&snapshot.instances);
     let configured = store
         .meta("profile_path")?
         .map(|path| crate::profile::load(std::path::Path::new(&path)))
@@ -280,17 +208,18 @@ fn build_plan(
     });
     let follow_suggestions_total = suggestions.len();
     suggestions.truncate(100);
-    let mut repositories: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut repositories: BTreeMap<String, (Vec<String>, HashSet<String>)> = BTreeMap::new();
     for instance in snapshot
         .instances
         .iter()
         .filter(|instance| selected(instance))
     {
         if let Some(upstream) = &instance.upstream {
-            repositories
+            let (ids, seen) = repositories
                 .entry(upstream.trim_end_matches('/').into())
-                .or_default()
-                .push(instance.id.clone());
+                .or_default();
+            ids.push(instance.id.clone());
+            seen.insert(instance.id.clone());
         }
     }
     if let Some(path) = store.meta("profile_path")? {
@@ -301,10 +230,10 @@ fn build_plan(
                 .get(instance_id.as_str())
                 .is_some_and(|instance| selected(instance))
             {
-                let ids = repositories
+                let (ids, seen) = repositories
                     .entry(url.trim_end_matches('/').to_owned())
                     .or_default();
-                if !ids.contains(&instance_id) {
+                if seen.insert(instance_id.clone()) {
                     ids.push(instance_id);
                 }
             }
@@ -327,7 +256,7 @@ fn build_plan(
     }
     let mut targets = Vec::new();
     let mut next_cursor = None;
-    for (upstream, instance_ids) in repositories
+    for (upstream, (instance_ids, _)) in repositories
         .into_iter()
         .filter(|(url, _)| url.as_str() > after)
     {
@@ -346,8 +275,7 @@ fn build_plan(
             )
             .optional()?;
         let context_key = format!("research_context:{}", crate::digest(upstream.as_bytes()));
-        let context =
-            tracker_context(&instance_ids, &snapshot.instances, research.release_windows)?;
+        let context = tracker_context(&instance_ids, &instance_index, research.release_windows)?;
         let reviewed_context = store.meta(&context_key)?;
         let mut context_reopened =
             checkpoint.is_some() && reviewed_context.as_deref() != Some(&context);
@@ -435,16 +363,14 @@ fn build_plan(
                 event.context_current = serde_json::from_str::<ResearchEvent>(&body)
                     .ok()
                     .is_some_and(|recorded| {
-                        let reviewed = if recorded.reviewed_instance_ids.is_empty() {
-                            &recorded.instance_ids
-                        } else {
-                            &recorded.reviewed_instance_ids
-                        };
-                        instance_ids.iter().all(|id| reviewed.contains(id))
+                        let reviewed = &recorded.reviewed_instance_ids;
+                        let reviewed_ids: HashSet<&str> =
+                            reviewed.iter().map(String::as_str).collect();
+                        instance_ids
+                            .iter()
+                            .all(|id| reviewed_ids.contains(id.as_str()))
                             && event_content(&recorded)
-                                .and_then(|content| {
-                                    event_hash(&content, reviewed, &snapshot.instances)
-                                })
+                                .and_then(|content| event_hash(&content, reviewed, &instance_index))
                                 .is_ok_and(|hash| hash == event.content_sha256)
                     });
                 seen_bytes += serde_json::to_vec(&event)?.len();
@@ -487,12 +413,11 @@ fn build_plan(
 }
 fn tracker_context(
     instance_ids: &[String],
-    instances: &[Instance],
+    instance_index: &InstanceIndex<'_>,
     release_windows: bool,
 ) -> Result<String> {
-    let mut facts: Vec<_> = instances
-        .iter()
-        .filter(|instance| instance_ids.contains(&instance.id))
+    let mut facts: Vec<_> = select_instances(instance_ids, instance_index)
+        .into_iter()
         .map(|instance| {
             (
                 &instance.id,
@@ -521,19 +446,17 @@ fn event_content(event: &ResearchEvent) -> Result<Vec<u8>> {
         event.excerpt.as_str(),
         event.updated_at.as_str(),
     );
-    // Events without source facts keep the content hash they had before facts existed.
-    Ok(if event.source_facts.is_empty() {
-        serde_json::to_vec(&observed)?
-    } else {
-        serde_json::to_vec(&(observed, &event.source_facts))?
-    })
+    Ok(serde_json::to_vec(&(observed, &event.source_facts))?)
 }
 
 /// Hash of an event reading: its observation plus the context of the instances it was assessed for.
-fn event_hash(content: &[u8], instance_ids: &[String], instances: &[Instance]) -> Result<String> {
-    let target_facts: Vec<_> = instances
-        .iter()
-        .filter(|instance| instance_ids.contains(&instance.id))
+fn event_hash(
+    content: &[u8],
+    instance_ids: &[String],
+    instance_index: &InstanceIndex<'_>,
+) -> Result<String> {
+    let target_facts: Vec<_> = select_instances(instance_ids, instance_index)
+        .into_iter()
         .map(|instance| (&instance.id, instance.context_fingerprint()))
         .collect();
     Ok(crate::digest(&serde_json::to_vec(&(
@@ -556,6 +479,17 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
         bail!("research batch exceeds limits");
     }
     let snapshot = store.latest()?;
+    let instance_index = index_instances(&snapshot.instances);
+    let target_ids: HashMap<&str, HashSet<&str>> = plan
+        .targets
+        .iter()
+        .map(|target| {
+            (
+                target.upstream.as_str(),
+                target.instance_ids.iter().map(String::as_str).collect(),
+            )
+        })
+        .collect();
     let mut sources = HashSet::new();
     for review in &batch.sources {
         if let Some(continuation) = &review.continuation {
@@ -583,50 +517,16 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
             bail!("research window mismatch/duplicate; reread research plan");
         }
     }
-    // One research case per upstream permalink; older per-instance cases are folded into it.
-    let mut cases_by_link: BTreeMap<String, BTreeMap<String, Case>> = BTreeMap::new();
-    for case in store.cases()? {
-        if !case.claims.is_empty() {
-            continue;
-        }
-        for event in &case.upstream_events {
-            let Ok(url) = crate::profile::public_https_syntax(&event.url) else {
-                continue;
-            };
-            cases_by_link
-                .entry(url.to_string())
-                .or_default()
-                .insert(case.case_id.clone(), case.clone());
-        }
-    }
-    let mut merged_case_ids = HashSet::new();
-    let mut linked: BTreeMap<String, Case> = BTreeMap::new();
-    let mut folded = Vec::new();
-    for (url, group) in cases_by_link {
-        let mut members = group.into_values();
-        let Some(mut survivor) = members.next() else {
-            continue;
-        };
-        let mut was_folded = false;
-        for member in members {
-            for instance in member.instances {
-                if !survivor.instances.iter().any(|kept| kept.id == instance.id) {
-                    survivor.instances.push(instance);
-                }
-            }
-            merged_case_ids.insert(member.case_id);
-            was_folded = true;
-        }
-        if was_folded {
-            folded.push(survivor.clone());
-        }
-        linked.insert(url, survivor);
-    }
-    merged_case_ids.retain(|id| !linked.values().any(|case| &case.case_id == id));
+    let active_cases: BTreeMap<String, Case> = store
+        .cases()?
+        .into_iter()
+        .map(|case| (case.case_id.clone(), case))
+        .collect();
     let mut assessments: BTreeMap<String, usize> = BTreeMap::new();
     let mut prepared = Vec::new();
     let mut duplicates = 0;
     let mut imprecise_sources: HashSet<String> = HashSet::new();
+    let mut event_keys = HashSet::new();
     for event in &batch.events {
         if !sources.contains(&event.upstream) {
             bail!("event has no source review");
@@ -636,24 +536,32 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
             .iter()
             .find(|target| target.upstream == event.upstream)
             .context("event upstream missing")?;
+        let candidates = target_ids
+            .get(event.upstream.as_str())
+            .context("event upstream missing")?;
+        let reviewed: HashSet<&str> = event
+            .reviewed_instance_ids
+            .iter()
+            .map(String::as_str)
+            .collect();
         let event_url = crate::profile::public_https_syntax(&event.url)?;
         if event.instance_ids.is_empty()
             || event
                 .instance_ids
                 .iter()
-                .any(|id| !target.instance_ids.contains(id))
+                .any(|id| !candidates.contains(id.as_str()))
         {
             bail!("event instance is outside declared upstream scope");
         }
-        if !event.reviewed_instance_ids.is_empty()
-            && (event
+        if event.reviewed_instance_ids.is_empty()
+            || event
                 .reviewed_instance_ids
                 .iter()
-                .any(|id| !target.instance_ids.contains(id))
-                || event
-                    .instance_ids
-                    .iter()
-                    .any(|id| !event.reviewed_instance_ids.contains(id)))
+                .any(|id| !candidates.contains(id.as_str()))
+            || event
+                .instance_ids
+                .iter()
+                .any(|id| !reviewed.contains(id.as_str()))
         {
             bail!("reviewed instances must include the case scope and belong to the upstream");
         }
@@ -698,14 +606,17 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
             bail!("event timestamp is outside review window");
         }
         let content = event_content(event)?;
-        let reviewed = if event.reviewed_instance_ids.is_empty() {
-            &event.instance_ids
-        } else {
-            &event.reviewed_instance_ids
-        };
-        let hash = event_hash(&content, reviewed, &snapshot.instances)?;
+        let reviewed = &event.reviewed_instance_ids;
+        let hash = event_hash(&content, reviewed, &instance_index)?;
         // The original permalink identifies the event; agent/provider ID formatting may vary.
         let key = crate::digest(format!("{}:{}", event.upstream, event_url).as_bytes());
+        if !event_keys.insert(key.clone()) {
+            bail!("duplicate event for the same upstream and URL");
+        }
+        let case_id = format!(
+            "SIG-{}",
+            &crate::digest(format!("research:{key}").as_bytes())[..20]
+        );
         let previous: Option<(String, String)> = store
             .connection
             .query_row(
@@ -721,11 +632,7 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
             .as_ref()
             .and_then(|(_, body)| serde_json::from_str::<ResearchEvent>(body).ok())
             .is_some_and(|old| {
-                let old_reviewed = if old.reviewed_instance_ids.is_empty() {
-                    &old.instance_ids
-                } else {
-                    &old.reviewed_instance_ids
-                };
+                let old_reviewed = &old.reviewed_instance_ids;
                 old.assessment == event.assessment
                     && old.not_applicable_reason == event.not_applicable_reason
                     && old.rationale == event.rationale
@@ -754,9 +661,21 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
             Some(event.url.clone()),
             EvidenceKind::Context,
         )?;
-        let existing = linked.get(event_url.as_str());
+        let existing = active_cases.get(&case_id);
         let mut open_questions = vec![event.rationale.clone()];
         let (decision, coverage_detail) = match (event.assessment, existing) {
+            (_, Some(previous)) if !previous.claims.is_empty() => {
+                open_questions
+                    .push("Review updated research alongside the advisory evidence.".into());
+                (
+                    Some(if previous.decision == Decision::Actionable {
+                        Decision::Actionable
+                    } else {
+                        Decision::Review
+                    }),
+                    "Agent observation; advisory evidence retained".to_owned(),
+                )
+            }
             (Assessment::Review, _) => {
                 open_questions.push("Check release code and attack prerequisites before asserting a real attack vector.".into());
                 (
@@ -798,13 +717,6 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
                         .context("event instance missing")
                 })
                 .collect::<Result<Vec<_>>>()?;
-            let case_id = match existing {
-                Some(previous) => previous.case_id.clone(),
-                None => format!(
-                    "SIG-{}",
-                    &crate::digest(format!("research:{key}").as_bytes())[..20]
-                ),
-            };
             let upstream_event = UpstreamEvent {
                 provider: event.provider.clone(),
                 kind: format!("{:?}", event.kind).to_lowercase(),
@@ -819,21 +731,22 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
                 sha256: evidence.sha256.clone(),
                 source_facts: event.source_facts.clone(),
             };
-            cases.push(Case {
+            let coverage = Coverage::new(
+                "agent_upstream",
+                &event.upstream,
+                CoverageState::Partial,
+                &coverage_detail,
+            );
+            let mut case = Case {
                 schema_version: 1,
                 case_id,
                 project_id: batch.project_id.clone(),
                 snapshot_id: batch.snapshot_id.clone(),
-                instances,
+                instances: instances.clone(),
                 claims: Vec::new(),
-                upstream_events: vec![upstream_event],
+                upstream_events: vec![upstream_event.clone()],
                 evidence: vec![evidence.clone()],
-                coverage: vec![Coverage::new(
-                    "agent_upstream",
-                    &event.upstream,
-                    CoverageState::Partial,
-                    &coverage_detail,
-                )],
+                coverage: vec![coverage.clone()],
                 applicability: Applicability::Unknown,
                 verification: Verification::Inconclusive,
                 decision,
@@ -842,7 +755,42 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
                 suggested_search_queries: Vec::new(),
                 sandbox: crate::sandbox::availability(),
                 updated_at: crate::now(),
-            });
+            };
+            if let Some(previous) = existing {
+                case.evidence = previous.evidence.clone();
+                if !case
+                    .evidence
+                    .iter()
+                    .any(|old| old.sha256 == evidence.sha256 && old.source == evidence.source)
+                {
+                    case.evidence.push(evidence.clone());
+                }
+                if !previous.claims.is_empty() {
+                    case.claims = previous.claims.clone();
+                    case.instances = previous.instances.clone();
+                    for instance in instances {
+                        if !case.instances.iter().any(|old| old.id == instance.id) {
+                            case.instances.push(instance);
+                        }
+                    }
+                    case.upstream_events = previous.upstream_events.clone();
+                    case.upstream_events
+                        .retain(|old| old.url != upstream_event.url);
+                    case.upstream_events.push(upstream_event);
+                    case.coverage = previous.coverage.clone();
+                    case.coverage.push(coverage);
+                    case.open_questions.extend(previous.open_questions.clone());
+                    case.facts_sha256 = crate::digest(&serde_json::to_vec(&(
+                        &previous.facts_sha256,
+                        &case.facts_sha256,
+                    ))?);
+                    if decision == Decision::Actionable {
+                        case.applicability = previous.applicability;
+                        case.verification = previous.verification;
+                    }
+                }
+            }
+            cases.push(case);
         }
         prepared.push((key, hash, event, cases));
     }
@@ -861,21 +809,7 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
         .map(|profile| profile.research.release_windows)
         .unwrap_or(false);
     let transaction = store.connection.transaction()?;
-    for id in &merged_case_ids {
-        transaction.execute("DELETE FROM cases WHERE id=?1", [id])?;
-    }
     let mut changed_cases = 0;
-    for case in &folded {
-        let body = serde_json::to_string(case)?;
-        transaction.execute(
-            "INSERT OR REPLACE INTO cases VALUES (?1,?2)",
-            params![case.case_id, body],
-        )?;
-        transaction.execute(
-            "INSERT INTO history(case_id,body,recorded_at) VALUES (?1,?2,?3)",
-            params![case.case_id, body, crate::now()],
-        )?;
-    }
     for (key, hash, event, cases) in &prepared {
         transaction.execute(
             "INSERT OR REPLACE INTO research_events VALUES (?1,?2,?3,?4,?5,?6,?7)",
@@ -908,7 +842,7 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
             .iter()
             .find(|target| target.upstream == source.upstream)
             .context("research source disappeared from plan")?;
-        let context = tracker_context(&target.instance_ids, &snapshot.instances, release_windows)?;
+        let context = tracker_context(&target.instance_ids, &instance_index, release_windows)?;
         let key_suffix = crate::digest(source.upstream.as_bytes());
         if source.coverage == ReviewCoverage::Complete {
             transaction.execute(
@@ -955,7 +889,7 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
         EvidenceKind::Context,
     )?;
     Ok(
-        serde_json::json!({"schema_version":1,"changed_events":prepared.len(),"duplicates":duplicates,"changed_cases":changed_cases,"merged_cases":merged_case_ids.len(),"assessments":assessments,"evidence":evidence,"sources":batch.sources}),
+        serde_json::json!({"schema_version":1,"changed_events":prepared.len(),"duplicates":duplicates,"changed_cases":changed_cases,"assessments":assessments,"evidence":evidence,"sources":batch.sources}),
     )
 }
 

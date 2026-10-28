@@ -87,7 +87,7 @@
           "type": "string"
         },
         "reviewed_instance_ids": {
-          "description": "Candidate instances examined when choosing the case scope. Older observations omit this\nand retain their original instance-based freshness semantics.",
+          "description": "Candidate instances examined when choosing the case scope.",
           "items": {
             "type": "string"
           },
@@ -121,6 +121,7 @@
       "required": [
         "upstream",
         "instance_ids",
+        "reviewed_instance_ids",
         "provider",
         "external_id",
         "kind",

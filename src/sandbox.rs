@@ -77,8 +77,7 @@ pub struct VerificationBlocker {
     pub case_id: String,
     pub facts_sha256: String,
     pub instance_id: String,
-    /// Absent for failed runs and for blockers recorded before kinds existed; neither settles a
-    /// needed check.
+    /// Absent for failed runs; an uncategorized blocker does not settle a needed check.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<BlockerKind>,
     /// A later reviewed correction supersedes an earlier blocker for these same case facts.

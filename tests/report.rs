@@ -2,6 +2,41 @@ use serde_json::json;
 use vulnbell::{model::*, store::Store};
 
 #[test]
+fn coverage_groups_keep_the_first_seen_order_and_scope_labels() {
+    let project = uuid::Uuid::new_v4().to_string();
+    let store = Store::open(&project).unwrap();
+    let snapshot = Snapshot {
+        schema_version: 1,
+        id: "snapshot".into(),
+        project_id: project.clone(),
+        profile_sha256: "profile".into(),
+        started_at: vulnbell::now(),
+        finished_at: vulnbell::now(),
+        instances: Vec::new(),
+        cases: Vec::new(),
+        coverage: vec![
+            Coverage::new("first", "scope-a", CoverageState::Partial, "first gap"),
+            Coverage::new(
+                "second",
+                "scope-b",
+                CoverageState::Unavailable,
+                "second gap",
+            ),
+            Coverage::new("first", "scope-c", CoverageState::Partial, "first gap"),
+        ],
+        partial: true,
+        alert_status: "local".into(),
+    };
+    let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    let markdown = vulnbell::output::morning_markdown(&report);
+    assert!(markdown.contains("scope-a, scope-c"));
+    assert!(markdown.find("first gap").unwrap() < markdown.find("second gap").unwrap());
+    assert_eq!(markdown.matches("first gap").count(), 1);
+    drop(store);
+    std::fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+}
+
+#[test]
 fn report_explains_the_matched_package_without_recommending_another_packages_fix() {
     let project = uuid::Uuid::new_v4().to_string();
     let mut store = Store::open(&project).unwrap();
@@ -646,7 +681,8 @@ fn contained_advisories_collapse_into_one_row_and_exposed_cases_keep_their_card(
         partial: false,
         alert_status: "local".into(),
     };
-    let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    let mut report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    report.finding_checks.reverse();
     assert_eq!(report.actionable.len(), 2);
     let markdown = vulnbell::output::morning_markdown(&report);
     assert!(markdown.contains("**1** may be exposed in the project and **1** are not exposed"));

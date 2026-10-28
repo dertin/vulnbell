@@ -65,9 +65,14 @@
         "updated_at": {
           "description": "The item's `updated_at` when it was reviewed; a later update lists the item again.",
           "type": "string"
+        },
+        "upstream": {
+          "description": "Upstream reported by `tools hits`.",
+          "type": "string"
         }
       },
       "required": [
+        "upstream",
         "key",
         "updated_at",
         "context_sha256",

@@ -34,6 +34,29 @@ fn write(directory: &Path, relative: &str, contents: &str) {
     fs::write(path, contents).unwrap();
 }
 
+fn copy_research_responses(
+    raw: &Path,
+    repository: &str,
+    target: &vulnbell::research::ResearchTarget,
+) -> String {
+    let next = vulnbell::tools::raw::window_directory(target).join("github/example/project");
+    let next = next.to_string_lossy().replace('\\', "/");
+    fs::create_dir_all(raw.join(&next)).unwrap();
+    for name in [
+        "issues.page-1.json",
+        "releases.page-1.json",
+        "security-advisories.page-1.json",
+        "discussions.json",
+    ] {
+        let original = raw.join(repository).join(name);
+        let destination = raw.join(&next).join(name);
+        if original != destination {
+            fs::copy(original, destination).unwrap();
+        }
+    }
+    next
+}
+
 #[test]
 fn hits_draft_and_case_batches_cover_one_daily_review() {
     let directory = tempfile::tempdir().unwrap();
@@ -44,13 +67,35 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
     vulnbell::engine::scan(&profile, &path, true).unwrap();
     let mut store = Store::open(&project).unwrap();
     let plan = vulnbell::research::plan_page(&store, "", 20).unwrap();
+    assert!(
+        hits::prepare_for_upstream(
+            &store,
+            directory.path(),
+            true,
+            false,
+            Some("https://github.com/unrelated/project")
+        )
+        .is_err()
+    );
+    let one_target = hits::prepare_for_upstream(
+        &store,
+        directory.path(),
+        true,
+        false,
+        Some("https://github.com/example/project"),
+    )
+    .unwrap();
+    assert_eq!(one_target.targets.len(), 1);
     let until = DateTime::parse_from_rfc3339(&plan.targets[0].until).unwrap();
     let updated = (until - Duration::minutes(2))
         .format("%Y-%m-%dT%H:%M:%SZ")
         .to_string();
 
     let raw = directory.path().join("raw");
-    let repository = "github/example/project";
+    let mut repository = vulnbell::tools::raw::window_directory(&plan.targets[0])
+        .join("github/example/project")
+        .to_string_lossy()
+        .replace('\\', "/");
     write(
         &raw,
         &format!("{repository}/issues.page-1.json"),
@@ -106,12 +151,14 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
     let decisions = serde_json::json!({
         "schema_version": 1,
         "decisions": [{
+            "upstream": "https://github.com/example/project",
             "key": "example/project#1",
             "updated_at": updated,
             "context_sha256": plan.targets[0].context_sha256,
             "assessment": "review",
             "rationale": "Synthetic report of token reuse; check the audience validation in the monitored version."
         }, {
+            "upstream": "https://github.com/example/project",
             "key": "example/project#3",
             "updated_at": updated,
             "context_sha256": plan.targets[0].context_sha256,
@@ -139,6 +186,8 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
     assert_eq!(reviewed.provider, "github");
     let imported = vulnbell::research::import(&mut store, batch).unwrap();
     assert_eq!(imported["changed_cases"], 1);
+    let plan = vulnbell::research::plan_page(&store, "", 20).unwrap();
+    repository = copy_research_responses(&raw, &repository, &plan.targets[0]);
 
     let again = hits::packet(&hits::prepare(&store, &raw, true).unwrap(), None);
     assert_eq!(again.summary.unchanged, 3);
@@ -568,6 +617,7 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
             .iter()
             .all(|seen| !seen.context_current)
     );
+    copy_research_responses(&raw, &repository, &plan.targets[0]);
     let reassessed = hits::packet(
         &hits::prepare(&store, &raw, true).unwrap(),
         Some(&decisions),

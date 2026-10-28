@@ -64,7 +64,7 @@ pub struct Item {
     pub state: String,
     #[serde(default)]
     pub labels: Vec<String>,
-    /// The source's RFC3339 update time (publication time for releases and commit time for commits).
+    /// The source's RFC3339 update time, or commit time for commits.
     pub updated_at: String,
     /// Complete description, release notes or commit message within the raw-file budget.
     #[serde(default)]

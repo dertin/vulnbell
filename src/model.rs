@@ -119,15 +119,6 @@ impl Instance {
     }
 
     pub fn context_fingerprint(&self) -> String {
-        self.context_fingerprint_for_directness(None)
-    }
-
-    /// Fingerprint produced by the earlier directness-sensitive parser.
-    pub(crate) fn legacy_context_fingerprint(&self) -> String {
-        self.context_fingerprint_for_directness(self.provenance.direct)
-    }
-
-    fn context_fingerprint_for_directness(&self, direct: Option<bool>) -> String {
         // A lockfile hash records provenance, but unrelated dependency edits are not new facts.
         let declaration = match self.origin {
             Origin::Locked => None,
@@ -142,9 +133,6 @@ impl Instance {
             self.origin,
             &self.provenance.path,
             &self.provenance.workspace,
-            // Directness controls tracker scope; it is not evidence that code is used.
-            // Retain the legacy unknown slot so older unknown-depth fingerprints stay stable.
-            direct,
             &self.provenance.resolution,
             &self.provenance.artifact_integrity,
             &self.purl,

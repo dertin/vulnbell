@@ -47,6 +47,7 @@ chrono-tz = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 tar = { version = "0.4.46", default-features = false }
 regex = "1"
+roxmltree = "0.21.1"
 
 [dev-dependencies]
 assert_cmd = "2"

@@ -15,7 +15,7 @@ vulnbell sandbox status
 
 `prepare` checks the version and prerequisites. It uses a private VulnBell `MSB_HOME` and downloads and prepares an official OCI image pinned by digest. The base image is Alpine 3.22.7, index `sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f`. It also records the architecture-specific manifest digest and executable SHA-256. The global Microsandbox installation is not changed. Set `VULNBELL_MSB_EXECUTABLE` to select the executable during setup. If `msb` is missing or has another version, `prepare` and `doctor` name the release to install. When `msb doctor` fails, they show its failing checks.
 
-Report and pending JSON use schema version 1. Report JSON distinguishes `sandbox_candidate` (the version is unconfirmed and needs a review disposition) from `sandbox_needed` (a current handoff explicitly requires testing that instance). An unresolved candidate without a handoff is `review_disposition_missing`; it does not by itself require a sandbox. Handoff schema 1 requires `sandbox_instance_ids`: an empty list with `sandbox_required: false`, or explicit target IDs with `true`. Earlier handoff formats are unsupported. Missing deployment facts do not require a test because the sandbox cannot establish them. Invalid verification evidence remains pending. The Markdown report starts with an incomplete banner while any of these decisions remain open.
+Report and pending JSON use schema version 1. Report JSON distinguishes `sandbox_candidate` (the version is unconfirmed and needs a review disposition) from `sandbox_needed` (a current handoff explicitly requires testing that instance). An unresolved candidate without a handoff is `review_disposition_missing`; it does not by itself require a sandbox. Handoff schema 1 requires `sandbox_instance_ids`: an empty list with `sandbox_required: false`, or explicit target IDs with `true`. Missing deployment facts do not require a test because the sandbox cannot establish them. Invalid verification evidence remains pending. The Markdown report starts with an incomplete banner while any of these decisions remain open.
 
 `case <id> --validation-blocker <reason> --blocker-kind <kind>` records the blocker for every instance of the case; add `--instance <id>` to limit it to one. Kinds:
 
@@ -27,7 +27,7 @@ Report and pending JSON use schema version 1. Report JSON distinguishes `sandbox
 | `runtime_unavailable` | Microsandbox cannot run on this host. `verify` records it when the runtime is missing. |
 | `authorization_declined` | The operator declined to authorize the test. |
 
-A test that fails to run records a blocker without a kind. It does not settle the check: fix the test or record a blocker with a kind. Blockers recorded before kinds existed do not settle it either.
+A test that fails to run records a blocker without a kind. It does not settle the check: fix the test or record a blocker with a kind.
 
 A current `lab_reproduced` attestation confirms the affected version only for the instance it tested. In a case with several instances, for example every artifact of one upstream release, `impact` can then derive an update priority from that instance while the others stay unconfirmed.
 
