@@ -133,6 +133,59 @@ fn git_path(workspace: &Path, name: &str) -> Result<PathBuf> {
     Ok(PathBuf::from(value))
 }
 
+fn git_worktree_config(workspace: &Path) -> Result<Vec<(&'static str, String)>> {
+    let output = git_command(workspace)
+        .env_remove("GIT_CONFIG_NOSYSTEM")
+        .env_remove("GIT_CONFIG_GLOBAL")
+        .args([
+            "config",
+            "-z",
+            "--get-regexp",
+            r"^core\.(autocrlf|eol|filemode|ignorecase|symlinks)$",
+        ])
+        .output()?;
+    if output.status.code() == Some(1) {
+        return Ok(Vec::new());
+    }
+    if !output.status.success() {
+        bail!("Git worktree configuration is unavailable");
+    }
+    let mut values = std::collections::BTreeMap::new();
+    for entry in output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+    {
+        let entry = std::str::from_utf8(entry)?;
+        let (name, value) = entry.split_once('\n').unwrap_or((entry, ""));
+        let name = match name {
+            "core.autocrlf" => "core.autocrlf",
+            "core.eol" => "core.eol",
+            "core.filemode" => "core.filemode",
+            "core.ignorecase" => "core.ignorecase",
+            "core.symlinks" => "core.symlinks",
+            _ => bail!("Git worktree configuration is invalid"),
+        };
+        let value = value.trim().to_ascii_lowercase();
+        let value = if value.is_empty() {
+            "true".to_owned()
+        } else {
+            value
+        };
+        let allowed = match name {
+            "core.autocrlf" => ["true", "false", "yes", "no", "on", "off", "1", "0", "input"]
+                .contains(&value.as_str()),
+            "core.eol" => ["lf", "crlf", "native"].contains(&value.as_str()),
+            _ => ["true", "false", "yes", "no", "on", "off", "1", "0"].contains(&value.as_str()),
+        };
+        if !allowed {
+            bail!("Git worktree configuration is invalid");
+        }
+        values.insert(name, value);
+    }
+    Ok(values.into_iter().collect())
+}
+
 fn git_status(workspace: &Path, repository: &Path, commit: &str) -> Result<Vec<u8>> {
     if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         bail!("invalid Git commit");
@@ -164,8 +217,12 @@ fn git_status(workspace: &Path, repository: &Path, commit: &str) -> Result<Vec<u
             crate::read_limited(&exclude, 1024 * 1024)?,
         )?;
     }
+    let worktree_config = git_worktree_config(workspace)?;
     let shadow_command = || {
         let mut command = git_command(workspace);
+        for (name, value) in &worktree_config {
+            command.args(["-c", &format!("{name}={value}")]);
+        }
         command
             .arg("--git-dir")
             .arg(shadow.path())

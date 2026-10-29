@@ -218,6 +218,27 @@ fn tracked_private_paths_are_excluded_from_git_status() {
     assert_eq!(after.worktree_status_sha256, before.worktree_status_sha256);
 }
 
+#[test]
+fn git_line_ending_configuration_is_respected() {
+    let dir = tempfile::tempdir().unwrap();
+    git(dir.path(), &["init", "-b", "main"]);
+    git(dir.path(), &["config", "core.autocrlf", "true"]);
+    fs::write(dir.path().join("tracked.txt"), "first\nsecond\n").unwrap();
+    git(dir.path(), &["add", "tracked.txt"]);
+    git(dir.path(), &["commit", "-m", "fixture"]);
+    fs::remove_file(dir.path().join("tracked.txt")).unwrap();
+    git(dir.path(), &["checkout", "--", "tracked.txt"]);
+    assert!(
+        fs::read(dir.path().join("tracked.txt"))
+            .unwrap()
+            .windows(2)
+            .any(|pair| pair == b"\r\n")
+    );
+    let revision = workspace_revision::capture_path(dir.path());
+    assert_eq!(revision.dirty, Some(false));
+    assert!(revision.worktree_status_sha256.is_some());
+}
+
 #[cfg(unix)]
 #[test]
 fn executable_bit_changes_invalidate_a_dirty_file_fingerprint() {
