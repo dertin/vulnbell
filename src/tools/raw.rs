@@ -26,7 +26,7 @@ mod jira;
 mod tests;
 
 use forge::{read_forgejo, read_gitlab};
-use github::{github_issues, read_github};
+use github::{github_issues, github_linked_discussion, read_github};
 use jira::read_jira;
 
 static CLOSES: LazyLock<Regex> = LazyLock::new(|| {
@@ -107,7 +107,7 @@ pub struct TargetItems {
     pub errors: Vec<String>,
     /// Items updated inside the target window.
     pub items: Vec<Item>,
-    /// Linked issues outside the activity window, used as context only.
+    /// Linked tracker items outside the activity window, used as context only.
     pub linked_issues: Vec<Item>,
     /// Advisory IDs and CVEs of every advisory the repository has published, inside the window or not.
     pub published_identifiers: BTreeSet<String>,
@@ -498,6 +498,19 @@ fn read_linked_issues(
                 continue;
             }
         };
+        if matches!(provider, Provider::GitHub { .. })
+            && values.len() == 1
+            && values[0].get("data").is_some()
+        {
+            match github_linked_discussion(values[0].clone(), &issue_prefix, &number) {
+                Ok(mut discussion) => {
+                    discussion.key = key;
+                    result.linked_issues.push(discussion);
+                }
+                Err(error) => result.errors.push(format!("{}: {error}", relative(&path))),
+            }
+            continue;
+        }
         let parsed = if matches!(provider, Provider::GitLab { .. }) {
             rest_records(values).and_then(|records| {
                 records

@@ -33,8 +33,8 @@ fn linked_summaries_preserve_selection_and_identifiers() {
     )
     .unwrap();
     let mut linked = LinkedSignals::default();
-    linked.merge(&LinkedSignals::from_issue(&first));
-    linked.merge(&LinkedSignals::from_issue(&second));
+    linked.merge(&LinkedSignals::from_item(&first));
+    linked.merge(&LinkedSignals::from_item(&second));
     let current = screen_with_signals(&pull, &linked).unwrap();
     assert_eq!(current.places, previous.places);
     assert_eq!(current.identifiers, previous.identifiers);
@@ -52,7 +52,7 @@ fn combined_linked_identifiers_retain_truncation_and_bound_excerpts() {
             "Security issue",
             &format!("CVE-2026-{:04} {}", number + 1000, "a".repeat(10000)),
         );
-        linked.merge(&LinkedSignals::from_issue(&report));
+        linked.merge(&LinkedSignals::from_item(&report));
     }
     let mut pull = issue("Fix processing", "Fixes #1");
     pull.kind = ItemKind::PullRequest;
@@ -66,7 +66,7 @@ fn combined_linked_identifiers_retain_truncation_and_bound_excerpts() {
 #[test]
 fn linked_summaries_bound_long_matching_tokens() {
     let report = issue("Report", &format!("vulnerab{}", "a".repeat(100_000)));
-    let summary = LinkedSignals::from_issue(&report);
+    let summary = LinkedSignals::from_item(&report);
     assert!(summary.selected);
     assert!(summary.snippets.iter().all(|snippet| snippet.len() <= 640));
     let mut linked = LinkedSignals::default();

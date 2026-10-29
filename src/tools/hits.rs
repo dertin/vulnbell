@@ -119,8 +119,13 @@ pub fn prepare_for_upstream(
             .items
             .iter()
             .chain(&collected.linked_issues)
-            .filter(|item| matches!(item.kind, ItemKind::Issue | ItemKind::PullRequest))
-            .map(|item| (item.key.clone(), screen::LinkedSignals::from_issue(item)))
+            .filter(|item| {
+                matches!(
+                    item.kind,
+                    ItemKind::Issue | ItemKind::PullRequest | ItemKind::Discussion
+                )
+            })
+            .map(|item| (item.key.clone(), screen::LinkedSignals::from_item(item)))
             .collect();
         let mut not_selected = 0;
         let mut selected_keys = HashSet::new();

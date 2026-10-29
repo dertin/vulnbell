@@ -93,7 +93,7 @@ impl Identifiers {
     }
 }
 
-/// Bounded signals extracted from linked issues.
+/// Bounded signals extracted from linked tracker items.
 #[derive(Default)]
 pub(super) struct LinkedSignals {
     identifiers: Identifiers,
@@ -127,7 +127,7 @@ impl LinkedSignals {
         }
     }
 
-    pub(super) fn from_issue(item: &Item) -> Self {
+    pub(super) fn from_item(item: &Item) -> Self {
         let mut signals = Self::default();
         let body = clean(&item.body);
         signals.selected = item.kind == ItemKind::Advisory

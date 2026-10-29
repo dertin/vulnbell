@@ -418,6 +418,49 @@ fn github_accepts_a_linked_pull_request_from_the_issues_endpoint() {
 }
 
 #[test]
+fn github_resolves_a_linked_discussion_outside_the_window() {
+    let directory = tempfile::tempdir().unwrap();
+    let target = target("https://github.com/example/project");
+    let fixture = directory.path().join(raw::window_directory(&target));
+    let repo = "github/example/project";
+    write(
+        &fixture,
+        &format!("{repo}/issues.page-1.json"),
+        r#"[{"number":1,"title":"Maintenance","html_url":"https://github.com/example/project/pull/1","state":"open","updated_at":"2026-10-20T00:00:00Z","labels":[],"body":"Closes #42","pull_request":{}}]"#,
+    );
+    for name in ["releases.page-1.json", "security-advisories.page-1.json"] {
+        write(&fixture, &format!("{repo}/{name}"), "[]");
+    }
+    write(
+        &fixture,
+        &format!("{repo}/discussions.json"),
+        r#"[{"data":{"search":{"discussionCount":0,"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}]"#,
+    );
+    let path = format!("{repo}/linked-issues/42.json");
+    let mut response = serde_json::json!({"data":{"repository":{"discussion":{
+        "number":42,"title":"Authentication report","url":"https://github.com/example/project/discussions/42",
+        "updatedAt":"2025-01-01T00:00:00Z","body":"An attacker can bypass authentication.","category":{"name":"Q&A"}
+    }}}});
+    write(&fixture, &path, &response.to_string());
+    let collected = raw::read_target(directory.path(), &target);
+    assert!(collected.complete(), "{:?}", collected.errors);
+    assert_eq!(collected.linked_issues[0].key, "example/project#42");
+    assert_eq!(collected.linked_issues[0].kind, ItemKind::Discussion);
+    assert!(screen::screen(&collected.items[0], &collected.linked_issues[0].body).is_some());
+
+    response["data"]["repository"]["discussion"]["url"] =
+        "https://github.com/other/project/discussions/42".into();
+    write(&fixture, &path, &response.to_string());
+    assert!(!raw::read_target(directory.path(), &target).complete());
+    response["data"]["repository"]["discussion"] = serde_json::Value::Null;
+    write(&fixture, &path, &response.to_string());
+    assert!(!raw::read_target(directory.path(), &target).complete());
+    response["errors"] = serde_json::json!([{"message":"Rate limited"}]);
+    write(&fixture, &path, &response.to_string());
+    assert!(!raw::read_target(directory.path(), &target).complete());
+}
+
+#[test]
 fn ambiguous_github_reference_requires_an_explicit_matching_issue() {
     let directory = tempfile::tempdir().unwrap();
     let raw = directory.path();

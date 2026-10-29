@@ -383,6 +383,39 @@ struct Discussion {
     category: Option<DiscussionCategory>,
 }
 
+pub(super) fn github_linked_discussion(value: Value, prefix: &str, number: &str) -> Result<Item> {
+    if value.get("errors").is_some() {
+        bail!("GraphQL response contains errors");
+    }
+    let node = value
+        .pointer("/data/repository/discussion")
+        .filter(|node| !node.is_null())
+        .context("GraphQL response does not identify a discussion")?;
+    let discussion: Discussion = serde_json::from_value(node.clone())?;
+    if discussion.number.to_string() != number
+        || discussion.url != format!("https://github.com/{prefix}/discussions/{number}")
+    {
+        bail!("GraphQL discussion does not match the requested reference");
+    }
+    let updated_at =
+        time(Some(&discussion.updated_at)).context("linked discussion has an invalid timestamp")?;
+    Ok(Item {
+        key: format!("{prefix}#{number}"),
+        kind: ItemKind::Discussion,
+        url: discussion.url,
+        title: discussion.title,
+        state: String::new(),
+        labels: discussion
+            .category
+            .map(|category| vec![category.name])
+            .unwrap_or_default(),
+        updated_at,
+        body: body(discussion.body),
+        closes: Vec::new(),
+        advisory: None,
+    })
+}
+
 /// GraphQL pages of `search(type: DISCUSSION)`; nodes of other types are empty objects.
 fn github_discussions(values: Vec<Value>, prefix: &str) -> Result<Vec<Item>> {
     let mut pages = Vec::new();

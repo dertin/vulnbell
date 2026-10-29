@@ -57,7 +57,7 @@ The plan's `follow_suggestions` lists up to 100 deferred instances with an appli
 | `tool` | Command |
 |---|---|
 | `gh_rest` | `gh api "$request" > "raw/$path"` (one numbered page) |
-| `gh_rest_single` | `gh api "$request" > "raw/$path"` (one linked issue) |
+| `gh_rest_single` | `gh api "$request" > "raw/$path"` (one linked issue or pull request; see the 404 fallback below) |
 | `gh_graphql_discussions` | `gh api graphql --paginate --slurp -f searchQuery="$request" -f query="$DISCUSSIONS" > "raw/$path"` |
 | `curl` | `curl -fsS --max-time 60 "$request" > "raw/$path"` |
 | `agent` | Review `request` with your own tools and write `raw/$path` as a JSON array of items (`vulnbell schema items`). |
@@ -70,18 +70,34 @@ DISCUSSIONS='query($searchQuery: String!, $endCursor: String) {
     pageInfo { hasNextPage endCursor }
   }
 }'
+LINKED_DISCUSSION='query($owner: String!, $repository: String!, $number: Int!) {
+  repository(owner: $owner, name: $repository) {
+    discussion(number: $number) { number title url updatedAt body category { name } }
+  }
+}'
 jq -r '.missing[] | select(.tool != "agent") | [.tool, .path, .request] | @tsv' hits.json |
 while IFS=$'\t' read -r tool path request; do
   mkdir -p "raw/$(dirname "$path")"
   case "$tool" in
-    gh_rest|gh_rest_single) gh api "$request" > "raw/$path" ;;
+    gh_rest) gh api "$request" > "raw/$path" ;;
+    gh_rest_single)
+      if error=$(gh api "$request" 2>&1 > "raw/$path"); then
+        true
+      elif [[ "$error" == *'HTTP 404'* ]] && [[ "$request" =~ ^repos/([a-zA-Z0-9_.-]+)/([a-zA-Z0-9_.-]+)/issues/([0-9]+)$ ]]; then
+        owner=${BASH_REMATCH[1]} repository=${BASH_REMATCH[2]} number=${BASH_REMATCH[3]}
+        gh api graphql -f owner="$owner" -f repository="$repository" -F number="$number" -f query="$LINKED_DISCUSSION" > "raw/$path"
+      else
+        printf '%s\n' "$error" >&2
+        false
+      fi ;;
     gh_graphql_discussions) gh api graphql --paginate --slurp -f searchQuery="$request" -f query="$DISCUSSIONS" > "raw/$path" ;;
     curl) curl -fsS --max-time 60 "$request" > "raw/$path" ;;
-  esac || rm -f "raw/$path"
+  esac || python3 -c 'import pathlib, sys; pathlib.Path(sys.argv[1]).unlink(missing_ok=True)' "raw/$path"
 done
 ```
 
 - Rerun `tools hits` after each round: paged GitHub REST, GitLab, Forgejo and Jira sources list the next page only after reading the previous one. A full GitHub REST page requires the following page, even if that page is empty. GitHub, GitLab and Forgejo linked issues are fetched separately when absent from the activity window.
+- A GitHub closing reference can identify a discussion. If its issue endpoint returns 404, query that exact discussion by number; retain the GraphQL response at the requested path. VulnBell validates its repository, number and URL and screens it as linked context. A missing discussion, GraphQL error or denied access remains an open source gap.
 - If a GitHub closing reference is ambiguous, `tools hits` reports a resolution path relative to `raw/`. Verify the intended issue against both the change and the issue before resolving it. Write one JSON object at that path with `reference` (the exact reported reference), `rationale` (the evidence for the match), and `issue` (the complete JSON object obtained from `gh api` for that issue). The issue number and canonical GitHub URL must match; an unverified reference keeps the source incomplete.
 - Releases use their source update timestamp. When it is unavailable, coverage is partial because edits to older releases cannot be placed in the window.
 - A batch reads at most 64 MiB and keeps at most 300,000 JSON values and field names. GitHub issue and release pages discard unused metadata in memory after each bounded page; original responses remain unchanged. Use `--upstream <URL>` on both `tools hits` and `tools draft` to process one planned source at a time. If one source exceeds a limit, retain partial coverage and review it through the agent's source tools.
