@@ -52,6 +52,10 @@ For an available lockfile scanner, state tool and version, scan date, lockfile/h
 |---|---|---|---|---|
 | ... | What the source claims, in one sentence | Verified facts, uncertainty and the condition still unconfirmed | Concrete check | Original issue/PR/advisory links |
 
+## Questions for responsible teams
+
+For material unresolved facts the team can supply, list a stable question ID, responsible role, exact question and useful non-secret evidence, with the related cases or advisory references. Group shared facts without assuming an answer applies to every environment.
+
 ## Coverage and execution
 
 | Source | Gap | Next step |
@@ -64,6 +68,8 @@ Keep scheduled reports within 500 words; aim for 350–450. Prioritize actionabl
 Use the recorded case decision and current impact assessment for the counts. Each in-review entry needs its case ID, affected component/version, a short description of the claim, what is already verified, and what still prevents a conclusion. A bare issue title or “investigation pending” is insufficient when the recorded evidence has more detail. Explain missing data explicitly. Project-impact uncertainty is separate from confirmation that the artifact/version is affected.
 
 Separate signals without a current impact assessment from assessed cases that remain in review. The former can contain new items or evidence from an older context; do not claim all were reviewed or require human review. State when a changed context reopened work and distinguish counts of cases, verdicts and research windows without adding overlapping counts. Prioritize actionable and material reviewed risks; summarize unevaluated signals and link their complete queue instead of reproducing a long list of titles. For every reviewed uncertainty give a specific owner or next check.
+
+Ask only questions that can change an assessment and are not already answered by available evidence. Identify the environment and reviewed artifact for each response; allow unknown, and never request secrets. Distinguish these questions from technical investigation and upstream disclosures the team cannot answer. If questions are prioritized rather than exhaustive, say so; responses do not guarantee every case will close. When answers arrive, retain their source, date and scope without secrets, check the workspace and inventory are current, then rerun impact and triage for each affected case. Preserve unresolved conditions and regenerate the report; never convert an unsupported answer into a confirmed fact.
 
 Summarize discovery progress and source mapping; keep the complete source map in the JSON report. Agent-observed dependencies have not been attested by a native lockfile parser or deployment record.
 
