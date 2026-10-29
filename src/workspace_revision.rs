@@ -231,6 +231,25 @@ fn git_status(workspace: &Path, repository: &Path, commit: &str) -> Result<Vec<u
             .env("GIT_OBJECT_DIRECTORY", &objects);
         command
     };
+    let flags = shadow_command()
+        .args(["ls-files", "-v", "-z", "--full-name", "--cached", "--", "."])
+        .output()?;
+    if !flags.status.success() {
+        bail!("Git index flags are unavailable");
+    }
+    for entry in flags
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+    {
+        if entry.len() < 3 || entry[1] != b' ' {
+            bail!("invalid Git index entry");
+        }
+        let path = std::str::from_utf8(&entry[2..])?;
+        if !private_path(path)? && (entry[0] == b'S' || entry[0].is_ascii_lowercase()) {
+            bail!("Git index hides working-tree changes");
+        }
+    }
     let paths = shadow_command()
         .args([
             "ls-files",

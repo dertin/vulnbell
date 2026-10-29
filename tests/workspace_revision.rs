@@ -29,6 +29,26 @@ fn git(path: &Path, args: &[&str]) -> String {
 }
 
 #[test]
+fn index_flags_cannot_hide_worktree_changes() {
+    for flag in ["--assume-unchanged", "--skip-worktree"] {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-b", "main"]);
+        fs::write(dir.path().join("tracked.txt"), "original").unwrap();
+        git(dir.path(), &["add", "tracked.txt"]);
+        git(dir.path(), &["commit", "-m", "fixture"]);
+        let reviewed = workspace_revision::capture_path(dir.path());
+        assert_eq!(reviewed.dirty, Some(false));
+        git(dir.path(), &["update-index", flag, "tracked.txt"]);
+        let flagged = workspace_revision::capture_path(dir.path());
+        assert_eq!(flagged.dirty, None);
+        assert!(workspace_revision::ensure_current(std::slice::from_ref(&reviewed)).is_err());
+        fs::write(dir.path().join("tracked.txt"), "changed").unwrap();
+        assert!(workspace_revision::ensure_current(&[flagged]).is_err());
+        assert!(workspace_revision::ensure_current(&[reviewed]).is_err());
+    }
+}
+
+#[test]
 fn changed_checkout_blocks_recording_and_keeps_the_scanned_revision_in_reports() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path().join("project");

@@ -91,6 +91,19 @@ fn npm_installed_path(path: &str) -> bool {
     path.starts_with("node_modules/") || path.contains("/node_modules/")
 }
 
+fn npm_pattern_match(pattern: &globset::GlobMatcher, path: &str) -> Option<bool> {
+    if !pattern.is_match(path) {
+        return Some(false);
+    }
+    let has_hidden_component = path
+        .split('/')
+        .any(|part| part.starts_with('.') && part != "." && part != "..");
+    if has_hidden_component && pattern.glob().glob().contains(['*', '?', '[', '{']) {
+        return None;
+    }
+    Some(true)
+}
+
 fn npm_workspace_patterns(root: &NpmPackage) -> Result<Vec<(bool, globset::GlobMatcher)>> {
     let patterns = match root.workspaces.as_ref() {
         Some(
@@ -127,13 +140,17 @@ fn npm_workspace_patterns(root: &NpmPackage) -> Result<Vec<(bool, globset::GlobM
             .context("invalid npm workspace pattern")?
             .compile_matcher();
         if negations % 2 == 0 {
-            excluded.retain(|previous| !previous.is_match(pattern));
+            excluded.retain(|previous| npm_pattern_match(previous, pattern) != Some(true));
             included.push((pattern.to_owned(), matcher));
         } else {
             excluded.push(matcher);
         }
     }
-    included.retain(|(pattern, _)| !excluded.iter().any(|negative| negative.is_match(pattern)));
+    included.retain(|(pattern, _)| {
+        !excluded
+            .iter()
+            .any(|negative| npm_pattern_match(negative, pattern) == Some(true))
+    });
     Ok(included
         .into_iter()
         .map(|(_, matcher)| (true, matcher))
@@ -168,10 +185,25 @@ fn npm_direct_paths(
                 continue;
             }
             let mut matched = false;
+            let mut uncertain = false;
             for (include, pattern) in &patterns {
-                if pattern.is_match(path) {
-                    matched = *include;
+                match npm_pattern_match(pattern, path) {
+                    Some(true) => matched = *include,
+                    Some(false) => {}
+                    None => uncertain = true,
                 }
+            }
+            if uncertain {
+                unresolved.extend(
+                    importer
+                        .dependencies
+                        .keys()
+                        .chain(importer.dev_dependencies.keys())
+                        .chain(importer.optional_dependencies.keys())
+                        .chain(importer.peer_dependencies.keys())
+                        .cloned(),
+                );
+                continue;
             }
             if !matched {
                 continue;
@@ -429,7 +461,7 @@ pub fn parse_lock(filename: &str, bytes: &[u8]) -> Result<Vec<LockedPackage>> {
                         }
                         let path = format!("{parent}node_modules/{name}");
                         let mut target = locked("npm", name, package.version);
-                        target.direct = Some(depth == 0);
+                        target.direct = if depth == 0 { None } else { Some(false) };
                         target.resolution = Some(path.clone());
                         target.artifact_integrity = package.integrity;
                         packages.push(target);
@@ -766,7 +798,7 @@ pub fn discover(
                 }
                 use rusqlite::OptionalExtension;
                 let hash = crate::digest(&bytes);
-                let key = format!("parser-v7:{name}:{hash}");
+                let key = format!("parser-v8:{name}:{hash}");
                 let cached: Option<String> = store
                     .connection
                     .query_row(

@@ -422,6 +422,37 @@ fn process_limits_terminate_timeouts_and_keep_output_bounded() {
 }
 
 #[test]
+fn npm_v1_hoisted_dependencies_have_unknown_directness() {
+    let lock = br#"{
+      "lockfileVersion": 1,
+      "dependencies": {
+        "is-odd": {"version":"3.0.1", "requires":{"is-number":"^6.0.0"}},
+        "is-number": {"version":"6.0.0"},
+        "parent": {"version":"1.0.0", "dependencies":{"nested":{"version":"2.0.0"}}}
+      }
+    }"#;
+    let packages = parse_lock("package-lock.json", lock).unwrap();
+    for name in ["is-odd", "is-number", "parent"] {
+        assert_eq!(
+            packages
+                .iter()
+                .find(|package| package.name == name)
+                .unwrap()
+                .direct,
+            None
+        );
+    }
+    assert_eq!(
+        packages
+            .iter()
+            .find(|package| package.name == "nested")
+            .unwrap()
+            .direct,
+        Some(false)
+    );
+}
+
+#[test]
 fn npm_nested_versions_do_not_inherit_the_root_directness() {
     let lock=br#"{"lockfileVersion":3,"packages":{"":{"dependencies":{"lodash":"4.17.20","alias":"npm:lodash@4.17.21"}},"node_modules/lodash":{"version":"4.17.20"},"node_modules/alias":{"name":"lodash","version":"4.17.21"},"node_modules/parent/node_modules/lodash":{"version":"4.17.19"}}}"#;
     let packages = parse_lock("package-lock.json", lock).unwrap();
@@ -449,6 +480,82 @@ fn npm_nested_versions_do_not_inherit_the_root_directness() {
             .direct,
         Some(false)
     );
+}
+
+#[test]
+fn npm_hidden_paths_do_not_become_workspaces_from_wildcards() {
+    let lock = br#"{
+      "lockfileVersion": 3,
+      "packages": {
+        "": {"workspaces":["packages/*"], "dependencies":{"local-hidden":"file:packages/.hidden"}},
+        "packages/.hidden": {"name":"local-hidden", "dependencies":{"is-number":"7.0.0"}},
+        "packages/app": {"name":"app", "dependencies":{"picomatch":"4.0.3"}},
+        "node_modules/local-hidden": {"resolved":"packages/.hidden", "link":true},
+        "node_modules/is-number": {"version":"7.0.0"},
+        "node_modules/picomatch": {"version":"4.0.3"}
+      }
+    }"#;
+    let packages = parse_lock("package-lock.json", lock).unwrap();
+    assert_eq!(
+        packages
+            .iter()
+            .find(|package| package.name == "is-number")
+            .unwrap()
+            .direct,
+        None
+    );
+    assert_eq!(
+        packages
+            .iter()
+            .find(|package| package.name == "picomatch")
+            .unwrap()
+            .direct,
+        Some(true)
+    );
+
+    let explicit = br#"{
+      "lockfileVersion": 3,
+      "packages": {
+        "": {"workspaces":["packages/.hidden", "!packages/*"]},
+        "packages/.hidden": {"dependencies":{"is-number":"7.0.0"}},
+        "node_modules/is-number": {"version":"7.0.0"}
+      }
+    }"#;
+    let packages = parse_lock("package-lock.json", explicit).unwrap();
+    assert_eq!(packages[0].direct, None);
+
+    let character_class = br#"{
+      "lockfileVersion": 3,
+      "packages": {
+        "": {"workspaces":["packages/[.a]hidden"]},
+        "packages/.hidden": {"dependencies":{"is-number":"7.0.0"}},
+        "node_modules/is-number": {"version":"7.0.0"}
+      }
+    }"#;
+    let packages = parse_lock("package-lock.json", character_class).unwrap();
+    assert_eq!(packages[0].direct, None);
+
+    let excluded_class = br#"{
+      "lockfileVersion": 3,
+      "packages": {
+        "": {"workspaces":["packages/.hidden", "!packages/[.a]hidden"]},
+        "packages/.hidden": {"dependencies":{"is-number":"7.0.0"}},
+        "node_modules/is-number": {"version":"7.0.0"}
+      }
+    }"#;
+    let packages = parse_lock("package-lock.json", excluded_class).unwrap();
+    assert_eq!(packages[0].direct, None);
+
+    let literal = br#"{
+      "lockfileVersion": 3,
+      "packages": {
+        "": {"workspaces":["packages/.hidden"]},
+        "packages/.hidden": {"dependencies":{"is-number":"7.0.0"}},
+        "node_modules/is-number": {"version":"7.0.0"}
+      }
+    }"#;
+    let packages = parse_lock("package-lock.json", literal).unwrap();
+    assert_eq!(packages[0].direct, Some(true));
 }
 
 #[test]
@@ -557,7 +664,7 @@ fn npm_workspace_directness_replaces_cached_inventory_for_research() {
         .execute(
             "INSERT INTO inventory_cache VALUES (?1, ?2)",
             rusqlite::params![
-                format!("parser-v6:package-lock.json:{}", vulnbell::digest(lock)),
+                format!("parser-v7:package-lock.json:{}", vulnbell::digest(lock)),
                 serde_json::to_string(&vec![previous]).unwrap()
             ],
         )
