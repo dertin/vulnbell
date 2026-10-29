@@ -2,7 +2,7 @@ use crate::model::{Coverage, CoverageState, Instance, Origin, Provenance};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
 };
 
@@ -19,6 +19,8 @@ pub struct LockedPackage {
     pub direct: Option<bool>,
     pub resolution: Option<String>,
     pub artifact_integrity: Option<String>,
+    #[serde(default)]
+    pub line: Option<usize>,
 }
 #[derive(Deserialize)]
 struct CargoLock {
@@ -31,6 +33,8 @@ struct CargoPackage {
     version: String,
     source: Option<String>,
     checksum: Option<String>,
+    #[serde(default)]
+    dependencies: Vec<String>,
 }
 #[derive(Deserialize)]
 struct ComposerLock {
@@ -66,8 +70,172 @@ struct NpmPackage {
     integrity: Option<String>,
     #[serde(default)]
     link: bool,
+    workspaces: Option<NpmWorkspaces>,
     #[serde(default)]
     dependencies: BTreeMap<String, String>,
+    #[serde(default, rename = "devDependencies")]
+    dev_dependencies: BTreeMap<String, String>,
+    #[serde(default, rename = "optionalDependencies")]
+    optional_dependencies: BTreeMap<String, String>,
+    #[serde(default, rename = "peerDependencies")]
+    peer_dependencies: BTreeMap<String, String>,
+}
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum NpmWorkspaces {
+    Patterns(Vec<String>),
+    Packages { packages: Vec<String> },
+}
+
+fn npm_installed_path(path: &str) -> bool {
+    path.starts_with("node_modules/") || path.contains("/node_modules/")
+}
+
+fn npm_pattern_match(pattern: &globset::GlobMatcher, path: &str) -> Option<bool> {
+    if !pattern.is_match(path) {
+        return Some(false);
+    }
+    let has_hidden_component = path
+        .split('/')
+        .any(|part| part.starts_with('.') && part != "." && part != "..");
+    if has_hidden_component && pattern.glob().glob().contains(['*', '?', '[', '{']) {
+        return None;
+    }
+    Some(true)
+}
+
+fn npm_workspace_patterns(root: &NpmPackage) -> Result<Vec<(bool, globset::GlobMatcher)>> {
+    let patterns = match root.workspaces.as_ref() {
+        Some(
+            NpmWorkspaces::Patterns(patterns) | NpmWorkspaces::Packages { packages: patterns },
+        ) => patterns,
+        None => return Ok(Vec::new()),
+    };
+    if patterns.len() > 1000 {
+        bail!("npm workspace pattern limit exceeded");
+    }
+    let mut included: Vec<(String, globset::GlobMatcher)> = Vec::new();
+    let mut excluded: Vec<globset::GlobMatcher> = Vec::new();
+    for raw in patterns {
+        if raw.len() > 4096 {
+            bail!("npm workspace pattern exceeds size limit");
+        }
+        let negations = raw.bytes().take_while(|byte| *byte == b'!').count();
+        let normalized = raw[negations..].replace('\\', "/");
+        let pattern = normalized
+            .trim_start_matches("./")
+            .trim_start_matches('/')
+            .trim_end_matches('/');
+        if pattern.is_empty()
+            || raw.contains("!(")
+            || ["!(", "@(", "+(", "?(", "*("]
+                .iter()
+                .any(|part| pattern.contains(part))
+        {
+            bail!("unsupported npm workspace pattern");
+        }
+        let matcher = globset::GlobBuilder::new(pattern)
+            .literal_separator(true)
+            .build()
+            .context("invalid npm workspace pattern")?
+            .compile_matcher();
+        if negations % 2 == 0 {
+            excluded.retain(|previous| npm_pattern_match(previous, pattern) != Some(true));
+            included.push((pattern.to_owned(), matcher));
+        } else {
+            excluded.push(matcher);
+        }
+    }
+    included.retain(|(pattern, _)| {
+        !excluded
+            .iter()
+            .any(|negative| npm_pattern_match(negative, pattern) == Some(true))
+    });
+    Ok(included
+        .into_iter()
+        .map(|(_, matcher)| (true, matcher))
+        .chain(excluded.into_iter().map(|matcher| (false, matcher)))
+        .collect())
+}
+
+fn npm_direct_paths(
+    packages: &BTreeMap<String, NpmPackage>,
+) -> Result<Option<(HashSet<String>, HashSet<String>)>> {
+    let Some(root) = packages.get("") else {
+        return Ok(None);
+    };
+    let patterns = npm_workspace_patterns(root)?;
+    let mut direct = HashSet::new();
+    let mut unresolved = HashSet::new();
+    for (path, importer) in packages {
+        if !path.is_empty() {
+            if npm_installed_path(path) {
+                continue;
+            }
+            if root.workspaces.is_none() {
+                unresolved.extend(
+                    importer
+                        .dependencies
+                        .keys()
+                        .chain(importer.dev_dependencies.keys())
+                        .chain(importer.optional_dependencies.keys())
+                        .chain(importer.peer_dependencies.keys())
+                        .cloned(),
+                );
+                continue;
+            }
+            let mut matched = false;
+            let mut uncertain = false;
+            for (include, pattern) in &patterns {
+                match npm_pattern_match(pattern, path) {
+                    Some(true) => matched = *include,
+                    Some(false) => {}
+                    None => uncertain = true,
+                }
+            }
+            if uncertain {
+                unresolved.extend(
+                    importer
+                        .dependencies
+                        .keys()
+                        .chain(importer.dev_dependencies.keys())
+                        .chain(importer.optional_dependencies.keys())
+                        .chain(importer.peer_dependencies.keys())
+                        .cloned(),
+                );
+                continue;
+            }
+            if !matched {
+                continue;
+            }
+        }
+        for name in importer
+            .dependencies
+            .keys()
+            .chain(importer.dev_dependencies.keys())
+            .chain(importer.optional_dependencies.keys())
+            .chain(importer.peer_dependencies.keys())
+        {
+            let mut directory = path.as_str();
+            loop {
+                let candidate = if directory.is_empty() {
+                    format!("node_modules/{name}")
+                } else {
+                    format!("{directory}/node_modules/{name}")
+                };
+                if packages.contains_key(&candidate) {
+                    direct.insert(candidate);
+                    break;
+                }
+                if directory.is_empty() {
+                    unresolved.insert(name.clone());
+                    break;
+                }
+                directory = directory.rsplit_once('/').map_or("", |(parent, _)| parent);
+            }
+        }
+    }
+    Ok(Some((direct, unresolved)))
 }
 #[derive(Deserialize)]
 struct PnpmLock {
@@ -75,6 +243,19 @@ struct PnpmLock {
     version: serde_json::Value,
     #[serde(default)]
     packages: BTreeMap<String, serde::de::IgnoredAny>,
+    #[serde(default)]
+    importers: BTreeMap<String, PnpmImporter>,
+}
+#[derive(Deserialize)]
+struct PnpmImporter {
+    #[serde(default)]
+    dependencies: BTreeMap<String, serde_json::Value>,
+    #[serde(default, rename = "devDependencies")]
+    dev_dependencies: BTreeMap<String, serde_json::Value>,
+    #[serde(default, rename = "optionalDependencies")]
+    optional_dependencies: BTreeMap<String, serde_json::Value>,
+    #[serde(default, rename = "peerDependencies")]
+    peer_dependencies: BTreeMap<String, serde_json::Value>,
 }
 #[derive(Deserialize)]
 struct Cyclone {
@@ -119,6 +300,55 @@ fn locked(ecosystem: &str, name: String, version: String) -> LockedPackage {
         direct: None,
         resolution: None,
         artifact_integrity: None,
+        line: None,
+    }
+}
+/// Records the 1-based line of each package entry for formats with one entry per key.
+fn locate_lines(filename: &str, bytes: &[u8], packages: &mut [LockedPackage]) {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return;
+    };
+    let mut lines: BTreeMap<String, usize> = BTreeMap::new();
+    match filename {
+        "Cargo.lock" => {
+            let mut name: Option<(&str, usize)> = None;
+            for (index, line) in text.lines().enumerate() {
+                if let Some(value) = line.strip_prefix("name = ") {
+                    name = Some((value.trim_matches('"'), index + 1));
+                } else if let (Some(value), Some((package, start))) =
+                    (line.strip_prefix("version = "), name.take())
+                {
+                    lines
+                        .entry(format!("{package}@{}", value.trim_matches('"')))
+                        .or_insert(start);
+                }
+            }
+            for package in packages {
+                package.line = lines
+                    .get(&format!("{}@{}", package.name, package.version))
+                    .copied();
+            }
+        }
+        "package-lock.json" | "pnpm-lock.yaml" => {
+            for (index, line) in text.lines().enumerate() {
+                let key = line
+                    .trim()
+                    .trim_end_matches('{')
+                    .trim_end()
+                    .trim_end_matches(':');
+                lines
+                    .entry(key.trim_matches(['"', '\'']).to_owned())
+                    .or_insert(index + 1);
+            }
+            for package in packages {
+                package.line = package
+                    .resolution
+                    .as_ref()
+                    .and_then(|resolution| lines.get(resolution))
+                    .copied();
+            }
+        }
+        _ => (),
     }
 }
 fn purl_package(value: &str) -> Result<LockedPackage> {
@@ -142,6 +372,38 @@ pub fn parse_lock(filename: &str, bytes: &[u8]) -> Result<Vec<LockedPackage>> {
             if lock.version.is_some_and(|version| version > 4) {
                 bail!("unsupported Cargo lock version");
             }
+            let roots: Vec<&CargoPackage> = lock
+                .package
+                .iter()
+                .filter(|package| package.source.is_none())
+                .collect();
+            let mut direct = std::collections::HashSet::new();
+            let mut ambiguous = std::collections::HashSet::new();
+            let mut root_references_complete = true;
+            for dependency in roots.iter().flat_map(|root| &root.dependencies) {
+                let mut fields = dependency.split_whitespace();
+                let Some(name) = fields.next() else {
+                    root_references_complete = false;
+                    continue;
+                };
+                let version = fields.next().filter(|value| !value.starts_with('('));
+                let candidates: Vec<&CargoPackage> = lock
+                    .package
+                    .iter()
+                    .filter(|package| {
+                        package.name == name
+                            && version.is_none_or(|version| package.version == version)
+                    })
+                    .collect();
+                if candidates.len() == 1 {
+                    direct.insert((candidates[0].name.clone(), candidates[0].version.clone()));
+                } else if candidates.len() > 1 {
+                    ambiguous.insert(name.to_owned());
+                } else {
+                    root_references_complete = false;
+                }
+            }
+            let has_roots = !roots.is_empty();
             for package in lock.package {
                 if let Some(source) = package.source.as_deref()
                     && (source.starts_with("registry+") || source.starts_with("sparse+"))
@@ -155,6 +417,17 @@ pub fn parse_lock(filename: &str, bytes: &[u8]) -> Result<Vec<LockedPackage>> {
                         bail!("custom Cargo registry has no verified crates.io equivalence");
                     }
                     let mut target = locked("cargo", package.name, package.version);
+                    if has_roots {
+                        target.direct = if direct
+                            .contains(&(target.name.clone(), target.version.clone()))
+                        {
+                            Some(true)
+                        } else if !root_references_complete || ambiguous.contains(&target.name) {
+                            None
+                        } else {
+                            Some(false)
+                        };
+                    }
                     target.resolution = package.source;
                     target.artifact_integrity = package.checksum;
                     packages.push(target);
@@ -188,7 +461,7 @@ pub fn parse_lock(filename: &str, bytes: &[u8]) -> Result<Vec<LockedPackage>> {
                         }
                         let path = format!("{parent}node_modules/{name}");
                         let mut target = locked("npm", name, package.version);
-                        target.direct = Some(depth == 0);
+                        target.direct = if depth == 0 { None } else { Some(false) };
                         target.resolution = Some(path.clone());
                         target.artifact_integrity = package.integrity;
                         packages.push(target);
@@ -203,13 +476,9 @@ pub fn parse_lock(filename: &str, bytes: &[u8]) -> Result<Vec<LockedPackage>> {
                 }
                 visit(lock.dependencies, &mut packages, 0, "")?;
             } else if matches!(lock.version, 2 | 3) {
-                let direct_names: std::collections::HashSet<String> = lock
-                    .packages
-                    .get("")
-                    .map(|root| root.dependencies.keys().cloned().collect())
-                    .unwrap_or_default();
+                let direct_paths = npm_direct_paths(&lock.packages)?;
                 for (path, package) in lock.packages {
-                    if path.is_empty() || package.link {
+                    if !npm_installed_path(&path) || package.link {
                         continue;
                     }
                     let name = match package.name {
@@ -224,11 +493,20 @@ pub fn parse_lock(filename: &str, bytes: &[u8]) -> Result<Vec<LockedPackage>> {
                     if version.starts_with("file:") || version.starts_with("git") {
                         bail!("nonregistry npm package: identity unresolved");
                     }
-                    let direct = direct_names
-                        .iter()
-                        .any(|declared_name| path == format!("node_modules/{declared_name}"));
+                    let direct = direct_paths.as_ref().and_then(|(paths, unresolved)| {
+                        if paths.contains(&path) {
+                            Some(true)
+                        } else if path
+                            .rsplit_once("node_modules/")
+                            .is_some_and(|(_, name)| unresolved.contains(name))
+                        {
+                            None
+                        } else {
+                            Some(false)
+                        }
+                    });
                     let mut target = locked("npm", name, version);
-                    target.direct = Some(direct);
+                    target.direct = direct;
                     target.resolution = Some(path);
                     target.artifact_integrity = package.integrity;
                     packages.push(target);
@@ -251,6 +529,40 @@ pub fn parse_lock(filename: &str, bytes: &[u8]) -> Result<Vec<LockedPackage>> {
             {
                 bail!("supported pnpm lock versions: 6 and 9");
             }
+            let mut direct = std::collections::HashSet::new();
+            let mut complete = !lock.importers.is_empty();
+            for importer in lock.importers.values() {
+                for (name, value) in importer
+                    .dependencies
+                    .iter()
+                    .chain(&importer.dev_dependencies)
+                    .chain(&importer.optional_dependencies)
+                    .chain(&importer.peer_dependencies)
+                {
+                    let resolved = value
+                        .as_str()
+                        .or_else(|| value.get("version").and_then(serde_json::Value::as_str));
+                    match resolved {
+                        Some(version)
+                            if !version.is_empty()
+                                && !version.starts_with("link:")
+                                && !version.starts_with("file:")
+                                && !version.starts_with("workspace:")
+                                && !version.starts_with("npm:")
+                                && semver::Version::parse(
+                                    version.split('(').next().unwrap_or(version),
+                                )
+                                .is_ok() =>
+                        {
+                            direct.insert((
+                                name.clone(),
+                                version.split('(').next().unwrap_or(version).to_owned(),
+                            ));
+                        }
+                        _ => complete = false,
+                    }
+                }
+            }
             for (key, _) in lock.packages {
                 let identity = key
                     .trim_start_matches('/')
@@ -261,6 +573,11 @@ pub fn parse_lock(filename: &str, bytes: &[u8]) -> Result<Vec<LockedPackage>> {
                     .rsplit_once('@')
                     .context("pnpm registry key must contain @version")?;
                 let mut target = locked("npm", name.into(), package_version.into());
+                if direct.contains(&(name.to_owned(), package_version.to_owned())) {
+                    target.direct = Some(true);
+                } else if complete {
+                    target.direct = Some(false);
+                }
                 target.resolution = Some(key);
                 packages.push(target);
             }
@@ -335,7 +652,27 @@ pub fn parse_lock(filename: &str, bytes: &[u8]) -> Result<Vec<LockedPackage>> {
     if packages.len() > 100_000 {
         bail!("package count exceeds 100000");
     }
+    locate_lines(filename, bytes, &mut packages);
     Ok(packages)
+}
+/// Coverage detail for manifests without a native parser; general discovery can cover them.
+pub const UNSUPPORTED_MANIFEST: &str = "detected ecosystem lock/manifest is not implemented; provide a supported SBOM or explicit components";
+/// Coverage detail for workspaces without native lockfiles; general discovery can cover them.
+pub const NO_NATIVE_INVENTORY: &str = "no supported lockfile/SBOM found; this workspace was not evaluated for exact dependency versions";
+/// Lockfiles and SBOMs read by `parse_lock`; their parse failures are reported as inventory coverage.
+pub fn native_inventory_file(name: &str) -> bool {
+    [
+        "Cargo.lock",
+        "composer.lock",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "bom.json",
+        "sbom.json",
+    ]
+    .contains(&name)
+        || name.ends_with(".cdx.json")
+        || name.ends_with(".spdx.json")
 }
 pub fn discover(
     workspaces: &[String],
@@ -426,19 +763,7 @@ pub fn discover(
                 continue;
             }
             let name = entry.file_name().to_string_lossy();
-            let supported = [
-                "Cargo.lock",
-                "composer.lock",
-                "package-lock.json",
-                "pnpm-lock.yaml",
-                "yarn.lock",
-                "bom.json",
-                "sbom.json",
-            ]
-            .contains(&name.as_ref())
-                || name.ends_with(".cdx.json")
-                || name.ends_with(".spdx.json");
-            if !supported {
+            if !native_inventory_file(&name) {
                 if [
                     "go.mod",
                     "go.sum",
@@ -449,7 +774,14 @@ pub fn discover(
                 ]
                 .contains(&name.as_ref())
                 {
-                    inventory.coverage.push(Coverage::new("inventory",&entry.path().strip_prefix(&root).unwrap_or(entry.path()).to_string_lossy(),CoverageState::Unsupported,"detected ecosystem lock/manifest is not implemented; provide a supported SBOM or explicit components"));
+                    inventory.coverage.push(Coverage::new(
+                        "inventory",
+                        &crate::slash_path(
+                            entry.path().strip_prefix(&root).unwrap_or(entry.path()),
+                        ),
+                        CoverageState::Unsupported,
+                        UNSUPPORTED_MANIFEST,
+                    ));
                 }
                 continue;
             }
@@ -457,12 +789,8 @@ pub fn discover(
             if !visited.insert(entry.path().to_owned()) {
                 continue;
             }
-            let relative = entry
-                .path()
-                .strip_prefix(&root)
-                .unwrap_or(entry.path())
-                .to_string_lossy()
-                .to_string();
+            let relative =
+                crate::slash_path(entry.path().strip_prefix(&root).unwrap_or(entry.path()));
             let result = crate::read_limited(entry.path(), 32 * 1024 * 1024).and_then(|bytes| {
                 total_bytes += bytes.len();
                 if total_bytes > 128 * 1024 * 1024 {
@@ -470,7 +798,7 @@ pub fn discover(
                 }
                 use rusqlite::OptionalExtension;
                 let hash = crate::digest(&bytes);
-                let key = format!("parser-v3:{name}:{hash}");
+                let key = format!("parser-v8:{name}:{hash}");
                 let cached: Option<String> = store
                     .connection
                     .query_row(
@@ -561,14 +889,17 @@ pub fn discover(
                                 sha256: hash.clone(),
                                 observed_at: crate::now(),
                                 workspace: Some(workspace.clone()),
+                                workspace_context_sha256: None,
                                 direct: package.direct,
                                 resolution: package.resolution,
                                 artifact_integrity: package.artifact_integrity,
+                                line: package.line,
                             },
                             purl: Some(reference),
                             cpe_product: None,
                             upstream: None,
                             identity_evidence: Vec::new(),
+                            release: None,
                         });
                     }
                     inventory.coverage.push(Coverage::new("inventory", &relative, CoverageState::Checked, "registry packages parsed; directness is included when available; local/git dependencies have no registry equivalence"));
@@ -582,7 +913,12 @@ pub fn discover(
             }
         }
         if supported_files == 0 {
-            inventory.coverage.push(Coverage::new("inventory",workspace,CoverageState::Partial,"no supported lockfile/SBOM found; this workspace was not evaluated for exact dependency versions"));
+            inventory.coverage.push(Coverage::new(
+                "inventory",
+                workspace,
+                CoverageState::Partial,
+                NO_NATIVE_INVENTORY,
+            ));
         }
     }
     inventory

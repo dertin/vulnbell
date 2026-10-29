@@ -53,6 +53,42 @@ fn unit_quote(path: &Path) -> Result<String> {
     ))
 }
 
+/// Disables the timer and deletes only units this project manages; history stays in the store.
+fn remove_schedule(
+    profile: &Profile,
+    store: &Store,
+    timer: &str,
+    service: &str,
+) -> Result<serde_json::Value> {
+    let directory = crate::user_home()?.join(".config/systemd/user");
+    let mut removed = Vec::new();
+    for name in [timer, service] {
+        let target = directory.join(name);
+        if !target.exists() {
+            continue;
+        }
+        let content = String::from_utf8(crate::read_limited(&target, 65536)?)?;
+        if !content.contains(&format!("VulnBell {}", profile.project_id)) {
+            bail!("scheduler unit {name} is unmanaged; refusing removal");
+        }
+        if name == timer {
+            let result = systemd_command(&["disable", "--now", timer])?;
+            if !result.success {
+                bail!("cannot disable {timer}; inspect systemctl --user status {timer}");
+            }
+        }
+        std::fs::remove_file(&target)?;
+        removed.push(name.to_owned());
+    }
+    if !removed.is_empty() && !systemd_command(&["daemon-reload"])?.success {
+        bail!("units removed but systemctl --user daemon-reload failed");
+    }
+    store
+        .connection
+        .execute("DELETE FROM meta WHERE key='scheduler_id'", [])?;
+    Ok(serde_json::json!({"schema_version":1,"removed_units":removed}))
+}
+
 pub fn schedule(
     profile: &Profile,
     path: &Path,
@@ -67,8 +103,11 @@ pub fn schedule(
     if action == "status" {
         return Ok(serde_json::to_value(status::project_status(&store)?)?);
     }
+    if action == "remove" {
+        return remove_schedule(profile, &store, &timer, &service);
+    }
     if action != "install" {
-        bail!("scheduler action must be install or status");
+        bail!("scheduler action must be install, status or remove");
     }
     if profile.schedule.is_none() {
         bail!("profile must request schedule: daily, weekdays or weekly");

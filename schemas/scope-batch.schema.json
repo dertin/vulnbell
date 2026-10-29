@@ -1,0 +1,58 @@
+{
+  "$defs": {
+    "CaseScope": {
+      "additionalProperties": false,
+      "properties": {
+        "case_id": {
+          "type": "string"
+        },
+        "facts_sha256": {
+          "type": "string"
+        },
+        "instance_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "note": {
+          "description": "A reviewed evidence note; relative to the batch file.",
+          "type": "string"
+        },
+        "rationale": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "case_id",
+        "facts_sha256",
+        "instance_ids",
+        "rationale",
+        "note"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Evidence-backed narrowing of previously over-broad research cases. This does not settle impact.",
+  "properties": {
+    "cases": {
+      "items": {
+        "$ref": "#/$defs/CaseScope"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "cases"
+  ],
+  "title": "ScopeBatch",
+  "type": "object"
+}

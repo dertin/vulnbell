@@ -11,8 +11,8 @@ fn scheduled_discovery_separates_local_extraction_public_mapping_and_reporting()
     )
     .unwrap();
     let project = uuid::Uuid::new_v4().to_string();
-    let path = root.join("radar.yaml");
-    fs::write(&path,format!("schema: 1\nproject_id: {project}\nname: scheduled-general\nschedule: daily\nworkspaces: [workspace]\n")).unwrap();
+    let path = root.join("vulnbell.yaml");
+    fs::write(&path,format!("schema: 1\nproject_id: {project}\nname: scheduled-general\nschedule: daily\nworkspaces: [workspace]\nresearch:\n  follow: [example-tool]\nreport:\n  language: es\n")).unwrap();
     let profile = vulnbell::profile::load(&path).unwrap();
     let store = vulnbell::store::Store::open(&project).unwrap();
     let key = vulnbell::digest(
@@ -75,11 +75,11 @@ fn scheduled_discovery_separates_local_extraction_public_mapping_and_reporting()
         vulnbell::discovery::summary(&profile, &path, &store)
             .unwrap()
             .sources_unavailable,
-        9
+        1
     );
     let report = fs::read_to_string(result["report"].as_str().unwrap()).unwrap();
     assert!(report.contains("Descubrimiento"));
-    assert!(report.contains("Cambios propuestos"));
+    assert!(report.contains("sin repositorio (sin investigación upstream): 1"));
     assert!(report.contains("example-tool"));
     drop(store);
     fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();

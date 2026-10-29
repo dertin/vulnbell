@@ -25,14 +25,17 @@ Use `vulnbell schema schedule --json` for the exact project contract. `vulnbell 
 Linux can install and inspect a user-level systemd timer directly:
 
 ```sh
-vulnbell schedule install --project /absolute/path/radar.yaml --from schedule.json
-vulnbell schedule status --project /absolute/path/radar.yaml
+vulnbell schedule install --project /absolute/path/vulnbell.yaml --from schedule.json
+vulnbell schedule status --project /absolute/path/vulnbell.yaml
+vulnbell schedule remove --project /absolute/path/vulnbell.yaml
 ```
+
+After moving a profile, rerun `schedule install` with the new path; it rewrites the project's units. `remove` disables the timer and deletes only units managed for that project. Run history and reports remain.
 
 On macOS, configure launchd to call the following command. On Windows, configure Task Scheduler to call it. Use an absolute path to both the executable and profile.
 
 ```sh
-vulnbell run --project /absolute/path/radar.yaml
+vulnbell run --project /absolute/path/vulnbell.yaml
 ```
 
 Native job installation is included for Linux. VulnBell does not create the launchd or Task Scheduler job. The same project schedule and execution window are enforced when the native scheduler calls `run`.
@@ -40,13 +43,13 @@ Native job installation is included for Linux. VulnBell does not create the laun
 Run and inspect the monitor at any time:
 
 ```sh
-vulnbell run --project /absolute/path/radar.yaml --now
+vulnbell run --project /absolute/path/vulnbell.yaml --now
 vulnbell status --json
 ```
 
 `weekdays` runs Monday to Friday. `weekly` runs on Monday. Each project can use a different time.
 
-The timer runs as soon as possible within the window. If the computer misses the whole window, that run is skipped. Runs for the same project cannot overlap. Expired periods are not replayed. VulnBell does not wake the computer or promise to run before login.
+The timer runs as soon as possible within the window. If the computer misses the whole window, that run is skipped. Runs for the same project cannot overlap. A second command waits up to 120 seconds for the project lock; set `VULNBELL_LOCK_WAIT_SECONDS` to change it. Expired periods are not replayed. VulnBell does not wake the computer or promise to run before login.
 
 The job scans, completes pending discovery, researches upstream activity in bounded pages, validates and imports results, and writes a report. Workspace extraction has no tools; public discovery receives component identities without workspace text. File queues and source continuations persist across runs. Only a completed source review advances its time checkpoint. An agent failure leaves a Markdown report marked as partial. `vulnbell status` shows every registered project, discovery progress, runner availability, timer health, completed or skipped runs, failures, and the latest report. `schedule status` shows the same persisted details for one profile.
 

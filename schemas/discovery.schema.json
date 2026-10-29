@@ -169,8 +169,28 @@
         "component": {
           "$ref": "#/$defs/Component"
         },
+        "direct": {
+          "description": "Agent-observed relationship to the project, supported by this manifest excerpt.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "direct_rationale": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "excerpt": {
           "type": "string"
+        },
+        "version_excerpt": {
+          "description": "Literal version definition from the same chunk when `excerpt` references it through a\n`${name}` placeholder (for example a Maven `<properties>` entry).",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

@@ -49,6 +49,20 @@ pub struct RunnerCheck {
     pub adapter: String,
     pub tested_version: String,
     pub ready: bool,
+    /// Result of the opt-in live probe; `None` when only isolation and version were checked.
+    pub web_research: Option<bool>,
+    pub reason: Option<String>,
+}
+
+const PROBE_URL: &str = "https://example.com/";
+const PROBE_TITLE: &str = "Example Domain";
+const PROBE_SECONDS: u64 = 240;
+
+#[derive(Deserialize)]
+struct ProbeAnswer {
+    reachable: bool,
+    title: String,
+    detail: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -236,17 +250,79 @@ pub fn list() -> Result<Vec<RunnerSummary>> {
     Ok(summaries)
 }
 
-pub fn check(id: &str) -> Result<RunnerCheck> {
+/// Checks version and isolation; with `live`, also runs one public research request, because
+/// an isolated runner can start correctly yet have no working web tool.
+pub fn check(id: &str, live: bool) -> Result<RunnerCheck> {
     let config = load(id)?;
     let temporary = tempfile::tempdir()?;
     adapter(&config).check(temporary.path())?;
+    let (web_research, reason) = if live {
+        match probe(id, temporary.path()) {
+            Ok(()) => (Some(true), None),
+            Err(error) => (Some(false), Some(error.to_string())),
+        }
+    } else {
+        (None, None)
+    };
     Ok(RunnerCheck {
         schema_version: 1,
         id: config.id,
         adapter: config.adapter.name().to_owned(),
         tested_version: config.adapter.tested_version().to_owned(),
-        ready: true,
+        ready: web_research != Some(false),
+        web_research,
+        reason,
     })
+}
+
+fn probe(id: &str, directory: &Path) -> Result<()> {
+    let schema = directory.join("probe.schema.json");
+    crate::atomic_write(
+        &schema,
+        &serde_json::to_vec(&serde_json::json!({
+            "type": "object",
+            "properties": {
+                "reachable": {"type": "boolean"},
+                "title": {"type": "string"},
+                "detail": {"type": "string"}
+            },
+            "required": ["reachable", "title", "detail"],
+            "additionalProperties": false
+        }))?,
+    )?;
+    let output = directory.join("probe.json");
+    let prompt = format!(
+        "Connectivity probe. Use your web tool to open {PROBE_URL} and return its HTML <title> in `title`. \
+         Set `reachable` to false and explain in `detail` if any tool is unavailable or fails. Do not guess the title."
+    );
+    execute(
+        id,
+        Request {
+            directory,
+            output: &output,
+            prompt: &prompt,
+            schema: Some(&schema),
+            role: AgentRole::PublicResearch,
+            seconds: PROBE_SECONDS,
+            log: &directory.join("probe.log"),
+        },
+    )?;
+    probe_result(&crate::read_limited(&output, 64 * 1024)?)
+}
+
+fn probe_result(bytes: &[u8]) -> Result<()> {
+    let answer: ProbeAnswer =
+        serde_json::from_slice(bytes).context("probe answer does not match its schema")?;
+    if !answer.reachable || !answer.title.contains(PROBE_TITLE) {
+        let detail: String = answer
+            .detail
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(300)
+            .collect();
+        bail!("web research unavailable through this runner: {detail}");
+    }
+    Ok(())
 }
 
 pub fn adapter_catalog() -> Vec<AdapterInfo> {

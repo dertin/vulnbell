@@ -19,6 +19,7 @@ fn unavailable_guest_returns_inconclusive_without_executing_the_test_on_the_host
     };
     let instance = Instance::declared(&component);
     let case = Case {
+        workspace_revisions: Vec::new(),
         schema_version: 1,
         case_id: "SIG-synthetic-unavailable".into(),
         project_id: project.clone(),
@@ -52,7 +53,7 @@ fn unavailable_guest_returns_inconclusive_without_executing_the_test_on_the_host
             [project_data.join("state.sqlite").to_str().unwrap()],
         )
         .unwrap();
-    let profile_path = directory.path().join("radar.yaml");
+    let profile_path = directory.path().join("vulnbell.yaml");
     fs::write(&profile_path,format!("schema: 1\nproject_id: {project}\nname: no-host-fallback\ncomponents:\n - ref: synthetic-no-host-fallback\n   version: '0.0.1'\n")).unwrap();
     let marker = directory.path().join("must-never-exist");
     let quoted = marker.to_string_lossy().replace('\'', "'\\''");
@@ -96,6 +97,31 @@ fn unavailable_guest_returns_inconclusive_without_executing_the_test_on_the_host
             .iter()
             .all(|evidence| evidence.kind != EvidenceKind::Attestation)
     );
+
+    let larger = TestSpec {
+        memory_mib: 1024,
+        timeout_seconds: 300,
+        ..spec
+    };
+    fs::write(&spec_path, serde_saphyr::to_string(&larger).unwrap()).unwrap();
+    let verify = || {
+        let mut command = assert_cmd::Command::new(assert_cmd::cargo::cargo_bin!("vulnbell"));
+        command
+            .env("VULNBELL_DATA_DIR", &isolated)
+            .args(["verify", &case.case_id, "--project"])
+            .arg(&profile_path)
+            .arg("--case")
+            .arg(&spec_path)
+            .arg("--authorize");
+        command
+    };
+    let rejected = verify().assert().failure().get_output().stderr.clone();
+    assert!(String::from_utf8_lossy(&rejected).contains("profile sandbox limits"));
+    let mut raised = fs::read_to_string(&profile_path).unwrap();
+    raised.push_str("sandbox:\n  max_memory_mib: 1024\n  max_timeout_seconds: 300\n");
+    fs::write(&profile_path, raised).unwrap();
+    verify().assert().success();
+    assert!(!marker.exists());
     drop(store);
     fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
 }

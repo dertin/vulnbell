@@ -1,236 +1,27 @@
+mod cli;
+
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
-use std::{fs, path::PathBuf};
+use clap::Parser;
+use cli::{Cli, Commands, RunnerCommands, Sandbox, Skills, ToolCommands, WorkspaceCommands};
+use std::{fs, io::Write};
 use vulnbell::{
     model::Verdict,
     profile::{self, Profile},
     store::Store,
+    tools::{cases, draft, hits, queue, workspace},
 };
 
-#[derive(Parser)]
-#[command(
-    version,
-    about = "Agent-first upstream security monitoring; explicit evidence and coverage"
-)]
-struct Cli {
-    #[command(subcommand)]
-    command: Commands,
-}
-#[derive(Subcommand)]
-enum Commands {
-    /// Install the embedded, version-aligned Agent Skill without overwriting user changes.
-    Skills {
-        #[command(subcommand)]
-        command: Skills,
-    },
-    /// Inspect CLI, skill, credentials, sandbox and scheduler capabilities.
-    Doctor {
-        #[arg(long)]
-        json: bool,
-    },
-    /// List monitored projects, scans, schedules, skipped runs and reports.
-    Status {
-        #[arg(long)]
-        json: bool,
-    },
-    /// Create a valid empty project; does not require a local workspace.
-    Init {
-        #[arg(long)]
-        output: PathBuf,
-    },
-    /// Print a versioned JSON Schema generated from the Rust contract.
-    Schema {
-        #[arg(value_parser=["profile","verdict","case","test","attestation","impact","report","research","discovery","runner","snapshot","schedule","status"])]
-        contract: String,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Validate YAML and semantic rules locally; no network calls.
-    Validate {
-        path: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Resolve inventory and query sources; never execute project code. Exit 2 means partial coverage.
-    Scan {
-        #[arg(long)]
-        project: PathBuf,
-        #[arg(long)]
-        json: bool,
-        #[arg(long)]
-        offline: bool,
-    },
-    /// List audited cases from the latest project state.
-    Inbox {
-        #[arg(long)]
-        project: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Open an evidence-bound case; optionally acquire an exact release tree in isolated Git.
-    Case {
-        id: String,
-        #[arg(long)]
-        project: PathBuf,
-        #[arg(long)]
-        json: bool,
-        #[arg(long)]
-        release_tree: Option<String>,
-        /// Fetch and register a public research link as context, never as an attestation.
-        #[arg(long)]
-        evidence_url: Option<String>,
-        /// Register a reviewed local note or result as evidence; do not include secrets or raw workspaces.
-        #[arg(long)]
-        evidence_file: Option<PathBuf>,
-        /// Record why local validation is blocked; this is context, never proof of safety.
-        #[arg(long, requires = "instance")]
-        validation_blocker: Option<String>,
-        #[arg(long, requires = "validation_blocker")]
-        instance: Option<String>,
-    },
-    /// Execute an explicitly authorized test in Microsandbox; no fallback to host execution.
-    Verify {
-        id: String,
-        #[arg(long)]
-        project: PathBuf,
-        #[arg(long = "case")]
-        test: PathBuf,
-        #[arg(long)]
-        authorize: bool,
-    },
-    /// Answer a fixed, evidence-bound questionnaire about project impact.
-    Impact {
-        id: String,
-        #[arg(long)]
-        project: PathBuf,
-        /// JSON answers matching schema impact. Without this option, prints the questions.
-        #[arg(long)]
-        from: Option<PathBuf>,
-    },
-    /// Apply a verdict against registered evidence and current case facts.
-    Triage {
-        id: String,
-        #[arg(long)]
-        project: PathBuf,
-        #[arg(long)]
-        from: PathBuf,
-    },
-    /// Export the current inventory, cases and source coverage.
-    Report {
-        #[arg(long)]
-        project: PathBuf,
-        #[arg(long)]
-        json: bool,
-        #[arg(long,default_value="manager",value_parser=["manager","cyber","audit"])]
-        audience: String,
-    },
-    /// Configure and verify local unattended agent adapters.
-    Runners {
-        #[command(subcommand)]
-        command: RunnerCommands,
-    },
-    /// Configure or inspect a real user-level daily scheduler; install runs the service once.
-    Schedule {
-        #[arg(value_parser=["install","status"])]
-        action: String,
-        #[arg(long)]
-        project: PathBuf,
-        /// Per-project ScheduleConfig JSON; schema is available through schema schedule.
-        #[arg(long)]
-        from: Option<PathBuf>,
-    },
-    /// Run the configured local agent inside the current schedule window; --now is an explicit test.
-    Run {
-        #[arg(long)]
-        project: PathBuf,
-        #[arg(long)]
-        now: bool,
-    },
-    /// Give the local agent review windows/seen events, or import its upstream observations.
-    Research {
-        #[arg(long)]
-        project: PathBuf,
-        #[arg(long)]
-        from: Option<PathBuf>,
-        #[arg(long, default_value = "")]
-        after: String,
-        #[arg(long, default_value_t = 1)]
-        limit: usize,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Resume general discovery, import observations, or acquire public source evidence.
-    Discovery {
-        #[arg(long)]
-        project: PathBuf,
-        #[arg(long, conflicts_with = "evidence_url")]
-        from: Option<PathBuf>,
-        #[arg(long)]
-        evidence_url: Option<String>,
-        #[arg(long,conflicts_with_all=["from","evidence_url"])]
-        gaps: bool,
-        #[arg(long, requires = "gaps", default_value = "")]
-        after: String,
-        #[arg(long, default_value_t = 10)]
-        limit: usize,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Acquire checksummed official guest artifacts; no guest/project code runs on the host.
-    Sandbox {
-        #[command(subcommand)]
-        command: Sandbox,
-    },
-}
-#[derive(Subcommand)]
-enum Skills {
-    Install {
-        #[arg(long, default_value="auto",value_parser=["auto","universal","codex","opencode"])]
-        host: String,
-        #[arg(long)]
-        directory: Option<PathBuf>,
-    },
-}
-#[derive(Subcommand)]
-enum RunnerCommands {
-    /// Save a typed runner configuration in the local VulnBell data directory.
-    Configure {
-        #[arg(long)]
-        from: PathBuf,
-    },
-    /// List locally configured runners without starting them.
-    List {
-        #[arg(long)]
-        json: bool,
-    },
-    /// Verify the configured client version and effective capability policy.
-    Check {
-        id: String,
-        #[arg(long)]
-        json: bool,
-    },
-}
-#[derive(Subcommand)]
-enum Sandbox {
-    /// Copy selected files into a hashed archive; never run project code on the host.
-    Stage {
-        #[arg(long)]
-        source: PathBuf,
-        #[arg(long = "file", required = true)]
-        files: Vec<PathBuf>,
-        #[arg(long)]
-        directory: PathBuf,
-    },
-    Prepare {
-        /// Digest-pinned official OCI toolchain image; defaults to Alpine.
-        #[arg(long)]
-        image: Option<String>,
-    },
-    Status,
-}
 fn emit(value: &impl serde::Serialize) -> Result<()> {
-    println!("{}", serde_json::to_string_pretty(value)?);
-    Ok(())
+    print(&serde_json::to_string_pretty(value)?)
+}
+/// A reader that closes the pipe early (`| head`) already received what it asked for; the
+/// command's state is persisted before output.
+fn print(text: &str) -> Result<()> {
+    let mut stdout = std::io::stdout().lock();
+    match writeln!(stdout, "{text}").and_then(|()| stdout.flush()) {
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => std::process::exit(0),
+        result => Ok(result?),
+    }
 }
 fn store_for(path: &std::path::Path) -> Result<(Profile, Store)> {
     let profile = profile::load(path)?;
@@ -277,6 +68,8 @@ fn run() -> Result<i32> {
                 research: Default::default(),
                 schedule: None,
                 alerts: Default::default(),
+                report: Default::default(),
+                sandbox: Default::default(),
             };
             if let Some(parent) = output.parent() {
                 fs::create_dir_all(parent)?;
@@ -327,6 +120,22 @@ fn run() -> Result<i32> {
                 "status" => {
                     serde_json::to_value(schemars::schema_for!(vulnbell::operations::StatusReport))?
                 }
+                "decisions" => serde_json::to_value(schemars::schema_for!(
+                    vulnbell::tools::draft::ResearchDecisions
+                ))?,
+                "impact-batch" => serde_json::to_value(schemars::schema_for!(
+                    vulnbell::tools::cases::ImpactBatch
+                ))?,
+                "verdict-batch" => serde_json::to_value(schemars::schema_for!(
+                    vulnbell::tools::cases::VerdictBatch
+                ))?,
+                "scope-batch" => {
+                    serde_json::to_value(schemars::schema_for!(vulnbell::tools::cases::ScopeBatch))?
+                }
+                "handoff-batch" => serde_json::to_value(schemars::schema_for!(
+                    vulnbell::tools::cases::HandoffBatch
+                ))?,
+                "items" => serde_json::to_value(schemars::schema_for!(Vec<vulnbell::tools::Item>))?,
                 _ => bail!("unknown schema"),
             };
             emit(&schema)?;
@@ -360,7 +169,7 @@ fn run() -> Result<i32> {
             if json {
                 emit(&snapshot)?;
             } else {
-                println!("{}", vulnbell::output::markdown(&snapshot));
+                print(&vulnbell::output::markdown(&snapshot))?;
             }
             if snapshot.partial {
                 return Ok(2);
@@ -377,11 +186,35 @@ fn run() -> Result<i32> {
             evidence_url,
             evidence_file,
             validation_blocker,
+            clear_validation_blocker,
+            blocker_kind,
             instance,
             ..
         } => {
             let (_, mut store) = store_for(&project)?;
+            if release_tree.is_some()
+                || evidence_url.is_some()
+                || evidence_file.is_some()
+                || validation_blocker.is_some()
+                || clear_validation_blocker.is_some()
+            {
+                store.ensure_workspace_current()?;
+            }
             let mut case = store.case(&id)?;
+            let evidence_before = case.evidence.len();
+            let modifies = release_tree.is_some()
+                || evidence_url.is_some()
+                || evidence_file.is_some()
+                || validation_blocker.is_some();
+            let modifies = modifies || clear_validation_blocker.is_some();
+            if instance.is_some()
+                && validation_blocker.is_none()
+                && clear_validation_blocker.is_none()
+            {
+                anyhow::bail!(
+                    "--instance requires --validation-blocker or --clear-validation-blocker"
+                );
+            }
             if let Some(tag) = release_tree {
                 let _lock = store.lock()?;
                 let upstream = case
@@ -397,13 +230,55 @@ fn run() -> Result<i32> {
                 let _lock = store.lock()?;
                 let mut http = vulnbell::network::Http::new(&store, false);
                 let response = http.get(&url)?;
-                let evidence = store.record_evidence(
+                let mut evidence = store.record_evidence(
                     &response.body,
                     "agent_web",
-                    Some(url),
+                    Some(url.clone()),
                     vulnbell::model::EvidenceKind::Context,
                 )?;
-                case.evidence.push(evidence);
+                let advisory = vulnbell::sources::case_repository_advisory(
+                    &case,
+                    &url,
+                    &response.body,
+                    &evidence,
+                );
+                if let Some((advisory_id, claims)) = advisory {
+                    if !claims.is_empty() {
+                        evidence.kind = vulnbell::model::EvidenceKind::Advisory;
+                    }
+                    let existing: Vec<_> = case
+                        .claims
+                        .iter()
+                        .filter(|old| old.source == "github_repository" && old.id == advisory_id)
+                        .collect();
+                    let changed = existing.len() != claims.len()
+                        || claims.iter().any(|claim| {
+                            !existing.iter().any(|old| {
+                                old.instance_id == claim.instance_id
+                                    && old.evidence.sha256 == claim.evidence.sha256
+                                    && old.applicability == claim.applicability
+                            })
+                        });
+                    if changed {
+                        case.claims.retain(|old| {
+                            !(old.source == "github_repository" && old.id == advisory_id)
+                        });
+                        case.claims.extend(claims);
+                        case.facts_sha256 = vulnbell::digest(
+                            format!("{}:{}", case.facts_sha256, evidence.sha256).as_bytes(),
+                        );
+                        case.decision = vulnbell::model::Decision::Review;
+                        case.applicability = vulnbell::model::Applicability::Unknown;
+                        case.verification = vulnbell::model::Verification::Inconclusive;
+                    }
+                }
+                if let Some(old) = case.evidence.iter_mut().find(|old| old.id == evidence.id) {
+                    if evidence.kind == vulnbell::model::EvidenceKind::Advisory {
+                        *old = evidence;
+                    }
+                } else {
+                    case.evidence.push(evidence);
+                }
                 case.updated_at = vulnbell::now();
                 store.save_case(&case)?;
             }
@@ -420,17 +295,37 @@ fn run() -> Result<i32> {
                 case.updated_at = vulnbell::now();
                 store.save_case(&case)?;
             }
-            if let Some(reason) = validation_blocker {
+            if let (Some(reason), Some(kind)) = (validation_blocker, blocker_kind) {
+                let kind: vulnbell::sandbox::BlockerKind =
+                    serde_json::from_value(serde_json::Value::String(kind))?;
                 case = vulnbell::sandbox::record_blocker(
                     &mut store,
                     &id,
-                    instance
-                        .as_deref()
-                        .context("instance required for validation blocker")?,
+                    instance.as_deref(),
+                    kind,
                     &reason,
                 )?;
             }
-            emit(&case)?;
+            if let Some(reason) = clear_validation_blocker {
+                case = vulnbell::sandbox::clear_blocker(
+                    &mut store,
+                    &id,
+                    instance.as_deref(),
+                    &reason,
+                )?;
+            }
+            if modifies {
+                // Agents need only the new references; the full case can exceed their context.
+                emit(&serde_json::json!({
+                    "schema_version": 1,
+                    "case_id": case.case_id,
+                    "facts_sha256": case.facts_sha256,
+                    "decision": case.decision,
+                    "added_evidence": case.evidence.get(evidence_before..).unwrap_or_default(),
+                }))?;
+            } else {
+                emit(&case)?;
+            }
         }
         Commands::Verify {
             id,
@@ -438,9 +333,13 @@ fn run() -> Result<i32> {
             test,
             authorize,
         } => {
-            let (_, mut store) = store_for(&project)?;
+            let (profile, mut store) = store_for(&project)?;
             emit(&vulnbell::sandbox::verify(
-                &mut store, &id, &test, authorize,
+                &mut store,
+                &id,
+                &test,
+                authorize,
+                &profile.sandbox,
             )?)?;
         }
         Commands::Impact { id, project, from } => {
@@ -451,7 +350,7 @@ fn run() -> Result<i32> {
                 emit(&vulnbell::impact::assess(&mut store, &id, submission)?)?;
             } else {
                 let case = store.case(&id)?;
-                emit(&vulnbell::impact::plan(&case))?;
+                emit(&vulnbell::impact::plan(&case, &store))?;
             }
         }
         Commands::Triage { id, project, from } => {
@@ -472,14 +371,14 @@ fn run() -> Result<i32> {
                 if json {
                     emit(&snapshot)?;
                 } else {
-                    println!("{}", vulnbell::output::markdown(&snapshot));
+                    print(&vulnbell::output::markdown(&snapshot))?;
                 }
             } else {
                 let report = vulnbell::output::morning_report(&snapshot, &store, &audience)?;
                 if json {
                     emit(&report)?;
                 } else {
-                    println!("{}", vulnbell::output::morning_markdown(&report));
+                    print(&vulnbell::output::morning_markdown(&report))?;
                 }
             }
         }
@@ -498,7 +397,7 @@ fn run() -> Result<i32> {
                 "runners": vulnbell::runners::list()?,
                 "adapters": vulnbell::runners::adapter_catalog(),
             }))?,
-            RunnerCommands::Check { id, .. } => emit(&vulnbell::runners::check(&id)?)?,
+            RunnerCommands::Check { id, live, .. } => emit(&vulnbell::runners::check(&id, live)?)?,
         },
         Commands::Schedule {
             action,
@@ -518,10 +417,14 @@ fn run() -> Result<i32> {
             from,
             after,
             limit,
+            reopen,
+            since,
             ..
         } => {
             let (_, mut store) = store_for(&project)?;
-            if let Some(path) = from {
+            if let (Some(upstream), Some(since)) = (reopen, since) {
+                emit(&vulnbell::research::reopen(&mut store, &upstream, &since)?)?;
+            } else if let Some(path) = from {
                 let batch: vulnbell::research::ResearchBatch =
                     serde_json::from_slice(&vulnbell::read_limited(&path, 16 * 1024 * 1024)?)?;
                 emit(&vulnbell::research::import(&mut store, batch)?)?;
@@ -534,12 +437,23 @@ fn run() -> Result<i32> {
             from,
             evidence_url,
             gaps,
+            reopen,
+            map_registries,
+            offline,
             after,
             limit,
             ..
         } => {
             let (profile, mut store) = store_for(&project)?;
-            if gaps {
+            if map_registries {
+                emit(&vulnbell::discovery::map_registries(
+                    &profile, &project, &mut store, limit, offline,
+                )?)?;
+            } else if let Some(relative) = reopen {
+                emit(&vulnbell::discovery::reopen(
+                    &profile, &project, &mut store, &relative,
+                )?)?;
+            } else if gaps {
                 emit(&vulnbell::discovery::gaps(
                     &profile, &project, &store, &after, limit,
                 )?)?;
@@ -558,6 +472,13 @@ fn run() -> Result<i32> {
             }
         }
         Commands::Sandbox { command } => match command {
+            Sandbox::Capabilities { project } => {
+                let limits = match project {
+                    Some(path) => profile::load(&path)?.sandbox,
+                    None => profile::SandboxLimits::default(),
+                };
+                emit(&vulnbell::sandbox::capabilities(limits))?;
+            }
             Sandbox::Stage {
                 source,
                 files,
@@ -570,8 +491,193 @@ fn run() -> Result<i32> {
             }
             Sandbox::Status => emit(&vulnbell::sandbox::availability())?,
         },
+        Commands::Tools { command } => return run_tool(command),
     }
     Ok(0)
+}
+fn run_tool(command: ToolCommands) -> Result<i32> {
+    match command {
+        ToolCommands::Evaluate { from, top } => {
+            let bytes = vulnbell::read_limited(&from, 16 * 1024 * 1024)?;
+            let corpus: vulnbell::tools::evaluate::Corpus = serde_json::from_slice(&bytes)?;
+            emit(&vulnbell::tools::evaluate::evaluate(corpus, top)?)?;
+            Ok(0)
+        }
+        ToolCommands::Hits {
+            project,
+            raw,
+            decisions,
+            output,
+            offline,
+            recheck,
+            upstream,
+        } => {
+            let (_, store) = store_for(&project)?;
+            let decisions = decisions
+                .as_deref()
+                .map(draft::ResearchDecisions::load)
+                .transpose()?;
+            let prepared =
+                hits::prepare_for_upstream(&store, &raw, offline, recheck, upstream.as_deref())?;
+            let packet = hits::packet_with_recheck(&prepared, decisions.as_ref(), recheck);
+            vulnbell::atomic_write(&output, &serde_json::to_vec_pretty(&packet)?)?;
+            emit(&serde_json::json!({
+                "schema_version": 1,
+                "output": output,
+                "summary": packet.summary,
+                "missing": packet.missing.len(),
+                "errors": packet.errors.len(),
+            }))?;
+            let incomplete = !packet.missing.is_empty() || !packet.errors.is_empty();
+            Ok(if incomplete { 2 } else { 0 })
+        }
+        ToolCommands::Draft {
+            project,
+            raw,
+            decisions,
+            output,
+            partial,
+            import,
+            offline,
+            recheck,
+            upstream,
+        } => {
+            let (_, mut store) = store_for(&project)?;
+            let decisions = draft::ResearchDecisions::load(&decisions)?;
+            let prepared =
+                hits::prepare_for_upstream(&store, &raw, offline, recheck, upstream.as_deref())?;
+            let (batch, summary) = draft::draft(prepared, &decisions, partial)?;
+            vulnbell::atomic_write(&output, &serde_json::to_vec_pretty(&batch)?)?;
+            let imported = if import {
+                Some(vulnbell::research::import(&mut store, batch)?)
+            } else {
+                None
+            };
+            emit(&serde_json::json!({
+                "schema_version": 1,
+                "output": output,
+                "summary": summary,
+                "imported": imported,
+            }))?;
+            Ok(0)
+        }
+        ToolCommands::Impact { project, from } => {
+            let (_, mut store) = store_for(&project)?;
+            let batch = cases::load_impact(&from)?;
+            let outcomes = cases::apply_impact(&mut store, &batch, batch_base(&from));
+            emit_outcomes(&outcomes)
+        }
+        ToolCommands::Triage { project, from } => {
+            let (_, mut store) = store_for(&project)?;
+            let batch = cases::load_verdicts(&from)?;
+            let outcomes = cases::apply_verdicts(&mut store, &batch, batch_base(&from));
+            emit_outcomes(&outcomes)
+        }
+        ToolCommands::Scope { project, from } => {
+            let (_, mut store) = store_for(&project)?;
+            let batch = cases::load_scope(&from)?;
+            let outcomes = cases::apply_scope(&mut store, &batch, batch_base(&from));
+            emit_outcomes(&outcomes)
+        }
+        ToolCommands::Handoff { project, from } => {
+            let (_, mut store) = store_for(&project)?;
+            let batch = cases::load_handoff(&from)?;
+            let outcomes = cases::apply_handoff(&mut store, &batch, batch_base(&from));
+            emit_outcomes(&outcomes)
+        }
+        ToolCommands::Pending { project, json: _ } => {
+            let (_, store) = store_for(&project)?;
+            let report = cases::pending(&store)?;
+            emit(&report)?;
+            Ok(if report.deliverable { 0 } else { 2 })
+        }
+        ToolCommands::Queue {
+            project,
+            limit,
+            offset,
+            unworked,
+        } => {
+            let (_, store) = store_for(&project)?;
+            emit(&queue::list(&store, limit, offset, unworked)?)?;
+            Ok(0)
+        }
+        ToolCommands::Progress {
+            project,
+            case,
+            state,
+            next_step,
+        } => {
+            let (_, store) = store_for(&project)?;
+            if state == "history" {
+                if next_step.is_some() {
+                    bail!("history does not accept a next step");
+                }
+                emit(&queue::progress_history(&store, &case)?)?;
+                return Ok(0);
+            }
+            let state = match state.as_str() {
+                "start" => queue::WorkState::InProgress,
+                "reviewed" => queue::WorkState::Reviewed,
+                "human_review" => queue::WorkState::HumanReview,
+                _ => bail!("unsupported review progress state"),
+            };
+            emit(&queue::record(&store, &case, state, next_step.as_deref())?)?;
+            Ok(0)
+        }
+        ToolCommands::Groups { project } => {
+            if !(2..=20).contains(&project.len()) {
+                bail!("provide 2..20 project profiles");
+            }
+            let mut ids = std::collections::HashSet::new();
+            let mut monitors = Vec::new();
+            for path in project {
+                let (profile, store) = store_for(&path)?;
+                if !ids.insert(profile.project_id) {
+                    bail!("each project must be unique");
+                }
+                monitors.push((path.to_string_lossy().into_owned(), store));
+            }
+            let groups = queue::shared_cases(&monitors)?;
+            emit(
+                &serde_json::json!({"schema_version": 1, "groups": groups, "notice": "Candidate grouping only; verify artifact identity and each project's build, conditions and evidence before reuse."}),
+            )?;
+            Ok(0)
+        }
+        ToolCommands::Duplicates { project } => {
+            let (_, store) = store_for(&project)?;
+            let groups = queue::duplicate_advisories(&store)?;
+            emit(
+                &serde_json::json!({"schema_version": 1, "groups": groups, "notice": "Candidate grouping only; verify artifact and project conditions. No cases are merged or closed."}),
+            )?;
+            Ok(0)
+        }
+        ToolCommands::Workspace {
+            command:
+                WorkspaceCommands::Init {
+                    directory,
+                    monitor,
+                    day,
+                },
+        } => {
+            let day = day.unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
+            emit(&workspace::init(&directory, &monitor, &day)?)?;
+            Ok(0)
+        }
+    }
+}
+fn batch_base(path: &std::path::Path) -> &std::path::Path {
+    path.parent().unwrap_or(std::path::Path::new("."))
+}
+/// Exit 2 when any case was not applied; the others are kept.
+fn emit_outcomes(outcomes: &[cases::CaseOutcome]) -> Result<i32> {
+    let failed = outcomes.iter().filter(|outcome| !outcome.applied).count();
+    emit(&serde_json::json!({
+        "schema_version": 1,
+        "applied": outcomes.len() - failed,
+        "failed": failed,
+        "cases": outcomes,
+    }))?;
+    Ok(if failed > 0 { 2 } else { 0 })
 }
 fn main() {
     match run() {

@@ -147,7 +147,7 @@ impl<'a> Http<'a> {
             self.requests += 1;
             let mut request = client
                 .request(method.clone(), url.clone())
-                .header("Accept", "application/json");
+                .header("Accept", accept_for(&url));
             if url.host_str() == Some("api.github.com") {
                 request = request.header("X-GitHub-Api-Version", "2022-11-28");
                 if let Ok(token) = std::env::var("GITHUB_TOKEN") {
@@ -196,7 +196,15 @@ impl<'a> Http<'a> {
                     .is_some_and(|value| value == "0")
             {
                 self.blocked_hosts.insert(host.clone());
-                bail!("source limited: HTTP 403; provider rate budget exhausted");
+                let reset = response
+                    .headers()
+                    .get("X-RateLimit-Reset")
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<i64>().ok())
+                    .and_then(|value| chrono::DateTime::from_timestamp(value, 0))
+                    .map(|time| time.to_rfc3339())
+                    .unwrap_or_else(|| "unknown".to_owned());
+                bail!("source limited: HTTP 403; provider rate budget exhausted; reset {reset}");
             }
             if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
                 let retry_after = response
@@ -264,5 +272,27 @@ impl<'a> Http<'a> {
             });
         }
         bail!("retry budget exhausted")
+    }
+}
+
+fn accept_for(url: &url::Url) -> &'static str {
+    if url.host_str() == Some("github.com") {
+        "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8"
+    } else {
+        "application/json"
+    }
+}
+
+#[cfg(test)]
+mod accept_tests {
+    #[test]
+    fn github_pages_and_api_use_appropriate_accept_headers() {
+        let page = url::Url::parse(
+            "https://github.com/example/project/security/advisories/GHSA-0000-0000-0000",
+        )
+        .unwrap();
+        let api = url::Url::parse("https://api.github.com/advisories/GHSA-0000-0000-0000").unwrap();
+        assert!(super::accept_for(&page).starts_with("text/html"));
+        assert_eq!(super::accept_for(&api), "application/json");
     }
 }

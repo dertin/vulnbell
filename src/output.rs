@@ -1,15 +1,23 @@
 use crate::{
-    model::{Decision, Snapshot},
-    profile::Profile,
+    model::{Decision, Snapshot, SourceFacts},
+    profile::{Language, Profile},
     store::Store,
 };
 use anyhow::{Context, Result, bail};
 use hmac::{Hmac, KeyInit, Mac};
 use rusqlite::params;
 use sha2::Sha256;
+use text::fill;
 mod details;
+mod discovery;
+mod markdown;
+pub(crate) mod text;
 mod verification;
 pub use details::AdvisoryDetail;
+pub use discovery::discovery_markdown;
+use markdown::inline;
+pub use markdown::{morning_markdown, verification_markdown};
+pub use text::report_language;
 pub use verification::{FindingCheck, FindingReference, LocalCheck, LocalResult};
 
 pub fn notify(profile: &Profile, snapshot: &Snapshot, store: &Store) -> Result<String> {
@@ -88,6 +96,11 @@ pub fn markdown(snapshot: &Snapshot) -> String {
         snapshot.instances.len(),
         snapshot.cases.len()
     );
+    report.push_str(&markdown::workspace_revisions_markdown(
+        &crate::workspace_revision::compare(&snapshot.workspace_revisions),
+        false,
+        Language::En,
+    ));
     for case in &snapshot.cases {
         report.push_str(&format!(
             "- `{}`: {:?}; {:?}; {:?}\n",
@@ -109,8 +122,12 @@ pub fn markdown(snapshot: &Snapshot) -> String {
 
 #[derive(serde::Serialize, schemars::JsonSchema)]
 pub struct MorningReport {
+    /// Current report contract distinguishes candidates from explicitly required checks.
+    #[schemars(range(min = 1, max = 1))]
     pub schema_version: u32,
     pub audience: String,
+    /// Report language from the profile; the generated sentences in this report use it.
+    pub language: Language,
     pub project_id: String,
     pub project_name: String,
     pub generated_at: String,
@@ -118,16 +135,86 @@ pub struct MorningReport {
     pub last_successful_scan: Option<String>,
     pub last_agent_review: Option<String>,
     pub scheduler_id: Option<String>,
+    /// Git identities recorded by the scan and the workspace state at report time.
+    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceComparison>,
+    pub workspace_context_unrecorded: bool,
+    pub workspace_scope_changed: bool,
     pub inventory: Vec<MonitoredComponent>,
     pub actionable: Vec<HandoffItem>,
     pub needs_review: Vec<HandoffItem>,
     pub informational_count: usize,
     pub dismissed_count: usize,
+    /// Upstream events the agent assessed as not affecting the monitored versions; no case is opened.
+    pub not_applicable_count: usize,
     pub coverage_gaps: Vec<crate::model::Coverage>,
     pub notification_status: String,
     pub finding_checks: Vec<FindingCheck>,
     pub discovery: Option<crate::discovery::DiscoverySummary>,
     pub source_map: Vec<crate::discovery::IdentityObservation>,
+    /// Open cases whose verification is unfinished; a deliverable report requires none.
+    pub verification_pending: Vec<PendingVerification>,
+}
+#[derive(serde::Serialize, schemars::JsonSchema, Debug, PartialEq, Eq, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingReason {
+    /// `vulnbell impact` has not been answered for the current case facts.
+    ImpactNotAssessed,
+    /// An unconfirmed signal needs an explicit review disposition, not necessarily a test.
+    ReviewDispositionMissing,
+    /// A test was explicitly required and has neither a result nor a categorized blocker.
+    SandboxCheckMissing,
+    /// Recorded verification evidence could not be validated.
+    InvalidVerificationEvidence,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct PendingVerification {
+    pub case_id: String,
+    pub reason: PendingReason,
+}
+fn pending_verification(check: &FindingCheck) -> Option<PendingReason> {
+    if !matches!(check.decision, Decision::Actionable | Decision::Review) {
+        return None;
+    }
+    if check.impact.is_none() {
+        return Some(PendingReason::ImpactNotAssessed);
+    }
+    if check
+        .local_checks
+        .iter()
+        .any(|local| local.result == LocalResult::InvalidEvidence)
+    {
+        return Some(PendingReason::InvalidVerificationEvidence);
+    }
+    if check.decision == Decision::Review
+        && check
+            .review_handoff
+            .as_ref()
+            .is_some_and(|handoff| !handoff.sandbox_required)
+    {
+        return None;
+    }
+    let unsettled = |local: &LocalCheck| match local.result {
+        LocalResult::NotRun => true,
+        LocalResult::Blocked => local.blocker.is_none(),
+        _ => false,
+    };
+    if check
+        .local_checks
+        .iter()
+        .any(|local| local.sandbox_needed && unsettled(local))
+    {
+        return Some(PendingReason::SandboxCheckMissing);
+    }
+    if (check.decision == Decision::Review && check.review_handoff_stale)
+        || (check.review_handoff.is_none()
+            && check
+                .local_checks
+                .iter()
+                .any(|local| local.sandbox_candidate && unsettled(local)))
+    {
+        return Some(PendingReason::ReviewDispositionMissing);
+    }
+    None
 }
 #[derive(serde::Serialize, schemars::JsonSchema)]
 pub struct MonitoredComponent {
@@ -138,13 +225,19 @@ pub struct MonitoredComponent {
     pub resolved_version: Option<String>,
     pub origin: crate::model::Origin,
     pub workspace: Option<String>,
+    pub path: Option<String>,
+    pub line: Option<usize>,
     pub upstream: Option<String>,
 }
 #[derive(serde::Serialize, schemars::JsonSchema)]
 pub struct HandoffItem {
     pub case_id: String,
     pub components: Vec<String>,
+    /// Where each component version was read: `workspace/path:line`, or the profile.
+    pub provenance: Vec<String>,
     pub origin: Vec<crate::model::Origin>,
+    /// Latest recorded agent verdict (`decision: rationale`), when one exists.
+    pub recorded_verdict: Option<String>,
     pub summary: String,
     pub advisory_details: Vec<AdvisoryDetail>,
     pub detail_gaps: Vec<String>,
@@ -155,21 +248,58 @@ pub struct HandoffItem {
     pub evidence_sha256: Vec<String>,
     pub open_questions: Vec<String>,
     pub recommended_action: String,
+    /// What the cited upstream items state (affected versions, fix, required feature).
+    pub source_facts: Vec<SourceFacts>,
 }
 pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Result<MorningReport> {
-    let (discovery, source_map) = match store.meta("profile_path")? {
+    let (discovery, source_map, language) = match store.meta("profile_path")? {
         Some(path) => {
             let path = std::path::Path::new(&path);
             match crate::profile::load(path) {
                 Ok(profile) => (
                     Some(crate::discovery::summary(&profile, path, store)?),
                     crate::discovery::source_map(&profile, path, store)?,
+                    profile.report.language,
                 ),
-                Err(_) => (None, Vec::new()),
+                Err(_) => (None, Vec::new(), Language::default()),
             }
         }
-        None => (None, Vec::new()),
+        None => (None, Vec::new(), Language::default()),
     };
+    let workspace_revisions = crate::workspace_revision::compare(&snapshot.workspace_revisions);
+    let workspace_scope_changed = if !snapshot.workspace_revisions.is_empty() {
+        store
+            .meta("profile_path")?
+            .and_then(|path| {
+                let profile = crate::profile::load(std::path::Path::new(&path)).ok()?;
+                Some(!crate::workspace_revision::configured_paths_match(
+                    &snapshot.workspace_revisions,
+                    &profile,
+                    std::path::Path::new(&path),
+                ))
+            })
+            .unwrap_or(true)
+    } else {
+        false
+    };
+    let workspace_context_unrecorded = if snapshot.workspace_revisions.is_empty() {
+        store
+            .meta("profile_path")?
+            .and_then(|path| {
+                let profile = crate::profile::load(std::path::Path::new(&path)).ok()?;
+                Some(
+                    crate::workspace_revision::capture(&profile, std::path::Path::new(&path))
+                        .iter()
+                        .any(|revision| {
+                            revision.state != crate::workspace_revision::RepositoryState::NotGit
+                        }),
+                )
+            })
+            .unwrap_or(false)
+    } else {
+        false
+    };
+    let words = text::text(language);
     let active_ids: std::collections::HashSet<&str> = snapshot
         .instances
         .iter()
@@ -213,7 +343,10 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
                 format!(
                     "{} {}",
                     instance.reference,
-                    instance.resolved_version.as_deref().unwrap_or("unresolved")
+                    instance
+                        .resolved_version
+                        .as_deref()
+                        .unwrap_or(words.unresolved)
                 )
             })
             .collect();
@@ -225,12 +358,12 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
         let summary = match (case.claims.first(), case.upstream_events.first()) {
             (Some(claim), _) => claim.summary.clone(),
             (_, Some(event)) => event.title.clone(),
-            _ => "Investigation pending".to_owned(),
+            _ => words.investigation_pending.to_owned(),
         };
         let recommended_action = if case.decision == Decision::Actionable {
-            "Ingeniería + Cyber: confirmar despliegue y exposición; validar rama corregida o mitigación con la evidencia adjunta."
+            words.action_actionable
         } else {
-            "Investigar el código de la release exacta y las condiciones del ataque; si corresponde, validar en sandbox autorizado con controles."
+            words.action_review
         };
         let mut advisory_details = Vec::new();
         let mut detail_gaps = Vec::new();
@@ -238,13 +371,19 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
             match details::read(claim, &case.instances, store) {
                 Ok(Some(detail)) => advisory_details.push(detail),
                 Ok(None) => (),
-                Err(_) => detail_gaps.push(format!("{} {}: additional advisory details unavailable or invalid; consult original evidence", claim.source, claim.id)),
+                Err(_) => detail_gaps.push(fill(words.detail_gap, &[&claim.source, &claim.id])),
             }
         }
         let item = HandoffItem {
             case_id: case.case_id.clone(),
             components,
+            provenance: case
+                .instances
+                .iter()
+                .map(|instance| provenance_label(instance, language))
+                .collect(),
             origin,
+            recorded_verdict: recorded_verdict(case, store, language),
             summary,
             advisory_details,
             detail_gaps,
@@ -257,8 +396,23 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
                 .iter()
                 .map(|evidence| evidence.sha256.clone())
                 .collect(),
-            open_questions: case.open_questions.clone(),
+            open_questions: case
+                .open_questions
+                .iter()
+                .map(|question| text::open_question(language, question))
+                .collect(),
             recommended_action: recommended_action.into(),
+            source_facts: case
+                .upstream_events
+                .iter()
+                .map(|event| event.source_facts.clone())
+                .filter(|facts| !facts.is_empty())
+                .fold(Vec::new(), |mut kept, facts| {
+                    if !kept.contains(&facts) {
+                        kept.push(facts);
+                    }
+                    kept
+                }),
         };
         if case.decision == Decision::Actionable {
             actionable.push(item);
@@ -267,9 +421,20 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
         }
     }
     actionable.sort_by_key(|item| !item.known_exploited);
+    let finding_checks: Vec<FindingCheck> = snapshot
+        .cases
+        .iter()
+        .filter(|case| {
+            case.instances
+                .iter()
+                .any(|instance| active_ids.contains(instance.id.as_str()))
+        })
+        .map(|case| verification::finding_check(case, store, language))
+        .collect();
     Ok(MorningReport {
         schema_version: 1,
         audience: audience.into(),
+        language,
         project_id: snapshot.project_id.clone(),
         project_name: store
             .meta("project_name")?
@@ -279,6 +444,9 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
         last_successful_scan: store.meta("last_successful_scan")?,
         last_agent_review: store.meta("last_agent_review")?,
         scheduler_id: store.meta("scheduler_id")?,
+        workspace_revisions,
+        workspace_context_unrecorded,
+        workspace_scope_changed,
         inventory: snapshot
             .instances
             .iter()
@@ -289,6 +457,8 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
                 resolved_version: instance.resolved_version.clone(),
                 origin: instance.origin,
                 workspace: instance.provenance.workspace.clone(),
+                path: instance.provenance.path.clone(),
+                line: instance.provenance.line,
                 upstream: instance.upstream.clone(),
             })
             .collect(),
@@ -296,6 +466,11 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
         needs_review,
         informational_count,
         dismissed_count,
+        not_applicable_count: store.connection.query_row(
+            "SELECT COUNT(*) FROM research_events WHERE json_extract(body,'$.assessment')='not_applicable'",
+            [],
+            |row| row.get(0),
+        )?,
         coverage_gaps: snapshot
             .coverage
             .iter()
@@ -322,312 +497,65 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
         discovery,
         source_map,
         notification_status: snapshot.alert_status.clone(),
-        finding_checks: snapshot
-            .cases
+        verification_pending: finding_checks
             .iter()
-            .filter(|case| {
-                case.instances
-                    .iter()
-                    .any(|instance| active_ids.contains(instance.id.as_str()))
+            .filter_map(|check| {
+                pending_verification(check).map(|reason| PendingVerification {
+                    case_id: check.case_id.clone(),
+                    reason,
+                })
             })
-            .map(|case| verification::finding_check(case, store))
             .collect(),
+        finding_checks,
     })
 }
-pub fn discovery_markdown(report: &MorningReport) -> String {
-    let mut text = String::new();
-    if let Some(discovery) = &report.discovery {
-        text.push_str(&format!("## Descubrimiento\n\nEstado: {} · Directorios pendientes: {} · Archivos pendientes: {} · Revisados: {} · Excluidos: {} · No disponibles: {} · Componentes sin mapa: {} · Fuentes no disponibles: {}\n\n",if !discovery.enabled {"desactivado"}else if discovery.complete {"revisado en el alcance autorizado"}else{"parcial; continuar desde el checkpoint"},discovery.directories_pending,discovery.files_pending,discovery.files_reviewed,discovery.files_excluded,discovery.files_unavailable,discovery.components_unmapped,discovery.sources_unavailable));
-    }
-    if !report.source_map.is_empty() {
-        text.push_str("## Mapa de fuentes\n\nAsociaciones documentadas por el agente; no certifican por sí solas identidad oficial ni aplicabilidad.\n\n| Componente | Fuente | Estado | Enlace / detalle |\n|---|---|---|---|\n");
-        for mapping in &report.source_map {
-            let reference = report
-                .inventory
-                .iter()
-                .find(|item| item.instance_id == mapping.instance_id)
-                .map(|item| item.reference.as_str())
-                .unwrap_or(&mapping.instance_id);
-            for source in &mapping.sources {
-                use crate::discovery::{MappingState, SourceKind};
-                let kind = match source.kind {
-                    SourceKind::Website => "Sitio oficial",
-                    SourceKind::Repository => "Repositorio",
-                    SourceKind::Issues => "Issues",
-                    SourceKind::ProposedChanges => "Cambios propuestos",
-                    SourceKind::Discussions => "Discusiones",
-                    SourceKind::Documentation => "Documentación",
-                    SourceKind::Changelog => "Historial de cambios",
-                    SourceKind::Releases => "Versiones",
-                    SourceKind::Advisories => "Avisos de seguridad",
-                };
-                let state = match source.state {
-                    MappingState::Mapped => "mapeada",
-                    MappingState::Unavailable => "no disponible",
-                    MappingState::NotApplicable => "no aplica",
-                };
-                text.push_str(&format!(
-                    "| {} | {} | {} | {} — {} |\n",
-                    inline(reference),
-                    kind,
-                    state,
-                    inline(source.url.as_deref().unwrap_or("—")),
-                    inline(&source.detail)
-                ));
+fn provenance_label(instance: &crate::model::Instance, language: Language) -> String {
+    let words = text::text(language);
+    let version = instance
+        .resolved_version
+        .as_deref()
+        .unwrap_or(words.unresolved);
+    let location = match (&instance.provenance.workspace, &instance.provenance.path) {
+        (workspace, Some(path)) => {
+            let file = match workspace {
+                Some(workspace) => format!("{}/{path}", workspace.trim_end_matches('/')),
+                None => path.clone(),
+            };
+            match instance.provenance.line {
+                Some(line) => format!("{file}:{line}"),
+                None => file,
             }
         }
-        text.push('\n');
-    }
-    text
+        (_, None) => words.profile_location.to_owned(),
+    };
+    format!("{} {version} — {location}", instance.reference)
 }
 
-pub fn morning_markdown(report: &MorningReport) -> String {
-    let mut text = format!(
-        "# VulnBell — {}\n\nCorte: {} · Revisión del agente: {}\n\n| Estado | Casos | Significado |\n|---|---:|---|\n| Accionables | {} | Versión afectada confirmada; evaluar impacto, actualización o mitigación. |\n| En revisión | {} | Señal de un issue/PR o evidencia incompleta o contradictoria; falta corroborar el reclamo o la identidad del artefacto. |\n| Informativos | {} | Contexto útil sin acción de seguridad pendiente. |\n| Descartados | {} | Un veredicto sustentado por evidencia cerró el caso en el alcance evaluado. |\n\nBrechas de cobertura: **{}** comprobaciones incompletas de fuentes o inventario; no son hallazgos de seguridad.\n\n",
-        inline(&report.project_name),
-        report.last_scan,
-        report.last_agent_review.as_deref().unwrap_or("pendiente"),
-        report.actionable.len(),
-        report.needs_review.len(),
-        report.informational_count,
-        report.dismissed_count,
-        report.coverage_gaps.len()
-    );
-    text.push_str("## Inventario\n\n| Componente | Versión | Procedencia |\n|---|---|---|\n");
-    for component in &report.inventory {
-        text.push_str(&format!(
-            "| {} | {} | {} |\n",
-            inline(&component.reference),
-            inline(
-                component
-                    .resolved_version
-                    .as_deref()
-                    .unwrap_or("sin resolver")
-            ),
-            origin_label(component.origin)
-        ));
+fn recorded_verdict(
+    case: &crate::model::Case,
+    store: &Store,
+    language: Language,
+) -> Option<String> {
+    let evidence = case
+        .evidence
+        .iter()
+        .rev()
+        .find(|evidence| evidence.source == "agent_verdict")?;
+    if !store.evidence_exists(evidence).ok()? {
+        return None;
     }
-    text.push('\n');
-    text.push_str(&discovery_markdown(report));
-    for (decision, items) in [
-        (Decision::Actionable, &report.actionable),
-        (Decision::Review, &report.needs_review),
-    ] {
-        let label = if decision == Decision::Actionable {
-            "Accionables"
-        } else {
-            "En revisión — hipótesis"
-        };
-        text.push_str(&format!("## {label}\n\n"));
-        if items.is_empty() {
-            text.push_str("Sin hallazgos en esta categoría.\n\n");
-            continue;
-        }
-        if decision == Decision::Review {
-            text.push_str("| Caso / componente | Señal investigada | Por qué sigue en revisión | Próximo paso | Evidencia |\n|---|---|---|---|---|\n");
-            for item in items {
-                let mut review_context = format!(
-                    "Aplicabilidad: {}; verificación: {}.",
-                    applicability_label(item.applicability),
-                    verification_label(item.verification)
-                );
-                for question in &item.open_questions {
-                    review_context.push(' ');
-                    review_context.push_str(question);
-                }
-                let link = item
-                    .evidence_links
-                    .first()
-                    .map(|link| {
-                        format!(
-                            "<{}>",
-                            link.replace(['<', '>', '\n', '\r'], "").replace('|', "%7C")
-                        )
-                    })
-                    .unwrap_or_else(|| "sin enlace".into());
-                text.push_str(&format!(
-                    "| {} / {} | {} | {} | {} | {} |\n",
-                    inline(&item.case_id),
-                    inline(&item.components.join(", ")),
-                    inline(&item.summary),
-                    inline(&review_context),
-                    inline(&item.recommended_action),
-                    link
-                ));
-            }
-            text.push('\n');
-            continue;
-        }
-        for item in items {
-            text.push_str(&format!(
-                "### {} — {}\n\n",
-                item.case_id,
-                inline(&item.summary)
-            ));
-            text.push_str(&format!(
-                "- **Componente:** {}.\n",
-                inline(&item.components.join(", "))
-            ));
-            text.push_str(&format!(
-                "- **Estado:** {} · {} · Explotación conocida: {}.\n",
-                applicability_label(item.applicability),
-                verification_label(item.verification),
-                if item.known_exploited {
-                    "sí (fuente KEV)"
-                } else {
-                    "sin evidencia registrada"
-                }
-            ));
-            let mut severities = item
-                .advisory_details
-                .iter()
-                .filter_map(|detail| {
-                    detail.severity.as_ref().map(|severity| {
-                        format!("{}: {} ({})", detail.source, severity, detail.advisory_id)
-                    })
-                })
-                .collect::<Vec<_>>();
-            severities.sort();
-            severities.dedup();
-            if !severities.is_empty() {
-                text.push_str(&format!(
-                    "- **Severidad publicada:** {}.\n",
-                    inline(&severities.join("; "))
-                ));
-            }
-            let mut descriptions = Vec::new();
-            for detail in &item.advisory_details {
-                let normalized = advisory_excerpt(&detail.description);
-                if !normalized.is_empty() && !descriptions.contains(&normalized) {
-                    descriptions.push(normalized);
-                }
-            }
-            for description in descriptions.iter().take(2) {
-                let excerpt = description.chars().take(300).collect::<String>();
-                text.push_str(&format!(
-                    "- **Problema / impacto:** {}{}\n",
-                    inline(&excerpt),
-                    if description.chars().count() > 300 {
-                        "… (detalle completo en la fuente)"
-                    } else {
-                        ""
-                    }
-                ));
-            }
-            let mut fixes: Vec<&str> = item
-                .advisory_details
-                .iter()
-                .flat_map(|detail| detail.fixed_versions.iter().map(String::as_str))
-                .collect();
-            fixes.sort_unstable();
-            fixes.dedup();
-            text.push_str(&format!(
-                "- **Correcciones publicadas:** {}.\n",
-                if fixes.is_empty() {
-                    "sin versión corregida verificada en los datos".into()
-                } else {
-                    format!(
-                        "{}; validar rama compatible y backports",
-                        inline(&fixes.join(", "))
-                    )
-                }
-            ));
-            for question in &item.open_questions {
-                text.push_str(&format!("- **Por comprobar:** {}\n", inline(question)));
-            }
-            text.push_str(&format!(
-                "- **Acción:** {}\n",
-                inline(&item.recommended_action)
-            ));
-            for link in &item.evidence_links {
-                text.push_str(&format!(
-                    "- **Evidencia:** <{}>\n",
-                    link.replace(['<', '>', '\n', '\r'], "")
-                ));
-            }
-            for gap in &item.detail_gaps {
-                text.push_str(&format!("- **Detalle pendiente:** {}\n", inline(gap)));
-            }
-            text.push('\n');
-        }
+    let bytes = crate::read_limited(
+        &store.directory.join("evidence").join(&evidence.sha256),
+        64 * 1024,
+    )
+    .ok()?;
+    let verdict: crate::model::Verdict = serde_json::from_slice(&bytes).ok()?;
+    if verdict.facts_sha256 != case.facts_sha256 {
+        return None;
     }
-    text.push_str(
-        "## Cobertura y entrega\n\n| Fuente | Alcance | Estado / pendiente |\n|---|---|---|\n",
-    );
-    for gap in &report.coverage_gaps {
-        text.push_str(&format!(
-            "| {} | {} | {:?}: {} |\n",
-            inline(&gap.source),
-            inline(&gap.scope),
-            gap.state,
-            inline(&gap.detail)
-        ));
-    }
-    text.push_str(&format!(
-        "\n**Entrega:** {}.\n",
-        inline(&report.notification_status)
-    ));
-    text.push_str(&verification_markdown(report));
-    text
-}
-pub fn verification_markdown(report: &MorningReport) -> String {
-    verification::markdown(&report.finding_checks)
-}
-fn advisory_excerpt(value: &str) -> String {
-    value
-        .lines()
-        .map(str::trim)
-        .filter(|line| {
-            !line.is_empty()
-                && !line.starts_with('#')
-                && !(line.starts_with('_') && line.ends_with('_'))
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-fn inline(value: &str) -> String {
-    value
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('\\', "\\\\")
-        .replace('`', "\\`")
-        .replace('*', "\\*")
-        .replace('_', "\\_")
-        .replace('[', "\\[")
-        .replace(']', "\\]")
-        .replace('|', "\\|")
-}
-fn origin_label(origin: crate::model::Origin) -> &'static str {
-    use crate::model::Origin;
-    match origin {
-        Origin::AgentObserved => "observado por agente / agent observed",
-        Origin::Declared => "declarado / tracked",
-        Origin::Locked => "lockfile / locked",
-        Origin::ObservedArtifact => "artefacto observado",
-        Origin::Deployed => "declarado desplegado / deployed",
-    }
-}
-fn applicability_label(applicability: crate::model::Applicability) -> &'static str {
-    use crate::model::Applicability;
-    match applicability {
-        Applicability::Affected => "afectado según evidencia",
-        Applicability::NotAffected => "no afectado según evidencia",
-        Applicability::Possible => "posible",
-        Applicability::Unknown => "desconocido",
-        Applicability::Conflict => "fuentes en conflicto",
-    }
-}
-fn verification_label(verification: crate::model::Verification) -> &'static str {
-    use crate::model::Verification;
-    match verification {
-        Verification::SourceConfirmed => "confirmado por fuente",
-        Verification::LabReproduced => "reproducido en laboratorio",
-        Verification::NotReproduced => "no reproducido (no descarta)",
-        Verification::Inconclusive => "inconcluso",
-        Verification::Disproven => "prerrequisito descartado en el alcance probado",
-    }
+    Some(format!(
+        "{}: {}",
+        text::decision(language, verdict.decision),
+        verdict.rationale
+    ))
 }

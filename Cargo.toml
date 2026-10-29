@@ -1,12 +1,12 @@
 [package]
 name = "vulnbell"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.90"
 description = "Security monitoring and evidence-backed reports for your software"
 license = "MIT"
 repository = "https://github.com/dertin/vulnbell"
-authors = ["Guillermo Céspedes Tabárez <dev.dertin@gmail.com>"]
+authors = ["Guillermo Céspedes Tabárez"]
 keywords = ["security", "dependencies", "monitoring", "vulnerability"]
 categories = ["command-line-utilities", "development-tools"]
 readme = "README.md"
@@ -41,11 +41,14 @@ packageurl = "0.7"
 semver = "1"
 toml = "1.1"
 ignore = "0.4"
+globset = "0.4"
 tempfile = "3"
 fs2 = "0.4"
 chrono-tz = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 tar = { version = "0.4.46", default-features = false }
+regex = "1"
+roxmltree = "0.21.1"
 
 [dev-dependencies]
 assert_cmd = "2"

@@ -1,0 +1,140 @@
+{
+  "$defs": {
+    "AdvisoryPackage": {
+      "additionalProperties": false,
+      "properties": {
+        "ecosystem": {
+          "description": "GitHub advisory ecosystem, for example `maven`, `rust` or `npm`.",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "patched": {
+          "default": "",
+          "type": "string"
+        },
+        "vulnerable_range": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "required": [
+        "ecosystem",
+        "name"
+      ],
+      "type": "object"
+    },
+    "Item": {
+      "additionalProperties": false,
+      "description": "One upstream item normalized from a provider response, or written by the agent for a tracker\nwithout a supported response format.",
+      "properties": {
+        "advisory": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RepositoryAdvisory"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "body": {
+          "default": "",
+          "description": "Complete description, release notes or commit message within the raw-file budget.",
+          "type": "string"
+        },
+        "closes": {
+          "default": [],
+          "description": "Keys of the issues a proposed change says it closes.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "key": {
+          "description": "Stable provider identifier, for example `owner/repo#123`, `owner/repo@v1.2.3` or `HHH-123`.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ItemKind"
+        },
+        "labels": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "state": {
+          "default": "",
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "updated_at": {
+          "description": "The source's RFC3339 update time, or commit time for commits.",
+          "type": "string"
+        },
+        "url": {
+          "description": "Original public HTTPS permalink.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "kind",
+        "url",
+        "title",
+        "updated_at"
+      ],
+      "type": "object"
+    },
+    "ItemKind": {
+      "enum": [
+        "issue",
+        "pull_request",
+        "merge_request",
+        "release",
+        "advisory",
+        "discussion",
+        "commit"
+      ],
+      "type": "string"
+    },
+    "RepositoryAdvisory": {
+      "additionalProperties": false,
+      "description": "A security advisory published in the upstream repository.",
+      "properties": {
+        "cve_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ghsa_id": {
+          "type": "string"
+        },
+        "packages": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AdvisoryPackage"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "ghsa_id"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "items": {
+    "$ref": "#/$defs/Item"
+  },
+  "title": "Array_of_Item",
+  "type": "array"
+}

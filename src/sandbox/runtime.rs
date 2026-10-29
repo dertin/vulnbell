@@ -1,6 +1,7 @@
 use super::{GuestObservation, Image, TestSpec};
 use crate::{
     model::{EvidenceKind, SandboxAvailability},
+    profile::SandboxLimits,
     store::Store,
 };
 use anyhow::{Context, Result, bail};
@@ -12,6 +13,8 @@ use std::{
 };
 
 const RUNTIME_VERSION: &str = "0.7.11";
+const RUNTIME_RELEASE: &str =
+    "https://github.com/superradcompany/microsandbox/releases/tag/v0.7.11";
 const DEFAULT_IMAGE: &str = "docker.io/library/alpine@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f";
 pub fn image_path() -> PathBuf {
     crate::store::data_root().join("sandbox/microsandbox.json")
@@ -115,7 +118,11 @@ pub fn prepare_image(reference: Option<&str>) -> Result<Image> {
             std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
                 .map(|path| path.join(name))
                 .find(|path| path.is_file())
-                .context("install Microsandbox 0.7.11; msb was not found")?
+                .with_context(|| {
+                    format!(
+                        "msb was not found on PATH; install Microsandbox {RUNTIME_VERSION} from {RUNTIME_RELEASE} or set VULNBELL_MSB_EXECUTABLE"
+                    )
+                })?
                 .canonicalize()?
         }
     };
@@ -123,10 +130,29 @@ pub fn prepare_image(reference: Option<&str>) -> Result<Image> {
     let version = String::from_utf8(version)?.trim().to_owned();
     if version.split_whitespace().last() != Some(RUNTIME_VERSION) {
         bail!(
-            "unsupported Microsandbox version: require 0.7.11 and rerun backend acceptance before upgrading"
+            "unsupported Microsandbox version `{version}`: install {RUNTIME_VERSION} from {RUNTIME_RELEASE} (msb self downgrade) and rerun backend acceptance before upgrading"
         );
     }
-    checked_runtime(&executable, &["doctor"], 15)?;
+    let doctor = run_runtime(&executable, &["doctor"], 15)?;
+    if !doctor.success {
+        // Host checks (KVM access, CPU virtualization, libkrunfw) are not secrets; surface the failing lines.
+        let output = String::from_utf8_lossy(&doctor.stdout).into_owned()
+            + &String::from_utf8_lossy(&doctor.stderr);
+        let failing: Vec<&str> = output
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with('✗') || line.to_ascii_lowercase().starts_with("error"))
+            .take(10)
+            .collect();
+        bail!(
+            "Microsandbox host checks failed: {}; fix the host prerequisites (for KVM: grant /dev/kvm read/write to this user) and rerun vulnbell sandbox prepare",
+            if failing.is_empty() {
+                "see `msb doctor`".to_owned()
+            } else {
+                failing.join("; ")
+            }
+        );
+    }
     let image_reference = reference.unwrap_or(DEFAULT_IMAGE);
     validate_image(image_reference)?;
     checked_runtime(
@@ -278,6 +304,7 @@ pub(super) fn execute_guest(
     image: &Image,
     test: &TestSpec,
     input_root: &Path,
+    limits: &SandboxLimits,
 ) -> Result<GuestObservation> {
     let temporary = tempfile::tempdir_in(&store.directory)?;
     let script = temporary.path().join("test.sh");
@@ -314,10 +341,16 @@ pub(super) fn execute_guest(
         if !canonical.starts_with(&root) {
             bail!("input path must stay inside inputs/ beside the test specification");
         }
-        let bytes = crate::read_limited(&source, 16 * 1024 * 1024)?;
+        let bytes = crate::read_limited(&source, u64::from(limits.max_input_file_mib) << 20)?;
         staged_bytes += bytes.len();
-        if staged_bytes > 64 * 1024 * 1024 || crate::digest(&bytes) != input.sha256 {
-            bail!("input checksum mismatch or aggregate input quota exceeded");
+        if staged_bytes > (limits.max_inputs_mib as usize) << 20 {
+            bail!(
+                "inputs exceed {} MiB in total (profile sandbox limits)",
+                limits.max_inputs_mib
+            );
+        }
+        if crate::digest(&bytes) != input.sha256 {
+            bail!("input checksum mismatch");
         }
         let staged = temporary.path().join(format!("input-{}", copies.len()));
         crate::atomic_write(&staged, &bytes)?;
@@ -372,7 +405,9 @@ pub(super) fn execute_guest(
             .arg(format!("{}:{destination}", source.display()));
     }
     command.arg(&image.image_reference);
-    let created = crate::process::run_sandbox_runtime(&mut command, 30, 1024 * 1024)?;
+    // Creation copies every input into the guest: one extra second per 16 MiB.
+    let create_seconds = 30 + (staged_bytes as u64 >> 24);
+    let created = crate::process::run_sandbox_runtime(&mut command, create_seconds, 1024 * 1024)?;
     if !created.success {
         let evidence = store.record_evidence(
             &created.stderr,

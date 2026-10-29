@@ -1,10 +1,19 @@
 use crate::{
-    model::{Applicability, Claim, Coverage, CoverageState, EvidenceKind, Instance},
+    model::{Applicability, Case, Claim, Coverage, CoverageState, EvidenceKind, Instance},
     network::Http,
 };
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
+
+mod repository;
+pub use repository::case_repository_advisory;
+use repository::repository_advisories;
+pub(crate) use repository::{
+    RangeMatch, github_range_match, repository_package_is, repository_package_match,
+};
+#[cfg(test)]
+use repository::{RepositoryAdvisory, github_repository, same_package};
 
 #[derive(Default)]
 pub struct Intelligence {
@@ -115,9 +124,15 @@ struct CveMetadata {
     state: String,
 }
 
-pub fn scan(instances: &[Instance], http: &mut Http<'_>) -> Intelligence {
+pub fn scan(
+    instances: &[Instance],
+    http: &mut Http<'_>,
+    research: &crate::profile::Research,
+    previous_cases: &[Case],
+) -> Intelligence {
     let mut intelligence = Intelligence::default();
     osv(instances, http, &mut intelligence);
+    repository_advisories(instances, http, &mut intelligence, research, previous_cases);
     for instance in instances {
         if instance.resolved_version.is_none() {
             intelligence.coverage.push(Coverage::new(
@@ -247,6 +262,7 @@ fn osv(instances: &[Instance], http: &mut Http<'_>, intelligence: &mut Intellige
                         if advisory.withdrawn.is_some() {
                             return Ok(());
                         }
+                        let document: serde_json::Value = response.json()?;
                         let evidence = http.store.record_evidence(
                             &response.body,
                             "osv",
@@ -254,6 +270,23 @@ fn osv(instances: &[Instance], http: &mut Http<'_>, intelligence: &mut Intellige
                             EvidenceKind::Advisory,
                         )?;
                         for instance in instances {
+                            let applicability = match (&instance.purl, &instance.resolved_version) {
+                                (Some(purl), Some(version)) => {
+                                    match osv_ranges_match(&document, purl, version) {
+                                        Some(true) => Applicability::Affected,
+                                        Some(false) => Applicability::NotAffected,
+                                        None => Applicability::Unknown,
+                                    }
+                                }
+                                _ => Applicability::Unknown,
+                            };
+                            if applicability == Applicability::Unknown {
+                                complete = false;
+                            }
+                            let mut evidence = evidence.clone();
+                            if applicability == Applicability::NotAffected {
+                                evidence.kind = EvidenceKind::NonApplicability;
+                            }
                             intelligence.claims.push(Claim {
                                 id: advisory.id.clone(),
                                 source: "osv".into(),
@@ -263,8 +296,8 @@ fn osv(instances: &[Instance], http: &mut Http<'_>, intelligence: &mut Intellige
                                     .summary
                                     .clone()
                                     .unwrap_or_else(|| advisory.id.clone()),
-                                applicability: Applicability::Affected,
-                                evidence: evidence.clone(),
+                                applicability,
+                                evidence,
                                 known_exploited: false,
                             });
                         }
@@ -275,12 +308,13 @@ fn osv(instances: &[Instance], http: &mut Http<'_>, intelligence: &mut Intellige
                 }
             }
             for instance in instances {
-                intelligence.coverage.push(Coverage::new("osv", &instance.id, if complete { CoverageState::Checked } else { CoverageState::Partial }, "exact-version batch query; withdrawn records excluded; detail/pagination failures reduce coverage"));
+                intelligence.coverage.push(Coverage::new("osv", &instance.id, if complete { CoverageState::Checked } else { CoverageState::Partial }, "exact-version batch query; withdrawn records excluded; indeterminate details or detail/pagination failures reduce coverage"));
             }
         }
     }
 }
-fn ghsa(instance: &Instance, http: &mut Http<'_>, intelligence: &mut Intelligence) -> Result<()> {
+/// GitHub advisory ecosystem and package name of a PURL; `None` for unsupported ecosystems.
+pub(crate) fn github_package(instance: &Instance) -> Result<Option<(&'static str, String)>> {
     let purl: packageurl::PackageUrl<'_> =
         instance.purl.as_deref().context("missing PURL")?.parse()?;
     let ecosystem = match purl.ty() {
@@ -290,19 +324,28 @@ fn ghsa(instance: &Instance, http: &mut Http<'_>, intelligence: &mut Intelligenc
         "pypi" => "pip",
         "golang" => "go",
         "maven" => "maven",
-        _ => {
-            intelligence.coverage.push(Coverage::new(
-                "ghsa",
-                &instance.id,
-                CoverageState::Unsupported,
-                "unsupported ecosystem mapping",
-            ));
-            return Ok(());
-        }
+        _ => return Ok(None),
     };
     let name = match purl.namespace() {
         Some(namespace) => format!("{namespace}/{}", purl.name()),
         None => purl.name().into(),
+    };
+    Ok(Some((ecosystem, name)))
+}
+fn ghsa(instance: &Instance, http: &mut Http<'_>, intelligence: &mut Intelligence) -> Result<()> {
+    let Some((ecosystem, name)) = github_package(instance)? else {
+        intelligence.coverage.push(Coverage::new(
+            "ghsa",
+            &instance.id,
+            CoverageState::Unsupported,
+            "unsupported ecosystem mapping",
+        ));
+        return Ok(());
+    };
+    let name = if ecosystem == "maven" {
+        name.replace('/', ":")
+    } else {
+        name
     };
     let affects = format!(
         "{name}@{}",
@@ -358,8 +401,290 @@ fn ghsa(instance: &Instance, http: &mut Http<'_>, intelligence: &mut Intelligenc
     ));
     Ok(())
 }
+
 pub fn encode(value: &str) -> String {
     url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+/// Evaluate all entries for the package. Unreadable entries prevent exclusion.
+pub(crate) fn osv_ranges_match(
+    advisory: &serde_json::Value,
+    purl: &str,
+    version: &str,
+) -> Option<bool> {
+    let raw_version = version;
+    let target: packageurl::PackageUrl<'_> = purl.parse().ok()?;
+    let entries = advisory.get("affected")?.as_array()?;
+    let mut matched = false;
+    let mut unknown = false;
+    for entry in entries {
+        match osv_package_identity(&entry["package"], Some(purl), Some(raw_version)) {
+            Some(true) => {}
+            Some(false) => continue,
+            None => {
+                unknown = true;
+                continue;
+            }
+        }
+        matched = true;
+        match osv_entry_contains(entry, raw_version, target.ty()) {
+            Some(true) => return Some(true),
+            Some(false) => {}
+            None => unknown = true,
+        }
+    }
+    if matched && !unknown {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn osv_package_identity(
+    package: &serde_json::Value,
+    purl: Option<&str>,
+    version: Option<&str>,
+) -> Option<bool> {
+    let target: packageurl::PackageUrl<'_> = purl?.parse().ok()?;
+    let entry_purl = package
+        .get("purl")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            osv_purl(
+                package.get("ecosystem")?.as_str()?,
+                package.get("name")?.as_str()?,
+            )
+        })?;
+    let entry: packageurl::PackageUrl<'_> = entry_purl.parse().ok()?;
+    let names_match = if entry.ty() == "pypi" && target.ty() == "pypi" {
+        normalize_pypi(entry.name()) == normalize_pypi(target.name())
+    } else {
+        entry.name() == target.name()
+    };
+    if entry.ty() != target.ty() || entry.namespace() != target.namespace() || !names_match {
+        if entry.ty() == target.ty()
+            && entry.name().eq_ignore_ascii_case(target.name())
+            && entry
+                .namespace()
+                .unwrap_or("")
+                .eq_ignore_ascii_case(target.namespace().unwrap_or(""))
+        {
+            return None;
+        }
+        return Some(false);
+    }
+    if (!entry.qualifiers().is_empty() && entry.qualifiers() != target.qualifiers())
+        || (entry.subpath().is_some() && entry.subpath() != target.subpath())
+    {
+        return None;
+    }
+    if let Some(entry_version) = entry.version() {
+        let target_version = version?;
+        if entry_version != target_version
+            && crate::identity::normalized_version(entry_version)
+                .ok()
+                .zip(crate::identity::normalized_version(target_version).ok())
+                .is_none_or(|(entry, target)| entry != target)
+        {
+            return None;
+        }
+    }
+    Some(true)
+}
+
+pub(crate) fn normalize_pypi(name: &str) -> String {
+    let mut result = String::new();
+    for character in name.chars() {
+        if matches!(character, '-' | '_' | '.') {
+            if !result.ends_with('-') {
+                result.push('-');
+            }
+        } else {
+            result.push(character.to_ascii_lowercase());
+        }
+    }
+    result
+}
+
+/// Package URL without version for an OSV ecosystem and package name.
+pub(crate) fn osv_purl(ecosystem: &str, name: &str) -> Option<String> {
+    let purl = match ecosystem {
+        "crates.io" => format!("pkg:cargo/{name}"),
+        "Maven" => {
+            let (group, artifact) = name.split_once(':')?;
+            format!("pkg:maven/{group}/{artifact}")
+        }
+        "npm" => match name.strip_prefix('@') {
+            Some(scoped) => format!("pkg:npm/%40{scoped}"),
+            None => format!("pkg:npm/{name}"),
+        },
+        "PyPI" => format!("pkg:pypi/{}", normalize_pypi(name)),
+        "Go" => format!("pkg:golang/{name}"),
+        "RubyGems" => format!("pkg:gem/{name}"),
+        "NuGet" => format!("pkg:nuget/{name}"),
+        "Packagist" => format!("pkg:composer/{name}"),
+        _ => return None,
+    };
+    Some(purl)
+}
+
+pub(crate) fn precedence_version(value: &str) -> Option<semver::Version> {
+    let mut version = crate::identity::normalized_version(value).ok()?;
+    version.build = semver::BuildMetadata::EMPTY;
+    Some(version)
+}
+
+pub(crate) fn ecosystem_version_orderable(ecosystem: &str, value: &str) -> bool {
+    match ecosystem.to_ascii_lowercase().as_str() {
+        "cargo" | "crates.io" | "rust" | "npm" => semver::Version::parse(value).is_ok(),
+        "maven" | "pypi" | "pip" | "go" | "golang" | "rubygems" | "gem" | "nuget" | "packagist"
+        | "composer" => {
+            let parts: Vec<&str> = value.split('.').collect();
+            (2..=3).contains(&parts.len())
+                && parts
+                    .iter()
+                    .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+                && crate::identity::normalized_version(value).is_ok()
+        }
+        _ => false,
+    }
+}
+
+/// `None` when the entry cannot be evaluated without guessing (Git ranges, unparsable versions,
+/// compound GHSA bounds).
+pub(crate) fn osv_entry_contains(
+    entry: &serde_json::Value,
+    raw_version: &str,
+    ecosystem: &str,
+) -> Option<bool> {
+    let exact_listed = entry
+        .get("versions")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|listed| {
+            listed
+                .iter()
+                .any(|value| value.as_str() == Some(raw_version))
+        });
+    let Some(version) = crate::identity::normalized_version(raw_version).ok() else {
+        return exact_listed.then_some(true);
+    };
+    let parse = |value: &str| {
+        if value == "0" {
+            Some(semver::Version::new(0, 0, 0))
+        } else {
+            crate::identity::normalized_version(value).ok()
+        }
+    };
+    let listed = exact_listed
+        || entry
+            .get("versions")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|listed| {
+                listed
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .filter_map(parse)
+                    .any(|listed| listed == version)
+            });
+    let Some(ranges) = entry.get("ranges").and_then(serde_json::Value::as_array) else {
+        return listed.then_some(true);
+    };
+    let ghsa_bound = entry
+        .pointer("/database_specific/last_known_affected_version_range")
+        .and_then(serde_json::Value::as_str);
+    if ranges.is_empty() {
+        return listed.then_some(true);
+    }
+    let version = precedence_version(raw_version)?;
+    let parse = |value: &str| {
+        if value == "0" {
+            semver::Version::parse("0.0.0-0").ok()
+        } else {
+            precedence_version(value)
+        }
+    };
+    let mut unknown = false;
+    for range in ranges {
+        if !matches!(range.get("type")?.as_str()?, "ECOSYSTEM" | "SEMVER") {
+            return None;
+        }
+        if range["type"] == "ECOSYSTEM" {
+            let safe = ecosystem_version_orderable(ecosystem, raw_version)
+                && range.get("events")?.as_array()?.iter().all(|event| {
+                    event.as_object().is_some_and(|fields| {
+                        fields.values().all(|value| {
+                            value.as_str().is_some_and(|value| {
+                                value == "0" || ecosystem_version_orderable(ecosystem, value)
+                            })
+                        })
+                    })
+                })
+                && ghsa_bound.is_none_or(|bound| {
+                    let value = bound.trim().trim_start_matches(['<', '=']).trim();
+                    ecosystem_version_orderable(ecosystem, value)
+                });
+            if !safe {
+                unknown = true;
+                continue;
+            }
+        }
+        let mut start: Option<semver::Version> = None;
+        let events = range.get("events")?.as_array()?;
+        if events.is_empty() {
+            return None;
+        }
+        for event in events {
+            let fields = event.as_object()?;
+            if fields.len() != 1 {
+                return None;
+            }
+            let (kind, value) = fields.iter().next()?;
+            let bound = parse(value.as_str()?)?;
+            match kind.as_str() {
+                "introduced" => {
+                    if start.replace(bound).is_some() {
+                        return None;
+                    }
+                }
+                "fixed" | "limit" | "last_affected" => {
+                    let begin = start.take()?;
+                    if bound < begin {
+                        return None;
+                    }
+                    if begin <= version
+                        && (version < bound || kind == "last_affected" && version == bound)
+                    {
+                        return Some(true);
+                    }
+                }
+                _ => return None,
+            }
+        }
+        if start.is_some_and(|start| start <= version) {
+            let Some(bound) = ghsa_bound else {
+                return Some(true);
+            };
+            let bound = bound.trim();
+            if bound.contains(',') {
+                return None;
+            }
+            let (inclusive, value) = match bound.strip_prefix("<=") {
+                Some(value) => (true, value),
+                None => (false, bound.strip_prefix('<')?),
+            };
+            let upper = parse(value.trim())?;
+            if version < upper || inclusive && version == upper {
+                return Some(true);
+            }
+        }
+    }
+    if listed && unknown {
+        Some(true)
+    } else if listed || unknown {
+        None
+    } else {
+        Some(false)
+    }
 }
 fn cpe_applies(candidate: &CpeMatch, product: &str, version: &str) -> Result<Option<bool>> {
     if !candidate.vulnerable || !candidate.criteria.starts_with(&format!("{product}:")) {

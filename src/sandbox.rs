@@ -1,11 +1,27 @@
 use crate::{
     model::{Case, EvidenceKind, Verification},
+    profile::SandboxLimits,
     store::Store,
 };
 use anyhow::{Context, Result, bail};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+
+pub const MAX_TEST_INPUTS: usize = 20;
+
+/// Planning limits only; the runtime's effective policy is checked during verification.
+pub fn capabilities(limits: SandboxLimits) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "workspace_stage": {"max_files": staging::MAX_STAGED_FILES, "max_archive_bytes": staging::MAX_ARCHIVE_BYTES, "whole_directory": false},
+        "test": {"max_inputs": MAX_TEST_INPUTS, "limits": limits, "guest_disk_mib": 2048},
+        "profile_caps": {"max_input_file_mib": SandboxLimits::CAP_INPUT_FILE_MIB, "max_inputs_mib": SandboxLimits::CAP_INPUTS_MIB, "max_memory_mib": SandboxLimits::CAP_MEMORY_MIB, "max_timeout_seconds": SandboxLimits::CAP_TIMEOUT_SECONDS},
+        "required_network_policy": "deny_ingress_and_egress",
+        "runtime_policy_checked_during_verify": true,
+        "explicit_authorization_required": true
+    })
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -38,30 +54,99 @@ pub enum TestMode {
     WorkspaceCopy,
     ArtifactReproducer,
 }
+/// Why a sandbox check the case needs cannot run. Missing deployment facts are not a kind: the
+/// sandbox cannot establish them, so they never require a check.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockerKind {
+    /// The advisory or report does not disclose enough to build an oracle.
+    DetailsUndisclosed,
+    /// The exact artifact cannot be obtained from an official source with a checksum.
+    ArtifactUnavailable,
+    /// The artifact or workload exceeds the profile's sandbox limits or their caps.
+    SandboxLimits,
+    /// Microsandbox cannot run on this host.
+    RuntimeUnavailable,
+    /// The operator declined to authorize the test.
+    AuthorizationDeclined,
+}
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VerificationBlocker {
     pub schema_version: u32,
     pub case_id: String,
+    #[serde(default)]
+    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     pub facts_sha256: String,
     pub instance_id: String,
+    /// Absent for failed runs; an uncategorized blocker does not settle a needed check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<BlockerKind>,
+    /// A later reviewed correction supersedes an earlier blocker for these same case facts.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cleared: bool,
     pub reason: String,
 }
 
+/// Without `instance_id` the blocker applies to every instance of the current case.
 pub fn record_blocker(
     store: &mut Store,
     id: &str,
-    instance_id: &str,
+    instance_id: Option<&str>,
+    kind: BlockerKind,
     reason: &str,
 ) -> Result<Case> {
     let _lock = store.lock()?;
+    store.ensure_workspace_current()?;
     let mut case = store.case(id)?;
-    append_blocker(&mut case, store, instance_id, reason)?;
+    let instance_ids: Vec<String> = match instance_id {
+        Some(instance_id) => vec![instance_id.to_owned()],
+        None => case
+            .instances
+            .iter()
+            .map(|instance| instance.id.clone())
+            .collect(),
+    };
+    for instance_id in &instance_ids {
+        append_blocker(&mut case, store, instance_id, Some(kind), false, reason)?;
+    }
     store.save_case(&case)?;
     Ok(case)
 }
 
-fn append_blocker(case: &mut Case, store: &Store, instance_id: &str, reason: &str) -> Result<()> {
+/// Supersede a mistaken or no-longer-valid blocker without deleting its evidence history.
+pub fn clear_blocker(
+    store: &mut Store,
+    id: &str,
+    instance_id: Option<&str>,
+    reason: &str,
+) -> Result<Case> {
+    let _lock = store.lock()?;
+    store.ensure_workspace_current()?;
+    let mut case = store.case(id)?;
+    let ids: Vec<String> = match instance_id {
+        Some(id) => vec![id.to_owned()],
+        None => case
+            .instances
+            .iter()
+            .map(|instance| instance.id.clone())
+            .collect(),
+    };
+    for id in &ids {
+        append_blocker(&mut case, store, id, None, true, reason)?;
+    }
+    store.save_case(&case)?;
+    Ok(case)
+}
+
+fn append_blocker(
+    case: &mut Case,
+    store: &Store,
+    instance_id: &str,
+    kind: Option<BlockerKind>,
+    cleared: bool,
+    reason: &str,
+) -> Result<()> {
     if reason.trim().is_empty()
         || reason.len() > 2000
         || !case
@@ -74,8 +159,11 @@ fn append_blocker(case: &mut Case, store: &Store, instance_id: &str, reason: &st
     let blocker = VerificationBlocker {
         schema_version: 1,
         case_id: case.case_id.clone(),
+        workspace_revisions: case.workspace_revisions.clone(),
         facts_sha256: case.facts_sha256.clone(),
         instance_id: instance_id.into(),
+        kind,
+        cleared,
         reason: reason.into(),
     };
     let evidence = store.record_evidence(
@@ -158,6 +246,8 @@ pub struct Attestation {
     pub schema_version: u32,
     pub project_id: String,
     pub case_id: String,
+    #[serde(default)]
+    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     pub facts_sha256: String,
     pub instance_id: String,
     pub artifact_version: String,
@@ -249,26 +339,39 @@ pub fn read_attestation(
     Ok(attestation)
 }
 
-pub fn verify(store: &mut Store, id: &str, spec_path: &Path, authorized: bool) -> Result<Case> {
+pub fn verify(
+    store: &mut Store,
+    id: &str,
+    spec_path: &Path,
+    authorized: bool,
+    limits: &SandboxLimits,
+) -> Result<Case> {
     if !authorized {
         bail!(
             "active verification requires explicit --authorize after reviewing the test and inputs"
         );
     }
     let _lock = store.lock()?;
+    store.ensure_workspace_current()?;
     let mut case = store.case(id)?;
     let test_bytes = crate::read_limited(spec_path, 1024 * 1024)?;
     let test: TestSpec = crate::parse_yaml(&test_bytes)?;
     if test.schema_version != 1
-        || test.timeout_seconds == 0
-        || test.timeout_seconds > 120
-        || !(128..=512).contains(&test.memory_mib)
-        || test.inputs.len() > 20
+        || test.inputs.len() > MAX_TEST_INPUTS
         || test.script.len() > 65536
         || test.oracle.stdout_contains.is_empty()
         || !(0..=255).contains(&test.oracle.expected_exit)
     {
-        bail!("invalid test limits/version/oracle");
+        bail!("invalid test version/oracle or more than 20 inputs");
+    }
+    if !(1..=limits.max_timeout_seconds).contains(&test.timeout_seconds)
+        || !(128..=limits.max_memory_mib).contains(&test.memory_mib)
+    {
+        bail!(
+            "test requests timeout_seconds 1..{} and memory_mib 128..{} (profile sandbox limits)",
+            limits.max_timeout_seconds,
+            limits.max_memory_mib
+        );
     }
     if let Some(context) = &test.context
         && (context.description.trim().is_empty() || context.description.len() > 2000)
@@ -296,7 +399,14 @@ pub fn verify(store: &mut Store, id: &str, spec_path: &Path, authorized: bool) -
         }
         case.sandbox = availability();
         let reason = case.sandbox.reason.clone();
-        append_blocker(&mut case, store, &test.instance_id, &reason)?;
+        append_blocker(
+            &mut case,
+            store,
+            &test.instance_id,
+            Some(BlockerKind::RuntimeUnavailable),
+            false,
+            &reason,
+        )?;
         case.updated_at = crate::now();
         store.save_case(&case)?;
         return Ok(case);
@@ -326,7 +436,7 @@ pub fn verify(store: &mut Store, id: &str, spec_path: &Path, authorized: bool) -
         let control = test.control.as_ref().context("positive non-applicability requires a contrasting known-positive control with the same script")?;
         if test.inputs.is_empty()
             || control.inputs.is_empty()
-            || control.inputs.len() > 20
+            || control.inputs.len() > MAX_TEST_INPUTS
             || control.stdout_contains.is_empty()
             || control.artifact_version.is_empty()
             || !(0..=255).contains(&control.expected_exit)
@@ -354,10 +464,18 @@ pub fn verify(store: &mut Store, id: &str, spec_path: &Path, authorized: bool) -
     }
     case.updated_at = crate::now();
     store.save_case(&case)?;
-    let observation = match execute_guest(store, &image, &test, &input_root) {
+    let observation = match execute_guest(store, &image, &test, &input_root, limits) {
         Ok(observation) => observation,
         Err(error) => {
-            append_blocker(&mut case, store, &test.instance_id, &error.to_string())?;
+            // A failed run may come from the test itself, so it does not settle the check.
+            append_blocker(
+                &mut case,
+                store,
+                &test.instance_id,
+                None,
+                false,
+                &error.to_string(),
+            )?;
             store.save_case(&case)?;
             return Err(error);
         }
@@ -383,7 +501,7 @@ pub fn verify(store: &mut Store, id: &str, spec_path: &Path, authorized: bool) -
             purpose: OraclePurpose::Reproduction,
         };
         control_test.control = None;
-        let observed = execute_guest(store, &image, &control_test, &input_root)?;
+        let observed = execute_guest(store, &image, &control_test, &input_root, limits)?;
         let control_output = store.record_evidence(
             &observed.process.stdout,
             "microsandbox_control_output",
@@ -428,6 +546,7 @@ pub fn verify(store: &mut Store, id: &str, spec_path: &Path, authorized: bool) -
         schema_version: 2,
         project_id: case.project_id.clone(),
         case_id: case.case_id.clone(),
+        workspace_revisions: case.workspace_revisions.clone(),
         facts_sha256: case.facts_sha256.clone(),
         instance_id: test.instance_id.clone(),
         artifact_version: test.artifact_version.clone(),

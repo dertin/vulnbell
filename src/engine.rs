@@ -10,6 +10,9 @@ use crate::{
 use anyhow::{Context, Result, bail};
 use std::{collections::HashSet, path::Path};
 
+/// Evidence sources written by the agent through `triage` and `impact`.
+const AGENT_EVIDENCE: [&str; 2] = ["agent_verdict", "impact_assessment"];
+
 pub fn scan(profile: &Profile, path: &Path, offline: bool) -> Result<Snapshot> {
     if profile.workspaces.is_empty() && profile.components.is_empty() {
         bail!("empty_scope: add components or authorized workspaces before scanning");
@@ -69,25 +72,46 @@ fn scan_inner(
     store: &Store,
     start: &str,
 ) -> Result<Snapshot> {
+    let workspace_revisions = crate::workspace_revision::capture(profile, path);
+    let snapshot_id = uuid::Uuid::new_v4().to_string();
+    let workspace_context = crate::workspace_revision::fingerprint(&workspace_revisions);
     let profile_bytes = crate::read_limited(path, 1024 * 1024)?;
     let profile_hash = crate::digest(&profile_bytes);
     let mut instances: Vec<Instance> = profile.components.iter().map(Instance::declared).collect();
     let remaining = 100_000usize.saturating_sub(instances.len());
     let inventory = crate::inventory::discover(&profile.workspaces, path, store, remaining);
     instances.extend(inventory.instances);
-    let discovery_coverage = crate::discovery::augment(profile, path, store, &mut instances)?;
     let mut coverage = inventory.coverage;
+    let discovery_coverage =
+        crate::discovery::augment(profile, path, store, &mut instances, &mut coverage)?;
     coverage.extend(discovery_coverage);
+    for instance in &mut instances {
+        instance.provenance.workspace_context_sha256 = workspace_context.clone();
+    }
     let mut http = Http::new(store, offline);
     for instance in &mut instances {
         coverage.extend(crate::identity::resolve(instance, &mut http));
+        if profile.research.release_windows && profile.research.tracks(instance) {
+            let declared_upstream = profile.components.iter().any(|component| {
+                component.reference == instance.reference
+                    && component.version == instance.requested_version
+                    && component.upstream.is_some()
+                    && component.upstream == instance.upstream
+            });
+            coverage.push(crate::research::release::acquire(
+                instance,
+                &mut http,
+                declared_upstream,
+            ));
+        }
     }
-    let mut intelligence = crate::sources::scan(&instances, &mut http);
+    let previous_cases = store.cases()?;
+    let mut intelligence =
+        crate::sources::scan(&instances, &mut http, &profile.research, &previous_cases);
     let vendor = crate::vendor::feeds(profile, &instances, &mut http);
     intelligence.claims.extend(vendor.claims);
     coverage.extend(intelligence.coverage);
     coverage.extend(vendor.coverage);
-    let snapshot_id = uuid::Uuid::new_v4().to_string();
     let mut cases = cases_from_claims(
         &intelligence.claims,
         &instances,
@@ -95,35 +119,88 @@ fn scan_inner(
         &snapshot_id,
         &coverage,
     )?;
+    for case in &mut cases {
+        case.workspace_revisions = workspace_revisions.clone();
+    }
     coverage.push(Coverage::new("upstream_agent", "project", CoverageState::Partial, "GitHub, GitLab, Launchpad and similar sites are reviewed by the local agent; run research to obtain windows and seen IDs, then import its evidence"));
-    let previous_cases = store.cases()?;
     let mut merged_previous_ids = HashSet::new();
     for case in &mut cases {
         let related: Vec<&Case> = previous_cases
             .iter()
             .filter(|previous| same_advisory_instance(case, previous))
             .collect();
-        if let Some(previous) = related.iter().min_by_key(|previous| &previous.case_id) {
+        // Verdicts and impact assessments are stored under the case ID, so a claim case keeps its
+        // ID and an assessed one wins over a case without agent evidence.
+        if let Some(previous) = related.iter().min_by_key(|previous| {
+            (
+                previous.claims.is_empty(),
+                !previous
+                    .evidence
+                    .iter()
+                    .any(|evidence| AGENT_EVIDENCE.contains(&evidence.source.as_str())),
+                &previous.case_id,
+            )
+        }) {
             case.case_id = previous.case_id.clone();
+        }
+        for previous in &related {
+            for event in &previous.upstream_events {
+                if !case
+                    .upstream_events
+                    .iter()
+                    .any(|kept| kept.id == event.id && kept.url == event.url)
+                {
+                    case.upstream_events.push(event.clone());
+                }
+            }
+        }
+        for previous in related.iter().filter(|previous| previous.claims.is_empty()) {
+            for evidence in &previous.evidence {
+                if !case
+                    .evidence
+                    .iter()
+                    .any(|kept| kept.sha256 == evidence.sha256)
+                {
+                    case.evidence.push(evidence.clone());
+                }
+            }
         }
         merged_previous_ids.extend(related.iter().map(|previous| previous.case_id.clone()));
     }
     for case in &mut cases {
+        // Registry, KEV catalogue and other context documents change daily without changing
+        // the claim; instance context is already part of the base facts.
         let mut fact_hashes: Vec<&str> = case
             .evidence
             .iter()
+            .filter(|evidence| {
+                matches!(
+                    evidence.kind,
+                    EvidenceKind::Advisory | EvidenceKind::NonApplicability
+                )
+            })
             .map(|evidence| evidence.sha256.as_str())
             .collect();
         fact_hashes.sort_unstable();
         case.facts_sha256 =
             crate::digest(format!("{}:{fact_hashes:?}", case.facts_sha256).as_bytes());
-        if let Ok(previous) = store.case(&case.case_id)
-            && previous.facts_sha256 == case.facts_sha256
-        {
+        let Ok(previous) = store.case(&case.case_id) else {
+            continue;
+        };
+        if previous.facts_sha256 == case.facts_sha256 {
             case.applicability = previous.applicability;
             case.verification = previous.verification;
             case.decision = previous.decision;
             case.evidence = previous.evidence;
+        } else if previous
+            .evidence
+            .iter()
+            .any(|evidence| AGENT_EVIDENCE.contains(&evidence.source.as_str()))
+        {
+            case.open_questions.push(format!(
+                "Advisory evidence changed after the recorded {:?} verdict or impact assessment; reassess with the previous rationale in case history.",
+                previous.decision
+            ));
         }
     }
     let active_ids: HashSet<&str> = instances
@@ -134,22 +211,27 @@ fn scan_inner(
     for mut previous in previous_cases {
         if merged_previous_ids.contains(&previous.case_id)
             || current_ids.contains(&previous.case_id)
-            || !previous
-                .instances
-                .iter()
-                .any(|instance| active_ids.contains(instance.id.as_str()))
+        {
+            continue;
+        }
+        let mut context_changed = reconcile_research_instances(&mut previous, &instances);
+        if !previous
+            .instances
+            .iter()
+            .any(|instance| active_ids.contains(instance.id.as_str()))
         {
             continue;
         }
         previous.snapshot_id = snapshot_id.clone();
-        let mut context_changed = false;
+        previous.workspace_revisions = workspace_revisions.clone();
         for old_instance in &mut previous.instances {
             if let Some(current) = instances
                 .iter()
                 .find(|current| current.id == old_instance.id)
             {
-                context_changed |=
-                    old_instance.context_fingerprint() != current.context_fingerprint();
+                context_changed |= old_instance.context_fingerprint()
+                    != current.context_fingerprint()
+                    || old_instance.identity_replaced(current);
                 *old_instance = current.clone();
             }
         }
@@ -192,6 +274,21 @@ fn scan_inner(
         },
         "upstream tracker review is performed by the configured local agent and imported separately",
     ));
+    let deferred_transitive = instances
+        .iter()
+        .filter(|instance| {
+            !profile.research.tracks(instance) && instance.provenance.direct == Some(false)
+        })
+        .count();
+    let deferred_unknown = instances
+        .iter()
+        .filter(|instance| {
+            !profile.research.tracks(instance) && instance.provenance.direct.is_none()
+        })
+        .count();
+    if deferred_transitive > 0 || deferred_unknown > 0 {
+        coverage.push(Coverage::new("tracker_scope", "project", CoverageState::Partial, format!("tracker and repository-advisory research deferred for {deferred_transitive} transitive and {deferred_unknown} unknown-depth instances; OSV queries the full supported inventory independently and can be partial; unpublished repository advisories may be missed; use research.follow to inspect specific references")));
+    }
     coverage.push(Coverage::new(
         "http_metrics",
         "project",
@@ -201,6 +298,23 @@ fn scan_inner(
             http.requests, http.cache_hits, http.budget
         ),
     ));
+    if !crate::workspace_revision::unchanged_during_scan(&workspace_revisions) {
+        bail!("workspace Git context changed during scan; retry after the workspace is stable");
+    }
+    if workspace_revisions.iter().any(|revision| {
+        revision.state == crate::workspace_revision::RepositoryState::Unavailable
+            || revision.state == crate::workspace_revision::RepositoryState::Git
+                && (revision.commit.is_none()
+                    || revision.dirty.is_none()
+                    || revision.worktree_status_sha256.is_none())
+    }) {
+        coverage.push(Coverage::new(
+            "workspace_git",
+            "project",
+            CoverageState::Partial,
+            "Git workspace identity or changed-file fingerprint could not be determined safely",
+        ));
+    }
     let partial = coverage
         .iter()
         .any(|item| !matches!(item.state, CoverageState::Checked | CoverageState::Disabled));
@@ -211,6 +325,7 @@ fn scan_inner(
         profile_sha256: profile_hash,
         started_at: start.into(),
         finished_at: crate::now(),
+        workspace_revisions,
         instances,
         coverage,
         cases,
@@ -218,6 +333,36 @@ fn scan_inner(
         alert_status: "pending".into(),
     })
 }
+
+fn reconcile_research_instances(case: &mut Case, current: &[Instance]) -> bool {
+    if !case.claims.is_empty() || case.upstream_events.len() != 1 {
+        return false;
+    }
+    let mut changed = false;
+    for previous in &mut case.instances {
+        if current.iter().any(|instance| instance.id == previous.id) {
+            continue;
+        }
+        let mut candidates = current.iter().filter(|instance| {
+            instance.reference == previous.reference
+                && instance.origin == previous.origin
+                && instance.provenance.workspace == previous.provenance.workspace
+                && instance.provenance.path == previous.provenance.path
+                && !previous.identity_replaced(instance)
+        });
+        if let (Some(replacement), None) = (candidates.next(), candidates.next()) {
+            *previous = replacement.clone();
+            changed = true;
+        }
+    }
+    if changed {
+        let mut retained = HashSet::new();
+        case.instances
+            .retain(|instance| retained.insert(instance.id.clone()));
+    }
+    changed
+}
+
 fn same_advisory_instance(current: &Case, previous: &Case) -> bool {
     let shared_instance = current
         .instances
@@ -226,12 +371,30 @@ fn same_advisory_instance(current: &Case, previous: &Case) -> bool {
     if !shared_instance {
         return false;
     }
+    // A research case that announced the advisory before a source published it folds into the
+    // claim case only when the claim covers every one of its instances.
+    let research_case = previous.claims.is_empty()
+        && previous.instances.iter().all(|old| {
+            current
+                .instances
+                .iter()
+                .any(|instance| instance.id == old.id)
+        });
     for claim in &current.claims {
         for identifier in std::iter::once(&claim.id).chain(&claim.aliases) {
             if previous
                 .claims
                 .iter()
                 .any(|old| old.id == *identifier || old.aliases.contains(identifier))
+            {
+                return true;
+            }
+            if research_case
+                && previous.upstream_events.iter().any(|event| {
+                    event.kind == "advisory"
+                        && (event.id == *identifier
+                            || event.id.ends_with(&format!("/{identifier}")))
+                })
             {
                 return true;
             }
@@ -355,6 +518,8 @@ pub fn cases_from_claims(
         };
         let decision = if affected && !conflict && !observed_identity {
             Decision::Actionable
+        } else if applicability == Applicability::NotAffected {
+            Decision::Informational
         } else {
             Decision::Review
         };
@@ -364,6 +529,7 @@ pub fn cases_from_claims(
             case_id,
             project_id: profile.project_id.to_string(),
             snapshot_id: snapshot_id.into(),
+            workspace_revisions: Vec::new(),
             instances: vec![instance],
             claims: group,
             upstream_events: Vec::new(),
@@ -401,9 +567,11 @@ fn search_queries(instance: &Instance, profile: &Profile) -> Vec<String> {
             .unwrap_or("version unknown")
     )]
 }
-pub fn triage(store: &mut Store, id: &str, verdict: Verdict) -> Result<Case> {
+pub fn triage(store: &mut Store, id: &str, mut verdict: Verdict) -> Result<Case> {
     let _lock = store.lock()?;
+    store.ensure_workspace_current()?;
     let mut case = store.case(id)?;
+    verdict.workspace_revisions = case.workspace_revisions.clone();
     if verdict.schema_version != 1
         || verdict.case_id != id
         || verdict.facts_sha256 != case.facts_sha256

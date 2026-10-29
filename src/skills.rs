@@ -40,6 +40,10 @@ const SKILL_FILES: &[(&str, &str)] = &[
         include_str!("../skills/vulnbell/references/reporting.md"),
     ),
     (
+        "references/workspace.md",
+        include_str!("../skills/vulnbell/references/workspace.md"),
+    ),
+    (
         "examples/manual-project.yaml",
         include_str!("../examples/manual-project.yaml"),
     ),

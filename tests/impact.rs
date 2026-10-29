@@ -38,6 +38,7 @@ fn fixture() -> (String, Store, Case, EvidenceReference) {
         )
         .unwrap();
     let case = Case {
+        workspace_revisions: Vec::new(),
         schema_version: 1,
         case_id: "SIG-impact".into(),
         project_id: project.clone(),
@@ -101,7 +102,7 @@ fn impact_plan_is_fixed_for_every_instance() {
         upstream: None,
         feeds: Vec::new(),
     }));
-    let plan = vulnbell::impact::plan(&case);
+    let plan = vulnbell::impact::plan(&case, &store);
     assert!(plan.affected_version_confirmed);
     assert_eq!(plan.targets.len(), 2);
     assert!(plan.targets[0].affected_version_confirmed);
@@ -197,6 +198,69 @@ fn negative_project_condition_does_not_silently_dismiss_the_case() {
     assert_eq!(
         store.case(&case.case_id).unwrap().decision,
         Decision::Actionable
+    );
+    drop(store);
+    std::fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+}
+
+#[test]
+fn unconfirmed_cases_settle_containment_but_not_exposure() {
+    let (project, mut store, mut case, evidence) = fixture();
+    case.claims.clear();
+    case.applicability = Applicability::Unknown;
+    case.verification = Verification::Inconclusive;
+    case.decision = Decision::Review;
+    store.save_case(&case).unwrap();
+    let instance_id = case.instances[0].id.clone();
+    let mut assess = |answers: Vec<(ImpactQuestionId, ImpactAnswerValue)>| {
+        let submission = ImpactSubmission {
+            schema_version: 1,
+            case_id: case.case_id.clone(),
+            facts_sha256: case.facts_sha256.clone(),
+            answers: answers
+                .into_iter()
+                .map(|(question, value)| answer(&instance_id, question, value, &evidence))
+                .collect(),
+        };
+        vulnbell::impact::assess(&mut store, &case.case_id, submission)
+            .unwrap()
+            .verdict
+    };
+    assert_eq!(
+        assess(vec![(
+            ImpactQuestionId::AffectedFeatureUsed,
+            ImpactAnswerValue::No
+        )]),
+        ImpactVerdict::NotAffected
+    );
+    assert_eq!(
+        assess(vec![(
+            ImpactQuestionId::FixOrMitigationApplied,
+            ImpactAnswerValue::Yes
+        )]),
+        ImpactVerdict::Mitigated
+    );
+    assert_eq!(
+        assess(vec![
+            (ImpactQuestionId::ArtifactDeployed, ImpactAnswerValue::Yes),
+            (
+                ImpactQuestionId::AffectedFeatureUsed,
+                ImpactAnswerValue::Yes
+            ),
+            (
+                ImpactQuestionId::UntrustedInputReachesFeature,
+                ImpactAnswerValue::Yes
+            ),
+            (
+                ImpactQuestionId::RequiredConditionsPresent,
+                ImpactAnswerValue::Yes
+            ),
+            (
+                ImpactQuestionId::FixOrMitigationApplied,
+                ImpactAnswerValue::No
+            ),
+        ]),
+        ImpactVerdict::NeedsEvidence
     );
     drop(store);
     std::fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();

@@ -44,9 +44,16 @@ pub struct Provenance {
     pub sha256: String,
     pub observed_at: String,
     pub workspace: Option<String>,
+    /// Fingerprint of the Git workspaces reviewed with this inventory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_context_sha256: Option<String>,
     pub direct: Option<bool>,
     pub resolution: Option<String>,
     pub artifact_integrity: Option<String>,
+    /// 1-based line in `path` where the package entry or cited excerpt starts.
+    /// Display-only: excluded from the context fingerprint so unrelated edits do not reopen cases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<usize>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Instance {
@@ -61,6 +68,15 @@ pub struct Instance {
     pub cpe_product: Option<String>,
     pub upstream: Option<String>,
     pub identity_evidence: Vec<Evidence>,
+    /// Verified registry metadata for this exact resolved version, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<ReleaseDate>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReleaseDate {
+    pub version: String,
+    pub published_at: String,
+    pub evidence: Evidence,
 }
 impl Instance {
     pub fn declared(component: &Component) -> Self {
@@ -92,14 +108,17 @@ impl Instance {
                 ),
                 observed_at: crate::now(),
                 workspace: None,
+                workspace_context_sha256: None,
                 direct: Some(true),
                 resolution: None,
                 artifact_integrity: None,
+                line: None,
             },
             purl: None,
             cpe_product: None,
             upstream: component.upstream.clone(),
             identity_evidence: Vec::new(),
+            release: None,
         }
     }
 
@@ -109,6 +128,8 @@ impl Instance {
             Origin::Locked => None,
             _ => Some(&self.provenance.sha256),
         };
+        // Upstream and CPE are source identity; mapping them later enriches the same artifact.
+        // `identity_replaced` detects a real change of an already mapped identity.
         let context = (
             &self.id,
             &self.reference,
@@ -116,15 +137,24 @@ impl Instance {
             self.origin,
             &self.provenance.path,
             &self.provenance.workspace,
-            self.provenance.direct,
             &self.provenance.resolution,
             &self.provenance.artifact_integrity,
             &self.purl,
-            &self.cpe_product,
-            &self.upstream,
             declaration,
         );
-        crate::digest(&serde_json::to_vec(&context).expect("instance context serializes"))
+        let original =
+            crate::digest(&serde_json::to_vec(&context).expect("instance context serializes"));
+        match &self.provenance.workspace_context_sha256 {
+            Some(git_context) => crate::digest(format!("{original}:{git_context}").as_bytes()),
+            None => original,
+        }
+    }
+
+    /// True when a previously mapped upstream or CPE now points elsewhere.
+    pub fn identity_replaced(&self, current: &Instance) -> bool {
+        let replaced = |old: &Option<String>, new: &Option<String>| old.is_some() && old != new;
+        replaced(&self.upstream, &current.upstream)
+            || replaced(&self.cpe_product, &current.cpe_product)
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -191,6 +221,34 @@ pub struct UpstreamEvent {
     pub title: String,
     pub updated_at: Option<String>,
     pub sha256: String,
+    #[serde(default, skip_serializing_if = "SourceFacts::is_empty")]
+    pub source_facts: SourceFacts,
+}
+/// What an upstream item itself states, quoted or closely paraphrased; an empty field means the
+/// item does not say. These are the item's statements, not the agent's conclusions.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SourceFacts {
+    /// CVE, GHSA, RUSTSEC or other advisory IDs the item cites.
+    #[serde(default)]
+    pub identifiers: Vec<String>,
+    /// Versions or release lines the item says are affected.
+    #[serde(default)]
+    pub affected_versions: String,
+    /// Version, release or backport the item says contains the fix.
+    #[serde(default)]
+    pub fixed_in: String,
+    /// Pull request, commit or release that carries the fix.
+    #[serde(default)]
+    pub fix_reference: String,
+    /// Feature, configuration or deployment condition the item says the issue requires.
+    #[serde(default)]
+    pub required_feature: String,
+}
+impl SourceFacts {
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Case {
@@ -198,6 +256,9 @@ pub struct Case {
     pub case_id: String,
     pub project_id: String,
     pub snapshot_id: String,
+    /// Git workspaces that bound the facts and review for this case.
+    #[serde(default)]
+    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     pub instances: Vec<Instance>,
     pub claims: Vec<Claim>,
     pub upstream_events: Vec<UpstreamEvent>,
@@ -225,6 +286,9 @@ pub struct Snapshot {
     pub profile_sha256: String,
     pub started_at: String,
     pub finished_at: String,
+    /// Workspace state at the start and end of the scan.
+    #[serde(default)]
+    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     pub instances: Vec<Instance>,
     pub coverage: Vec<Coverage>,
     pub cases: Vec<Case>,
@@ -236,6 +300,9 @@ pub struct Snapshot {
 pub struct Verdict {
     pub schema_version: u32,
     pub case_id: String,
+    /// Recorded by the CLI from the current case.
+    #[serde(default)]
+    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     pub facts_sha256: String,
     pub applicability: Applicability,
     pub verification: Verification,

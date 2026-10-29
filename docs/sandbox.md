@@ -4,7 +4,7 @@ Microsandbox **0.7.11** is the only backend for active tests. Tests never fall b
 
 ## Setup
 
-Install the runtime from its official distribution, then run:
+Install the runtime from its official [v0.7.11 release](https://github.com/superradcompany/microsandbox/releases/tag/v0.7.11). On Linux the user needs read/write access to `/dev/kvm`. Then run:
 
 ```sh
 msb --version
@@ -13,9 +13,27 @@ vulnbell sandbox prepare
 vulnbell sandbox status
 ```
 
-`prepare` checks the version and prerequisites. It uses a private VulnBell `MSB_HOME` and downloads and prepares an official OCI image pinned by digest. The base image is Alpine 3.22.7, index `sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f`. It also records the architecture-specific manifest digest and executable SHA-256. The global Microsandbox installation is not changed. Set `VULNBELL_MSB_EXECUTABLE` to select the executable during setup.
+`prepare` checks the version and prerequisites. It uses a private VulnBell `MSB_HOME` and downloads and prepares an official OCI image pinned by digest. The base image is Alpine 3.22.7, index `sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f`. It also records the architecture-specific manifest digest and executable SHA-256. The global Microsandbox installation is not changed. Set `VULNBELL_MSB_EXECUTABLE` to select the executable during setup. If `msb` is missing or has another version, `prepare` and `doctor` name the release to install. When `msb doctor` fails, they show its failing checks.
 
-For a local project, stage only the reviewed files needed by the test:
+Report and pending JSON use schema version 1. Report JSON distinguishes `sandbox_candidate` (the version is unconfirmed and needs a review disposition) from `sandbox_needed` (a current handoff explicitly requires testing that instance). An unresolved candidate without a handoff is `review_disposition_missing`; it does not by itself require a sandbox. Handoff schema 1 requires `sandbox_instance_ids`: an empty list with `sandbox_required: false`, or explicit target IDs with `true`. Missing deployment facts do not require a test because the sandbox cannot establish them. Invalid verification evidence remains pending. The Markdown report starts with an incomplete banner while any of these decisions remain open.
+
+`case <id> --validation-blocker <reason> --blocker-kind <kind>` records the blocker for every instance of the case; add `--instance <id>` to limit it to one. Kinds:
+
+| Kind | Use when |
+|---|---|
+| `details_undisclosed` | The advisory or report withholds what is needed to build an oracle. |
+| `artifact_unavailable` | The exact artifact cannot be obtained from an official source with a checksum. |
+| `sandbox_limits` | The artifact or workload exceeds the profile limits even at their caps. |
+| `runtime_unavailable` | Microsandbox cannot run on this host. `verify` records it when the runtime is missing. |
+| `authorization_declined` | The operator declined to authorize the test. |
+
+A test that fails to run records a blocker without a kind. It does not settle the check: fix the test or record a blocker with a kind.
+
+A current `lab_reproduced` attestation confirms the affected version only for the instance it tested. In a case with several instances, for example every artifact of one upstream release, `impact` can then derive an update priority from that instance while the others stay unconfirmed.
+
+Run `vulnbell sandbox capabilities --project vulnbell.yaml` to inspect the configured resource limits, staging ceiling and required isolation policy before planning a test. This does not prepare or start a VM, and it does not attest the effective runtime policy. Without `--project`, it reports the defaults.
+
+For a local project, first verify that a representative offline test is practical; stage only the reviewed files needed by that test:
 
 ```sh
 vulnbell sandbox stage --source /path/to/project --file package-lock.json --file src/affected.ts --directory /private/test
@@ -30,8 +48,19 @@ If a test needs Node, PHP, Rust, or other tools, prepare an official image with 
 ## Execution and limits
 
 - Approve the script, test oracle, and inputs with `verify --authorize`. This flag represents the local operator's authority. It does not identify a person or provide cryptographic approval. The scheduled researcher cannot call it.
-- Inputs must be in `inputs/` beside the test file. That folder cannot redirect elsewhere. Names must be unique and hashes must match. Limits: 20 files, 16 MiB per file, 64 MiB total. Validated bytes are copied; the folder is not mounted.
-- Tests use UID/GID 65534, the `restricted` profile, `multi-tenant` deployment, 1 CPU, 128–512 MiB RAM, and 1–120 seconds. Each VM has a private 2 GiB disk, a maximum lifetime, and forced removal after the test.
+- Inputs must be in `inputs/` beside the test file. That folder cannot redirect elsewhere. Names must be unique and hashes must match. At most 20 files; by default 16 MiB per file and 64 MiB total. Validated bytes are copied; the folder is not mounted.
+- Tests use UID/GID 65534, the `restricted` profile, `multi-tenant` deployment, and 1 CPU. By default they may request 128–512 MiB RAM and 1–120 seconds. Each VM has a private 2 GiB disk, a maximum lifetime, and forced removal after the test.
+- A profile can raise those defaults for workloads such as an application server, up to fixed caps. Raising them is part of the operator's authorization; isolation settings are not configurable.
+
+  ```yaml
+  sandbox:
+    max_input_file_mib: 256   # cap 512
+    max_inputs_mib: 512       # cap 1024, at least max_input_file_mib
+    max_memory_mib: 2048      # cap 4096
+    max_timeout_seconds: 300  # cap 600
+  ```
+
+  `sandbox stage` keeps its 16 MiB archive limit: a workspace copy holds reviewed source files, not distributions.
 - Traffic is denied in both directions. There are no network exceptions, published ports, secrets, host certificates, or external mounts. `--no-net` keeps a network device with a deny policy; it does not remove the device. The runtime checks that policy before running the test.
 - Test specifications accept only the script and inputs. They cannot add runtime flags, mounts, secrets, or network settings. The **active** policy returned by the runtime is checked before execution.
 - Tests use managed Microsandbox jobs. Job identity and final status come from control JSON. Workload logs are fetched separately. Stdout/stderr cannot set the trusted exit code or timeout. Log capture and host processes have their own limits.

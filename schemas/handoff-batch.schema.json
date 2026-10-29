@@ -1,0 +1,71 @@
+{
+  "$defs": {
+    "ReviewHandoff": {
+      "additionalProperties": false,
+      "description": "A reviewed case may be handed off with open uncertainty without requiring a laboratory test.",
+      "properties": {
+        "case_id": {
+          "type": "string"
+        },
+        "facts_sha256": {
+          "type": "string"
+        },
+        "next_step": {
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sandbox_instance_ids": {
+          "description": "Explicit test targets; empty only when no sandbox test is required.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "sandbox_required": {
+          "type": "boolean"
+        },
+        "uncertainty": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "case_id",
+        "facts_sha256",
+        "rationale",
+        "uncertainty",
+        "next_step",
+        "sandbox_required",
+        "sandbox_instance_ids",
+        "note"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "cases": {
+      "items": {
+        "$ref": "#/$defs/ReviewHandoff"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "format": "uint32",
+      "maximum": 1,
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "cases"
+  ],
+  "title": "HandoffBatch",
+  "type": "object"
+}

@@ -1,0 +1,227 @@
+{
+  "$defs": {
+    "Assessment": {
+      "description": "`not_applicable`: a security claim that, per the cited source, does not affect the monitored\nversion or build. It requires `not_applicable_reason`, is counted and remembered, and opens no case.",
+      "enum": [
+        "review",
+        "informational",
+        "not_applicable",
+        "ignore"
+      ],
+      "type": "string"
+    },
+    "ItemDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "all_instances": {
+          "default": false,
+          "description": "Explicitly assess every instance of a multi-component upstream as one scope.",
+          "type": "boolean"
+        },
+        "assessment": {
+          "$ref": "#/$defs/Assessment"
+        },
+        "context_sha256": {
+          "description": "Context fingerprint returned by tools hits for the exact reviewed target.",
+          "type": "string"
+        },
+        "instance_ids": {
+          "default": [],
+          "description": "Instances of the item's upstream the reading applies to.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "key": {
+          "description": "Item key reported by `tools hits`.",
+          "type": "string"
+        },
+        "not_applicable_reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NotApplicableReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Required with `not_applicable`; forbidden otherwise."
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "source_facts": {
+          "$ref": "#/$defs/SourceFacts",
+          "default": {
+            "affected_versions": "",
+            "fix_reference": "",
+            "fixed_in": "",
+            "identifiers": [],
+            "required_feature": ""
+          }
+        },
+        "updated_at": {
+          "description": "The item's `updated_at` when it was reviewed; a later update lists the item again.",
+          "type": "string"
+        },
+        "upstream": {
+          "description": "Upstream reported by `tools hits`.",
+          "type": "string"
+        },
+        "workspace_revisions": {
+          "description": "Workspace revisions reported by `tools hits` for this reading.",
+          "items": {
+            "$ref": "#/$defs/WorkspaceRevision"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "upstream",
+        "key",
+        "updated_at",
+        "context_sha256",
+        "assessment",
+        "rationale"
+      ],
+      "type": "object"
+    },
+    "NotApplicableReason": {
+      "oneOf": [
+        {
+          "const": "fixed_in_monitored_version",
+          "description": "The monitored resolved version already contains the fix.",
+          "type": "string"
+        },
+        {
+          "const": "affects_other_version",
+          "description": "Only other release lines or unreleased branches are affected.",
+          "type": "string"
+        },
+        {
+          "const": "component_not_in_build",
+          "description": "The affected module, feature or platform is absent from the monitored build.",
+          "type": "string"
+        }
+      ]
+    },
+    "RepositoryState": {
+      "enum": [
+        "git",
+        "not_git",
+        "unavailable"
+      ],
+      "type": "string"
+    },
+    "SourceFacts": {
+      "additionalProperties": false,
+      "description": "What an upstream item itself states, quoted or closely paraphrased; an empty field means the\nitem does not say. These are the item's statements, not the agent's conclusions.",
+      "properties": {
+        "affected_versions": {
+          "default": "",
+          "description": "Versions or release lines the item says are affected.",
+          "type": "string"
+        },
+        "fix_reference": {
+          "default": "",
+          "description": "Pull request, commit or release that carries the fix.",
+          "type": "string"
+        },
+        "fixed_in": {
+          "default": "",
+          "description": "Version, release or backport the item says contains the fix.",
+          "type": "string"
+        },
+        "identifiers": {
+          "default": [],
+          "description": "CVE, GHSA, RUSTSEC or other advisory IDs the item cites.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "required_feature": {
+          "default": "",
+          "description": "Feature, configuration or deployment condition the item says the issue requires.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "WorkspaceRevision": {
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dirty": {
+          "description": "Changes excluding private paths, ignored files and submodule contents.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "repository": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/RepositoryState"
+        },
+        "workspace": {
+          "type": "string"
+        },
+        "worktree_status_sha256": {
+          "description": "Hash of Git's status entries and changed files, without retaining names or contents.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "workspace",
+        "state",
+        "observed_at"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The agent's reviewed readings of screened items, kept across runs.",
+  "properties": {
+    "decisions": {
+      "items": {
+        "$ref": "#/$defs/ItemDecision"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "decisions"
+  ],
+  "title": "ResearchDecisions",
+  "type": "object"
+}

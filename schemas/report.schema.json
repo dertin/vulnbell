@@ -48,6 +48,36 @@
       ],
       "type": "string"
     },
+    "BlockerKind": {
+      "description": "Why a sandbox check the case needs cannot run. Missing deployment facts are not a kind: the\nsandbox cannot establish them, so they never require a check.",
+      "oneOf": [
+        {
+          "const": "details_undisclosed",
+          "description": "The advisory or report does not disclose enough to build an oracle.",
+          "type": "string"
+        },
+        {
+          "const": "artifact_unavailable",
+          "description": "The exact artifact cannot be obtained from an official source with a checksum.",
+          "type": "string"
+        },
+        {
+          "const": "sandbox_limits",
+          "description": "The artifact or workload exceeds the profile's sandbox limits or their caps.",
+          "type": "string"
+        },
+        {
+          "const": "runtime_unavailable",
+          "description": "Microsandbox cannot run on this host.",
+          "type": "string"
+        },
+        {
+          "const": "authorization_declined",
+          "description": "The operator declined to authorize the test.",
+          "type": "string"
+        }
+      ]
+    },
     "Coverage": {
       "properties": {
         "detail": {
@@ -101,6 +131,17 @@
           "minimum": 0,
           "type": "integer"
         },
+        "deferred_transitive": {
+          "description": "Inventory instances outside the selected tracker-mapping scope.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "deferred_unknown_depth": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
         "directories_pending": {
           "format": "uint",
           "minimum": 0,
@@ -130,6 +171,7 @@
           "type": "integer"
         },
         "sources_unavailable": {
+          "description": "Mapped components without a repository, so upstream research cannot cover them.",
           "format": "uint",
           "minimum": 0,
           "type": "integer"
@@ -143,6 +185,8 @@
         "files_excluded",
         "files_unavailable",
         "components_unmapped",
+        "deferred_transitive",
+        "deferred_unknown_depth",
         "sources_unavailable",
         "complete"
       ],
@@ -193,13 +237,29 @@
             "$ref": "#/$defs/FindingReference"
           },
           "type": "array"
+        },
+        "review_handoff": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReviewHandoff"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Evidence-bound review disposition; it never represents a sandbox attestation."
+        },
+        "review_handoff_stale": {
+          "description": "A prior disposition is no longer current or its evidence cannot be validated.",
+          "type": "boolean"
         }
       },
       "required": [
         "case_id",
         "decision",
         "references",
-        "local_checks"
+        "local_checks",
+        "review_handoff_stale"
       ],
       "type": "object"
     },
@@ -275,8 +335,29 @@
           },
           "type": "array"
         },
+        "provenance": {
+          "description": "Where each component version was read: `workspace/path:line`, or the profile.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "recommended_action": {
           "type": "string"
+        },
+        "recorded_verdict": {
+          "description": "Latest recorded agent verdict (`decision: rationale`), when one exists.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_facts": {
+          "description": "What the cited upstream items state (affected versions, fix, required feature).",
+          "items": {
+            "$ref": "#/$defs/SourceFacts"
+          },
+          "type": "array"
         },
         "summary": {
           "type": "string"
@@ -288,6 +369,7 @@
       "required": [
         "case_id",
         "components",
+        "provenance",
         "origin",
         "summary",
         "advisory_details",
@@ -298,7 +380,8 @@
         "evidence_links",
         "evidence_sha256",
         "open_questions",
-        "recommended_action"
+        "recommended_action",
+        "source_facts"
       ],
       "type": "object"
     },
@@ -432,6 +515,13 @@
         },
         "verdict": {
           "$ref": "#/$defs/ImpactVerdict"
+        },
+        "workspace_revisions": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WorkspaceRevision"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -490,6 +580,13 @@
       ],
       "type": "object"
     },
+    "Language": {
+      "enum": [
+        "en",
+        "es"
+      ],
+      "type": "string"
+    },
     "LocalCheck": {
       "properties": {
         "artifact_version": {
@@ -503,6 +600,17 @@
             "string",
             "null"
           ]
+        },
+        "blocker": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BlockerKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Set for a `blocked` result; absent for blockers recorded without a kind."
         },
         "context": {
           "anyOf": [
@@ -534,10 +642,20 @@
         },
         "result": {
           "$ref": "#/$defs/LocalResult"
+        },
+        "sandbox_candidate": {
+          "description": "An unconfirmed version warrants a review decision; it does not mandate a test.",
+          "type": "boolean"
+        },
+        "sandbox_needed": {
+          "description": "A current review disposition explicitly requires a test for this instance.",
+          "type": "boolean"
         }
       },
       "required": [
         "instance_id",
+        "sandbox_candidate",
+        "sandbox_needed",
         "result",
         "detail"
       ],
@@ -568,8 +686,22 @@
         "instance_id": {
           "type": "string"
         },
+        "line": {
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "origin": {
           "$ref": "#/$defs/Origin"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "ref": {
           "type": "string"
@@ -615,6 +747,133 @@
         "deployed"
       ],
       "type": "string"
+    },
+    "PendingReason": {
+      "oneOf": [
+        {
+          "const": "impact_not_assessed",
+          "description": "`vulnbell impact` has not been answered for the current case facts.",
+          "type": "string"
+        },
+        {
+          "const": "review_disposition_missing",
+          "description": "An unconfirmed signal needs an explicit review disposition, not necessarily a test.",
+          "type": "string"
+        },
+        {
+          "const": "sandbox_check_missing",
+          "description": "A test was explicitly required and has neither a result nor a categorized blocker.",
+          "type": "string"
+        },
+        {
+          "const": "invalid_verification_evidence",
+          "description": "Recorded verification evidence could not be validated.",
+          "type": "string"
+        }
+      ]
+    },
+    "PendingVerification": {
+      "properties": {
+        "case_id": {
+          "type": "string"
+        },
+        "reason": {
+          "$ref": "#/$defs/PendingReason"
+        }
+      },
+      "required": [
+        "case_id",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "RepositoryState": {
+      "enum": [
+        "git",
+        "not_git",
+        "unavailable"
+      ],
+      "type": "string"
+    },
+    "ReviewHandoff": {
+      "additionalProperties": false,
+      "description": "A reviewed case may be handed off with open uncertainty without requiring a laboratory test.",
+      "properties": {
+        "case_id": {
+          "type": "string"
+        },
+        "facts_sha256": {
+          "type": "string"
+        },
+        "next_step": {
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "sandbox_instance_ids": {
+          "description": "Explicit test targets; empty only when no sandbox test is required.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "sandbox_required": {
+          "type": "boolean"
+        },
+        "uncertainty": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "case_id",
+        "facts_sha256",
+        "rationale",
+        "uncertainty",
+        "next_step",
+        "sandbox_required",
+        "sandbox_instance_ids",
+        "note"
+      ],
+      "type": "object"
+    },
+    "SourceFacts": {
+      "additionalProperties": false,
+      "description": "What an upstream item itself states, quoted or closely paraphrased; an empty field means the\nitem does not say. These are the item's statements, not the agent's conclusions.",
+      "properties": {
+        "affected_versions": {
+          "default": "",
+          "description": "Versions or release lines the item says are affected.",
+          "type": "string"
+        },
+        "fix_reference": {
+          "default": "",
+          "description": "Pull request, commit or release that carries the fix.",
+          "type": "string"
+        },
+        "fixed_in": {
+          "default": "",
+          "description": "Version, release or backport the item says contains the fix.",
+          "type": "string"
+        },
+        "identifiers": {
+          "default": [],
+          "description": "CVE, GHSA, RUSTSEC or other advisory IDs the item cites.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "required_feature": {
+          "default": "",
+          "description": "Feature, configuration or deployment condition the item says the issue requires.",
+          "type": "string"
+        }
+      },
+      "type": "object"
     },
     "SourceKind": {
       "enum": [
@@ -695,6 +954,77 @@
         "disproven"
       ],
       "type": "string"
+    },
+    "WorkspaceComparison": {
+      "properties": {
+        "current": {
+          "$ref": "#/$defs/WorkspaceRevision"
+        },
+        "matches": {
+          "description": "The recorded Git identity and available changed-file fingerprint match.",
+          "type": "boolean"
+        },
+        "reviewed": {
+          "$ref": "#/$defs/WorkspaceRevision"
+        }
+      },
+      "required": [
+        "reviewed",
+        "current",
+        "matches"
+      ],
+      "type": "object"
+    },
+    "WorkspaceRevision": {
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dirty": {
+          "description": "Changes excluding private paths, ignored files and submodule contents.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "repository": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/RepositoryState"
+        },
+        "workspace": {
+          "type": "string"
+        },
+        "worktree_status_sha256": {
+          "description": "Hash of Git's status entries and changed files, without retaining names or contents.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "workspace",
+        "state",
+        "observed_at"
+      ],
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -749,6 +1079,10 @@
       },
       "type": "array"
     },
+    "language": {
+      "$ref": "#/$defs/Language",
+      "description": "Report language from the profile; the generated sentences in this report use it."
+    },
     "last_agent_review": {
       "type": [
         "string",
@@ -770,6 +1104,12 @@
       },
       "type": "array"
     },
+    "not_applicable_count": {
+      "description": "Upstream events the agent assessed as not affecting the monitored versions; no case is opened.",
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
     "notification_status": {
       "type": "string"
     },
@@ -786,8 +1126,10 @@
       ]
     },
     "schema_version": {
+      "description": "Current report contract distinguishes candidates from explicitly required checks.",
       "format": "uint32",
-      "minimum": 0,
+      "maximum": 1,
+      "minimum": 1,
       "type": "integer"
     },
     "source_map": {
@@ -795,24 +1137,50 @@
         "$ref": "#/$defs/IdentityObservation"
       },
       "type": "array"
+    },
+    "verification_pending": {
+      "description": "Open cases whose verification is unfinished; a deliverable report requires none.",
+      "items": {
+        "$ref": "#/$defs/PendingVerification"
+      },
+      "type": "array"
+    },
+    "workspace_context_unrecorded": {
+      "type": "boolean"
+    },
+    "workspace_revisions": {
+      "description": "Git identities recorded by the scan and the workspace state at report time.",
+      "items": {
+        "$ref": "#/$defs/WorkspaceComparison"
+      },
+      "type": "array"
+    },
+    "workspace_scope_changed": {
+      "type": "boolean"
     }
   },
   "required": [
     "schema_version",
     "audience",
+    "language",
     "project_id",
     "project_name",
     "generated_at",
     "last_scan",
+    "workspace_revisions",
+    "workspace_context_unrecorded",
+    "workspace_scope_changed",
     "inventory",
     "actionable",
     "needs_review",
     "informational_count",
     "dismissed_count",
+    "not_applicable_count",
     "coverage_gaps",
     "notification_status",
     "finding_checks",
-    "source_map"
+    "source_map",
+    "verification_pending"
   ],
   "title": "MorningReport",
   "type": "object"

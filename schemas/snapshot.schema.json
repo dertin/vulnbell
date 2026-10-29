@@ -85,6 +85,14 @@
         },
         "verification": {
           "$ref": "#/$defs/Verification"
+        },
+        "workspace_revisions": {
+          "default": [],
+          "description": "Git workspaces that bound the facts and review for this case.",
+          "items": {
+            "$ref": "#/$defs/WorkspaceRevision"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -268,6 +276,17 @@
         "ref": {
           "type": "string"
         },
+        "release": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReleaseDate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Verified registry metadata for this exact resolved version, when available."
+        },
         "requested_version": {
           "type": [
             "string",
@@ -320,6 +339,15 @@
             "null"
           ]
         },
+        "line": {
+          "description": "1-based line in `path` where the package entry or cited excerpt starts.\nDisplay-only: excluded from the context fingerprint so unrelated edits do not reopen cases.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "observed_at": {
           "type": "string"
         },
@@ -343,6 +371,13 @@
             "string",
             "null"
           ]
+        },
+        "workspace_context_sha256": {
+          "description": "Fingerprint of the Git workspaces reviewed with this inventory.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -350,6 +385,33 @@
         "observed_at"
       ],
       "type": "object"
+    },
+    "ReleaseDate": {
+      "properties": {
+        "evidence": {
+          "$ref": "#/$defs/Evidence"
+        },
+        "published_at": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "published_at",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    "RepositoryState": {
+      "enum": [
+        "git",
+        "not_git",
+        "unavailable"
+      ],
+      "type": "string"
     },
     "SandboxAvailability": {
       "properties": {
@@ -366,6 +428,41 @@
       ],
       "type": "object"
     },
+    "SourceFacts": {
+      "additionalProperties": false,
+      "description": "What an upstream item itself states, quoted or closely paraphrased; an empty field means the\nitem does not say. These are the item's statements, not the agent's conclusions.",
+      "properties": {
+        "affected_versions": {
+          "default": "",
+          "description": "Versions or release lines the item says are affected.",
+          "type": "string"
+        },
+        "fix_reference": {
+          "default": "",
+          "description": "Pull request, commit or release that carries the fix.",
+          "type": "string"
+        },
+        "fixed_in": {
+          "default": "",
+          "description": "Version, release or backport the item says contains the fix.",
+          "type": "string"
+        },
+        "identifiers": {
+          "default": [],
+          "description": "CVE, GHSA, RUSTSEC or other advisory IDs the item cites.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "required_feature": {
+          "default": "",
+          "description": "Feature, configuration or deployment condition the item says the issue requires.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "UpstreamEvent": {
       "properties": {
         "id": {
@@ -379,6 +476,9 @@
         },
         "sha256": {
           "type": "string"
+        },
+        "source_facts": {
+          "$ref": "#/$defs/SourceFacts"
         },
         "title": {
           "type": "string"
@@ -412,6 +512,57 @@
         "disproven"
       ],
       "type": "string"
+    },
+    "WorkspaceRevision": {
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dirty": {
+          "description": "Changes excluding private paths, ignored files and submodule contents.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "repository": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/RepositoryState"
+        },
+        "workspace": {
+          "type": "string"
+        },
+        "worktree_status_sha256": {
+          "description": "Hash of Git's status entries and changed files, without retaining names or contents.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "workspace",
+        "state",
+        "observed_at"
+      ],
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -459,6 +610,14 @@
     },
     "started_at": {
       "type": "string"
+    },
+    "workspace_revisions": {
+      "default": [],
+      "description": "Workspace state at the start and end of the scan.",
+      "items": {
+        "$ref": "#/$defs/WorkspaceRevision"
+      },
+      "type": "array"
     }
   },
   "required": [

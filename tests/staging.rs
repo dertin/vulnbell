@@ -2,6 +2,31 @@ use std::{fs, path::PathBuf};
 use vulnbell::sandbox::staging::stage;
 
 #[test]
+fn capabilities_report_profile_limits_without_starting_the_runtime() {
+    let directory = tempfile::tempdir().unwrap();
+    let profile = directory.path().join("vulnbell.yaml");
+    fs::write(&profile, "schema: 1\nproject_id: 0de0a8e7-f1a4-4bdc-a198-422b90bbbd84\nname: fixture\nsandbox:\n  max_input_file_mib: 32\n  max_inputs_mib: 96\n  max_memory_mib: 1024\n  max_timeout_seconds: 180\n").unwrap();
+    let output = assert_cmd::Command::new(assert_cmd::cargo::cargo_bin!("vulnbell"))
+        .args(["sandbox", "capabilities", "--project"])
+        .arg(&profile)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["workspace_stage"]["max_files"], 1000);
+    assert_eq!(
+        value["workspace_stage"]["max_archive_bytes"],
+        16 * 1024 * 1024
+    );
+    assert_eq!(value["test"]["max_inputs"], 20);
+    assert_eq!(value["test"]["limits"]["max_input_file_mib"], 32);
+    assert_eq!(value["test"]["limits"]["max_memory_mib"], 1024);
+    assert_eq!(value["required_network_policy"], "deny_ingress_and_egress");
+    assert_eq!(value["explicit_authorization_required"], true);
+    assert_eq!(value["runtime_policy_checked_during_verify"], true);
+}
+
+#[test]
 fn staging_copies_only_reviewed_bytes_preserves_paths_and_never_runs_project_hooks() {
     let directory = tempfile::tempdir().unwrap();
     let source = directory.path().join("workspace");

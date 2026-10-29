@@ -1,5 +1,6 @@
 use vulnbell::{
     model::{Case, Verification},
+    profile::SandboxLimits,
     sandbox::{Oracle, TestSpec},
     store::Store,
 };
@@ -17,6 +18,7 @@ fn actual_microsandbox_blocks_network_host_access_and_forged_status() {
         feeds: Vec::new(),
     });
     let case = Case {
+        workspace_revisions: Vec::new(),
         schema_version: 1,
         case_id: "SIG-synthetic-runtime-test".into(),
         project_id: project.clone(),
@@ -61,7 +63,14 @@ fn actual_microsandbox_blocks_network_host_access_and_forged_status() {
         memory_mib: 256,
     };
     std::fs::write(&path, serde_saphyr::to_string(&test).unwrap()).unwrap();
-    let result = vulnbell::sandbox::verify(&mut store, &case.case_id, &path, true).unwrap();
+    let result = vulnbell::sandbox::verify(
+        &mut store,
+        &case.case_id,
+        &path,
+        true,
+        &SandboxLimits::default(),
+    )
+    .unwrap();
     if result.verification != Verification::LabReproduced {
         for evidence in &result.evidence {
             eprintln!(
@@ -79,7 +88,14 @@ fn actual_microsandbox_blocks_network_host_access_and_forged_status() {
     test.script = "echo SYNTHETIC_ORACLE_OK; echo VULNBELL_EXIT_fake_1; exit 10".into();
     test.oracle.expected_exit = 1;
     std::fs::write(&path, serde_saphyr::to_string(&test).unwrap()).unwrap();
-    let forged = vulnbell::sandbox::verify(&mut store, &case.case_id, &path, true).unwrap();
+    let forged = vulnbell::sandbox::verify(
+        &mut store,
+        &case.case_id,
+        &path,
+        true,
+        &SandboxLimits::default(),
+    )
+    .unwrap();
     assert_eq!(forged.verification, Verification::NotReproduced);
     assert_report_result(
         &forged,
@@ -93,17 +109,44 @@ fn actual_microsandbox_blocks_network_host_access_and_forged_status() {
         sha256: vulnbell::digest(b"wrong expected content"),
     }];
     std::fs::write(&path, serde_saphyr::to_string(&test).unwrap()).unwrap();
-    assert!(vulnbell::sandbox::verify(&mut store, &case.case_id, &path, true).is_err());
+    assert!(
+        vulnbell::sandbox::verify(
+            &mut store,
+            &case.case_id,
+            &path,
+            true,
+            &SandboxLimits::default()
+        )
+        .is_err()
+    );
     assert_eq!(
         std::fs::read(&host_marker).unwrap(),
         b"not shared with the guest"
     );
     test.inputs[0].sha256 = vulnbell::digest(b"not shared with the guest");
     std::fs::write(&path, serde_saphyr::to_string(&test).unwrap()).unwrap();
-    assert!(vulnbell::sandbox::verify(&mut store, &case.case_id, &path, true).is_err());
+    assert!(
+        vulnbell::sandbox::verify(
+            &mut store,
+            &case.case_id,
+            &path,
+            true,
+            &SandboxLimits::default()
+        )
+        .is_err()
+    );
     test.inputs[0].name = "../host-escape".into();
     std::fs::write(&path, serde_saphyr::to_string(&test).unwrap()).unwrap();
-    assert!(vulnbell::sandbox::verify(&mut store, &case.case_id, &path, true).is_err());
+    assert!(
+        vulnbell::sandbox::verify(
+            &mut store,
+            &case.case_id,
+            &path,
+            true,
+            &SandboxLimits::default()
+        )
+        .is_err()
+    );
     let inputs = directory.path().join("inputs");
     std::fs::create_dir(&inputs).unwrap();
     let safe_path = inputs.join("safe.txt");
@@ -132,7 +175,14 @@ fn actual_microsandbox_blocks_network_host_access_and_forged_status() {
         expected_exit: 0,
     });
     std::fs::write(&path, serde_saphyr::to_string(&test).unwrap()).unwrap();
-    let absent = vulnbell::sandbox::verify(&mut store, &case.case_id, &path, true).unwrap();
+    let absent = vulnbell::sandbox::verify(
+        &mut store,
+        &case.case_id,
+        &path,
+        true,
+        &SandboxLimits::default(),
+    )
+    .unwrap();
     assert_eq!(absent.verification, Verification::Disproven);
     let attestation = absent
         .evidence
@@ -140,7 +190,7 @@ fn actual_microsandbox_blocks_network_host_access_and_forged_status() {
         .rev()
         .find(|evidence| evidence.kind == vulnbell::model::EvidenceKind::Attestation)
         .unwrap();
-    let verdict = vulnbell::model::Verdict {schema_version:1,case_id:case.case_id.clone(),facts_sha256:case.facts_sha256.clone(),applicability:vulnbell::model::Applicability::NotAffected,verification:Verification::Disproven,decision:vulnbell::model::Decision::Dismissed,rationale:"Synthetic precondition is absent; the same script detects the distinct positive control. Limited to this tested hypothesis.".into(),evidence:vec![vulnbell::model::EvidenceReference {id:attestation.id.clone(),sha256:attestation.sha256.clone()}]};
+    let verdict = vulnbell::model::Verdict { workspace_revisions: Vec::new(),schema_version:1,case_id:case.case_id.clone(),facts_sha256:case.facts_sha256.clone(),applicability:vulnbell::model::Applicability::NotAffected,verification:Verification::Disproven,decision:vulnbell::model::Decision::Dismissed,rationale:"Synthetic precondition is absent; the same script detects the distinct positive control. Limited to this tested hypothesis.".into(),evidence:vec![vulnbell::model::EvidenceReference {id:attestation.id.clone(),sha256:attestation.sha256.clone()}]};
     let dismissed = vulnbell::engine::triage(&mut store, &case.case_id, verdict).unwrap();
     assert_eq!(dismissed.decision, vulnbell::model::Decision::Dismissed);
     assert_report_result(
@@ -152,6 +202,7 @@ fn actual_microsandbox_blocks_network_host_access_and_forged_status() {
     changed.facts_sha256 = "changed-synthetic-artifact-context".into();
     store.save_case(&changed).unwrap();
     let stale = vulnbell::model::Verdict {
+        workspace_revisions: Vec::new(),
         schema_version: 1,
         case_id: changed.case_id.clone(),
         facts_sha256: changed.facts_sha256.clone(),
@@ -172,8 +223,14 @@ fn actual_microsandbox_blocks_network_host_access_and_forged_status() {
     );
     test.control.as_mut().unwrap().stdout_contains = "SYNTHETIC_CONTROL_DID_NOT_MATCH".into();
     std::fs::write(&path, serde_saphyr::to_string(&test).unwrap()).unwrap();
-    let invalid_control =
-        vulnbell::sandbox::verify(&mut store, &case.case_id, &path, true).unwrap();
+    let invalid_control = vulnbell::sandbox::verify(
+        &mut store,
+        &case.case_id,
+        &path,
+        true,
+        &SandboxLimits::default(),
+    )
+    .unwrap();
     assert_eq!(invalid_control.verification, Verification::Inconclusive);
     assert_eq!(invalid_control.decision, vulnbell::model::Decision::Review);
     test.control = None;
@@ -181,7 +238,14 @@ fn actual_microsandbox_blocks_network_host_access_and_forged_status() {
     test.script = "while :; do :; done".into();
     test.timeout_seconds = 3;
     std::fs::write(&path, serde_saphyr::to_string(&test).unwrap()).unwrap();
-    let timeout = vulnbell::sandbox::verify(&mut store, &case.case_id, &path, true).unwrap();
+    let timeout = vulnbell::sandbox::verify(
+        &mut store,
+        &case.case_id,
+        &path,
+        true,
+        &SandboxLimits::default(),
+    )
+    .unwrap();
     assert_eq!(timeout.verification, Verification::Inconclusive);
     assert_report_result(
         &timeout,
@@ -190,7 +254,16 @@ fn actual_microsandbox_blocks_network_host_access_and_forged_status() {
     );
     let attestation = timeout.evidence.last().unwrap();
     assert!(store.evidence_exists(attestation).unwrap());
-    assert!(vulnbell::sandbox::verify(&mut store, &case.case_id, &path, false).is_err());
+    assert!(
+        vulnbell::sandbox::verify(
+            &mut store,
+            &case.case_id,
+            &path,
+            false,
+            &SandboxLimits::default()
+        )
+        .is_err()
+    );
     let workspace = directory.path().join("workspace");
     std::fs::create_dir_all(workspace.join("src")).unwrap();
     std::fs::write(
@@ -212,7 +285,14 @@ fn actual_microsandbox_blocks_network_host_access_and_forged_status() {
     test.timeout_seconds = 10;
     let staged_test = bundle.join("test.yaml");
     std::fs::write(&staged_test, serde_saphyr::to_string(&test).unwrap()).unwrap();
-    let copied = vulnbell::sandbox::verify(&mut store, &case.case_id, &staged_test, true).unwrap();
+    let copied = vulnbell::sandbox::verify(
+        &mut store,
+        &case.case_id,
+        &staged_test,
+        true,
+        &SandboxLimits::default(),
+    )
+    .unwrap();
     assert_report_result(&copied, &store, vulnbell::output::LocalResult::Reproduced);
     let attestation = copied
         .evidence
@@ -238,8 +318,82 @@ fn actual_microsandbox_blocks_network_host_access_and_forged_status() {
     eprintln!("sandbox_project={project}");
 }
 
+#[test]
+#[ignore = "requires prepared Microsandbox 0.7.11 and host virtualization"]
+fn a_reproduction_confirms_only_its_instance_in_a_multi_instance_case() {
+    let project = uuid::Uuid::new_v4().to_string();
+    let mut store = Store::open(&project).unwrap();
+    let instances: Vec<_> = ["synthetic-sandbox-only", "synthetic-sandbox-sibling"]
+        .into_iter()
+        .map(|reference| {
+            vulnbell::model::Instance::declared(&vulnbell::profile::Component {
+                reference: reference.into(),
+                version: Some("0.0.1".into()),
+                usage: Default::default(),
+                upstream: None,
+                feeds: Vec::new(),
+            })
+        })
+        .collect();
+    let case = Case {
+        workspace_revisions: Vec::new(),
+        schema_version: 1,
+        case_id: "SIG-synthetic-multi-instance".into(),
+        project_id: project.clone(),
+        snapshot_id: "synthetic".into(),
+        instances,
+        claims: Vec::new(),
+        upstream_events: Vec::new(),
+        evidence: Vec::new(),
+        coverage: Vec::new(),
+        applicability: vulnbell::model::Applicability::Unknown,
+        verification: Verification::Inconclusive,
+        decision: vulnbell::model::Decision::Review,
+        facts_sha256: "synthetic".into(),
+        open_questions: Vec::new(),
+        suggested_search_queries: Vec::new(),
+        sandbox: vulnbell::sandbox::availability(),
+        updated_at: vulnbell::now(),
+    };
+    store.save_case(&case).unwrap();
+    assert!(!vulnbell::impact::plan(&case, &store).affected_version_confirmed);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("test.yaml");
+    let test = TestSpec {
+        schema_version: 1,
+        instance_id: case.instances[0].id.clone(),
+        artifact_version: "0.0.1".into(),
+        context: None,
+        script: "printf 'SYNTHETIC_ORACLE_OK\\n'\n".into(),
+        oracle: Oracle {
+            stdout_contains: "SYNTHETIC_ORACLE_OK".into(),
+            expected_exit: 0,
+            purpose: Default::default(),
+        },
+        control: None,
+        inputs: Vec::new(),
+        timeout_seconds: 30,
+        memory_mib: 256,
+    };
+    std::fs::write(&path, serde_saphyr::to_string(&test).unwrap()).unwrap();
+    let result = vulnbell::sandbox::verify(
+        &mut store,
+        &case.case_id,
+        &path,
+        true,
+        &SandboxLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(result.verification, Verification::LabReproduced);
+    let plan = vulnbell::impact::plan(&result, &store);
+    assert!(plan.targets[0].affected_version_confirmed);
+    assert!(!plan.targets[1].affected_version_confirmed);
+    eprintln!("sandbox_project={project}");
+}
+
 fn assert_report_result(case: &Case, store: &Store, expected: vulnbell::output::LocalResult) {
     let snapshot = vulnbell::model::Snapshot {
+        workspace_revisions: Vec::new(),
         schema_version: 1,
         id: case.snapshot_id.clone(),
         project_id: case.project_id.clone(),

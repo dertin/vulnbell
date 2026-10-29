@@ -7,7 +7,8 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-const MAX_ARCHIVE_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_ARCHIVE_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_STAGED_FILES: usize = 1000;
 
 #[derive(Serialize)]
 pub struct StagedFile {
@@ -24,7 +25,7 @@ pub struct StagedBundle {
 
 /// Copies only the reviewed allowlist. Never runs project tools or extracts archives on the host.
 pub fn stage(source: &Path, files: &[PathBuf], directory: &Path) -> Result<StagedBundle> {
-    if files.is_empty() || files.len() > 1000 {
+    if files.is_empty() || files.len() > MAX_STAGED_FILES {
         bail!("select 1..1000 reviewed files; whole-directory copies are not accepted");
     }
     let root = source

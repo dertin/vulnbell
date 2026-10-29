@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.2 - 2026-10-29
+
+- Monitor declared products and dependency inventories using public advisories and selected upstream trackers.
+- Discover dependencies and map official sources with explicit coverage gaps for unsupported or deferred inputs.
+- Identify direct npm dependencies across workspace importers and installed paths.
+- Review tracker items against exact monitored versions, record evidence and resume incomplete work.
+- Resolve linked GitHub discussions as context when an issue lookup returns 404.
+- Record Git revisions and changed-worktree fingerprints with review evidence.
+- Include evidence-focused questions for responsible teams in agent-prepared reports.
+- Prioritize findings, assess project impact and produce reports in English or Spanish.
+- Use bounded, authorized Microsandbox tests when a feasible test can change a material decision.
+- Schedule monitoring with local agent runners and retain run status and evidence.
+
 ## 0.1.1 - 2026-10-26
 
 ### Added

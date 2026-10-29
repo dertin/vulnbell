@@ -15,6 +15,145 @@ fn persisted_hashes_keep_the_sha256_wire_format() {
 }
 
 #[test]
+fn cargo_lock_records_direct_dependencies_without_guessing_ambiguous_names() {
+    let lock = br#"version = 4
+[[package]]
+name = "app"
+version = "1.0.0"
+dependencies = ["direct 1.0.0", "ambiguous"]
+[[package]]
+name = "direct"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = ["deep"]
+[[package]]
+name = "deep"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+[[package]]
+name = "ambiguous"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+[[package]]
+name = "ambiguous"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#;
+    let packages = parse_lock("Cargo.lock", lock).unwrap();
+    assert_eq!(
+        packages
+            .iter()
+            .find(|item| item.name == "direct")
+            .unwrap()
+            .direct,
+        Some(true)
+    );
+    assert_eq!(
+        packages
+            .iter()
+            .find(|item| item.name == "deep")
+            .unwrap()
+            .direct,
+        Some(false)
+    );
+    assert!(
+        packages
+            .iter()
+            .filter(|item| item.name == "ambiguous")
+            .all(|item| item.direct.is_none())
+    );
+}
+
+#[test]
+fn cargo_lock_with_unresolved_root_reference_does_not_guess_transitive_depth() {
+    let lock = br#"version = 4
+[[package]]
+name = "app"
+version = "1.0.0"
+dependencies = ["missing", "direct"]
+[[package]]
+name = "direct"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+[[package]]
+name = "unknown"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#;
+    let packages = parse_lock("Cargo.lock", lock).unwrap();
+    assert_eq!(
+        packages
+            .iter()
+            .find(|item| item.name == "direct")
+            .unwrap()
+            .direct,
+        Some(true)
+    );
+    assert_eq!(
+        packages
+            .iter()
+            .find(|item| item.name == "unknown")
+            .unwrap()
+            .direct,
+        None
+    );
+}
+
+#[test]
+fn pnpm_importers_identify_exact_direct_versions_and_keep_ambiguous_aliases_unknown() {
+    let lock = br#"lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      foo:
+        specifier: ^1
+        version: 1.2.3
+    devDependencies:
+      bar:
+        specifier: ^2
+        version: 2.0.0(peer@1.0.0)
+packages:
+  foo@1.2.3: {}
+  bar@2.0.0: {}
+  deep@1.0.0: {}
+"#;
+    let packages = parse_lock("pnpm-lock.yaml", lock).unwrap();
+    assert_eq!(
+        packages.iter().find(|p| p.name == "foo").unwrap().direct,
+        Some(true)
+    );
+    assert_eq!(
+        packages.iter().find(|p| p.name == "bar").unwrap().direct,
+        Some(true)
+    );
+    assert_eq!(
+        packages.iter().find(|p| p.name == "deep").unwrap().direct,
+        Some(false)
+    );
+    let incomplete = br#"lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      alias: {specifier: 'npm:other@1', version: 'npm:other@1.0.0'}
+packages:
+  other@1.0.0: {}
+"#;
+    assert_eq!(
+        parse_lock("pnpm-lock.yaml", incomplete).unwrap()[0].direct,
+        None
+    );
+}
+
+#[test]
+fn npm_missing_root_does_not_make_packages_transitive() {
+    let lock = br#"{"lockfileVersion":3,"packages":{"node_modules/foo":{"version":"1.0.0"}}}"#;
+    assert_eq!(
+        parse_lock("package-lock.json", lock).unwrap()[0].direct,
+        None
+    );
+}
+
+#[test]
 fn sqlite_unsigned_values_reject_negative_reads_and_overflowing_writes() {
     let connection = rusqlite::Connection::open_in_memory().unwrap();
     connection
@@ -49,6 +188,27 @@ fn generated_profile_schema_matches_committed_contract() {
     let committed: serde_json::Value =
         serde_json::from_slice(&fs::read("schemas/profile.schema.json").unwrap()).unwrap();
     assert_eq!(profile::schema(), committed);
+}
+
+#[test]
+fn review_budget_is_optional_and_rejects_out_of_range_values() {
+    let base = "schema: 1\nproject_id: 11111111-1111-4111-8111-111111111111\nname: budget\n";
+    for (value, valid) in [
+        ("1", true),
+        ("60", true),
+        ("120", true),
+        ("0", false),
+        ("121", false),
+    ] {
+        let profile: Profile = serde_saphyr::from_str(&format!(
+            "{base}research:\n  review_budget_minutes: {value}\n"
+        ))
+        .unwrap();
+        assert_eq!(profile::validate(&profile).valid, valid, "budget {value}");
+    }
+    let profile: Profile = serde_saphyr::from_str(base).unwrap();
+    assert!(profile.research.review_budget_minutes.is_none());
+    assert!(profile::validate(&profile).valid);
 }
 #[test]
 fn examples_and_empty_scaffold_validate_offline() {
@@ -113,6 +273,55 @@ fn profiles_reject_unknown_duplicate_and_versioned_purl_fields() {
     assert_eq!(
         profile::validate(&profile).errors[0].pointer,
         "/components/0/ref"
+    );
+}
+#[test]
+fn sandbox_limits_default_to_the_fixed_policy_and_stay_under_their_caps() {
+    let raw = "schema: 1\nproject_id: 11111111-1111-4111-8111-111111111111\nname: test\n";
+    let plain: Profile = serde_saphyr::from_str(raw).unwrap();
+    assert_eq!(plain.sandbox, profile::SandboxLimits::default());
+    assert!(
+        !serde_json::to_string(&plain)
+            .unwrap()
+            .contains("\"sandbox\"")
+    );
+    let raised: Profile = serde_saphyr::from_str(&format!(
+        "{raw}sandbox:\n  max_input_file_mib: 256\n  max_inputs_mib: 512\n  max_memory_mib: 2048\n  max_timeout_seconds: 300\n"
+    ))
+    .unwrap();
+    assert!(profile::validate(&raised).valid);
+    assert_eq!(raised.sandbox.max_memory_mib, 2048);
+    let partial: Profile =
+        serde_saphyr::from_str(&format!("{raw}sandbox:\n  max_memory_mib: 1024\n")).unwrap();
+    assert_eq!(partial.sandbox.max_timeout_seconds, 120);
+    let excessive: Profile = serde_saphyr::from_str(&format!(
+        "{raw}sandbox:\n  max_input_file_mib: 600\n  max_inputs_mib: 2048\n  max_memory_mib: 8192\n  max_timeout_seconds: 3600\n"
+    ))
+    .unwrap();
+    let pointers: Vec<String> = profile::validate(&excessive)
+        .errors
+        .into_iter()
+        .map(|error| error.pointer)
+        .collect();
+    assert_eq!(
+        pointers,
+        [
+            "/sandbox/max_input_file_mib",
+            "/sandbox/max_inputs_mib",
+            "/sandbox/max_memory_mib",
+            "/sandbox/max_timeout_seconds"
+        ]
+    );
+    let inverted: Profile = serde_saphyr::from_str(&format!(
+        "{raw}sandbox:\n  max_input_file_mib: 128\n  max_inputs_mib: 64\n"
+    ))
+    .unwrap();
+    assert_eq!(
+        profile::validate(&inverted).errors[0].pointer,
+        "/sandbox/max_inputs_mib"
+    );
+    assert!(
+        serde_saphyr::from_str::<Profile>(&format!("{raw}sandbox:\n  network: true\n")).is_err()
     );
 }
 #[test]
@@ -213,6 +422,37 @@ fn process_limits_terminate_timeouts_and_keep_output_bounded() {
 }
 
 #[test]
+fn npm_v1_hoisted_dependencies_have_unknown_directness() {
+    let lock = br#"{
+      "lockfileVersion": 1,
+      "dependencies": {
+        "is-odd": {"version":"3.0.1", "requires":{"is-number":"^6.0.0"}},
+        "is-number": {"version":"6.0.0"},
+        "parent": {"version":"1.0.0", "dependencies":{"nested":{"version":"2.0.0"}}}
+      }
+    }"#;
+    let packages = parse_lock("package-lock.json", lock).unwrap();
+    for name in ["is-odd", "is-number", "parent"] {
+        assert_eq!(
+            packages
+                .iter()
+                .find(|package| package.name == name)
+                .unwrap()
+                .direct,
+            None
+        );
+    }
+    assert_eq!(
+        packages
+            .iter()
+            .find(|package| package.name == "nested")
+            .unwrap()
+            .direct,
+        Some(false)
+    );
+}
+
+#[test]
 fn npm_nested_versions_do_not_inherit_the_root_directness() {
     let lock=br#"{"lockfileVersion":3,"packages":{"":{"dependencies":{"lodash":"4.17.20","alias":"npm:lodash@4.17.21"}},"node_modules/lodash":{"version":"4.17.20"},"node_modules/alias":{"name":"lodash","version":"4.17.21"},"node_modules/parent/node_modules/lodash":{"version":"4.17.19"}}}"#;
     let packages = parse_lock("package-lock.json", lock).unwrap();
@@ -240,6 +480,207 @@ fn npm_nested_versions_do_not_inherit_the_root_directness() {
             .direct,
         Some(false)
     );
+}
+
+#[test]
+fn npm_hidden_paths_do_not_become_workspaces_from_wildcards() {
+    let lock = br#"{
+      "lockfileVersion": 3,
+      "packages": {
+        "": {"workspaces":["packages/*"], "dependencies":{"local-hidden":"file:packages/.hidden"}},
+        "packages/.hidden": {"name":"local-hidden", "dependencies":{"is-number":"7.0.0"}},
+        "packages/app": {"name":"app", "dependencies":{"picomatch":"4.0.3"}},
+        "node_modules/local-hidden": {"resolved":"packages/.hidden", "link":true},
+        "node_modules/is-number": {"version":"7.0.0"},
+        "node_modules/picomatch": {"version":"4.0.3"}
+      }
+    }"#;
+    let packages = parse_lock("package-lock.json", lock).unwrap();
+    assert_eq!(
+        packages
+            .iter()
+            .find(|package| package.name == "is-number")
+            .unwrap()
+            .direct,
+        None
+    );
+    assert_eq!(
+        packages
+            .iter()
+            .find(|package| package.name == "picomatch")
+            .unwrap()
+            .direct,
+        Some(true)
+    );
+
+    let explicit = br#"{
+      "lockfileVersion": 3,
+      "packages": {
+        "": {"workspaces":["packages/.hidden", "!packages/*"]},
+        "packages/.hidden": {"dependencies":{"is-number":"7.0.0"}},
+        "node_modules/is-number": {"version":"7.0.0"}
+      }
+    }"#;
+    let packages = parse_lock("package-lock.json", explicit).unwrap();
+    assert_eq!(packages[0].direct, None);
+
+    let character_class = br#"{
+      "lockfileVersion": 3,
+      "packages": {
+        "": {"workspaces":["packages/[.a]hidden"]},
+        "packages/.hidden": {"dependencies":{"is-number":"7.0.0"}},
+        "node_modules/is-number": {"version":"7.0.0"}
+      }
+    }"#;
+    let packages = parse_lock("package-lock.json", character_class).unwrap();
+    assert_eq!(packages[0].direct, None);
+
+    let excluded_class = br#"{
+      "lockfileVersion": 3,
+      "packages": {
+        "": {"workspaces":["packages/.hidden", "!packages/[.a]hidden"]},
+        "packages/.hidden": {"dependencies":{"is-number":"7.0.0"}},
+        "node_modules/is-number": {"version":"7.0.0"}
+      }
+    }"#;
+    let packages = parse_lock("package-lock.json", excluded_class).unwrap();
+    assert_eq!(packages[0].direct, None);
+
+    let literal = br#"{
+      "lockfileVersion": 3,
+      "packages": {
+        "": {"workspaces":["packages/.hidden"]},
+        "packages/.hidden": {"dependencies":{"is-number":"7.0.0"}},
+        "node_modules/is-number": {"version":"7.0.0"}
+      }
+    }"#;
+    let packages = parse_lock("package-lock.json", literal).unwrap();
+    assert_eq!(packages[0].direct, Some(true));
+}
+
+#[test]
+fn npm_workspaces_resolve_hoisted_and_nested_direct_dependencies() {
+    let lock = br#"{
+      "lockfileVersion": 3,
+      "packages": {
+        "": {"workspaces":["packages/*"],"dependencies":{"foo":"2.0.0","local":"file:vendor/local"}},
+        "node_modules/app": {"resolved":"packages/app","link":true},
+        "node_modules/local": {"resolved":"vendor/local","link":true},
+        "packages/app": {"name":"app","version":"1.0.0","dependencies":{"foo":"1.0.0","hoisted":"3.0.0","alias":"npm:real@4.0.0"},"devDependencies":{"@scope/dev":"5.0.0"}},
+        "vendor/local": {"name":"local","version":"1.0.0","dependencies":{"transitive":"1.0.0"}},
+        "node_modules/foo": {"version":"2.0.0"},
+        "packages/app/node_modules/foo": {"version":"1.0.0"},
+        "node_modules/hoisted": {"version":"3.0.0"},
+        "node_modules/alias": {"name":"real","version":"4.0.0"},
+        "node_modules/@scope/dev": {"version":"5.0.0"},
+        "node_modules/transitive": {"version":"1.0.0"},
+        "node_modules/parent/node_modules/hoisted": {"version":"2.0.0"}
+      }
+    }"#;
+    let packages = parse_lock("package-lock.json", lock).unwrap();
+    let at = |path: &str| {
+        packages
+            .iter()
+            .find(|package| package.resolution.as_deref() == Some(path))
+            .unwrap()
+    };
+    assert_eq!(at("node_modules/foo").direct, Some(true));
+    assert_eq!(at("packages/app/node_modules/foo").direct, Some(true));
+    assert_eq!(at("node_modules/hoisted").direct, Some(true));
+    assert_eq!(at("node_modules/alias").name, "real");
+    assert_eq!(at("node_modules/alias").direct, Some(true));
+    assert_eq!(at("node_modules/@scope/dev").direct, Some(true));
+    assert_eq!(at("node_modules/transitive").direct, Some(false));
+    assert_eq!(
+        at("node_modules/parent/node_modules/hoisted").direct,
+        Some(false)
+    );
+    assert!(
+        !packages
+            .iter()
+            .any(|package| package.name == "app" || package.name == "local")
+    );
+}
+
+#[test]
+fn npm_workspace_patterns_and_unresolved_dependencies_preserve_uncertainty() {
+    let lock = br#"{
+      "lockfileVersion": 2,
+      "packages": {
+        "": {"workspaces":{"packages":["packages/*","!packages/excluded"]}},
+        "packages/app": {"dependencies":{"shared":"1","missing":"1"}},
+        "packages/excluded": {"dependencies":{"excluded-dep":"1"}},
+        "node_modules/shared": {"version":"1.0.0"},
+        "node_modules/excluded-dep": {"version":"1.0.0"},
+        "node_modules/other/node_modules/missing": {"version":"1.0.0"}
+      }
+    }"#;
+    let packages = parse_lock("package-lock.json", lock).unwrap();
+    let direct = |name: &str| {
+        packages
+            .iter()
+            .find(|package| package.name == name)
+            .unwrap()
+            .direct
+    };
+    assert_eq!(direct("shared"), Some(true));
+    assert_eq!(direct("excluded-dep"), Some(false));
+    assert_eq!(direct("missing"), None);
+
+    let unsupported =
+        br#"{"lockfileVersion":3,"packages":{"":{"workspaces":["packages/!(excluded)"]}}}"#;
+    assert!(parse_lock("package-lock.json", unsupported).is_err());
+
+    let unknown_scope = br#"{"lockfileVersion":3,"packages":{"":{},"packages/app":{"dependencies":{"foo":"1"}},"node_modules/foo":{"version":"1.0.0"}}}"#;
+    assert_eq!(
+        parse_lock("package-lock.json", unknown_scope).unwrap()[0].direct,
+        None
+    );
+}
+
+#[test]
+fn npm_workspace_directness_replaces_cached_inventory_for_research() {
+    use vulnbell::inventory::{LockedPackage, discover};
+    use vulnbell::store::Store;
+
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = directory.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let lock = br#"{"lockfileVersion":3,"packages":{"":{"workspaces":["packages/*"]},"packages/app":{"dependencies":{"foo":"1.0.0"}},"node_modules/foo":{"version":"1.0.0"}}}"#;
+    fs::write(workspace.join("package-lock.json"), lock).unwrap();
+    let project = uuid::Uuid::new_v4().to_string();
+    let store = Store::open(&project).unwrap();
+    let previous = LockedPackage {
+        ecosystem: "npm".into(),
+        name: "foo".into(),
+        version: "1.0.0".into(),
+        direct: Some(false),
+        resolution: Some("node_modules/foo".into()),
+        artifact_integrity: None,
+        line: None,
+    };
+    store
+        .connection
+        .execute(
+            "INSERT INTO inventory_cache VALUES (?1, ?2)",
+            rusqlite::params![
+                format!("parser-v7:package-lock.json:{}", vulnbell::digest(lock)),
+                serde_json::to_string(&vec![previous]).unwrap()
+            ],
+        )
+        .unwrap();
+    let inventory = discover(
+        &[workspace.to_string_lossy().into_owned()],
+        &directory.path().join("vulnbell.yaml"),
+        &store,
+        10,
+    );
+    assert_eq!(inventory.instances.len(), 1);
+    assert_eq!(inventory.instances[0].provenance.direct, Some(true));
+    assert!(vulnbell::profile::Research::default().tracks(&inventory.instances[0]));
+    let store_dir = store.directory.clone();
+    drop(store);
+    fs::remove_dir_all(store_dir).unwrap();
 }
 
 #[test]
@@ -320,6 +761,37 @@ fn all_published_json_schemas_match_their_rust_contracts() {
             "status",
             serde_json::to_value(schemars::schema_for!(vulnbell::operations::StatusReport))
                 .unwrap(),
+        ),
+        (
+            "decisions",
+            serde_json::to_value(schemars::schema_for!(
+                vulnbell::tools::draft::ResearchDecisions
+            ))
+            .unwrap(),
+        ),
+        (
+            "impact-batch",
+            serde_json::to_value(schemars::schema_for!(vulnbell::tools::cases::ImpactBatch))
+                .unwrap(),
+        ),
+        (
+            "verdict-batch",
+            serde_json::to_value(schemars::schema_for!(vulnbell::tools::cases::VerdictBatch))
+                .unwrap(),
+        ),
+        (
+            "scope-batch",
+            serde_json::to_value(schemars::schema_for!(vulnbell::tools::cases::ScopeBatch))
+                .unwrap(),
+        ),
+        (
+            "handoff-batch",
+            serde_json::to_value(schemars::schema_for!(vulnbell::tools::cases::HandoffBatch))
+                .unwrap(),
+        ),
+        (
+            "items",
+            serde_json::to_value(schemars::schema_for!(Vec<vulnbell::tools::Item>)).unwrap(),
         ),
     ];
     for (name, schema) in generated {

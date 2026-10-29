@@ -1,9 +1,11 @@
 {
   "$defs": {
     "Assessment": {
+      "description": "`not_applicable`: a security claim that, per the cited source, does not affect the monitored\nversion or build. It requires `not_applicable_reason`, is counted and remembered, and opens no case.",
       "enum": [
         "review",
         "informational",
+        "not_applicable",
         "ignore"
       ],
       "type": "string"
@@ -21,7 +23,35 @@
         "documentation",
         "changelog",
         "release",
-        "advisory"
+        "advisory",
+        "commit"
+      ],
+      "type": "string"
+    },
+    "NotApplicableReason": {
+      "oneOf": [
+        {
+          "const": "fixed_in_monitored_version",
+          "description": "The monitored resolved version already contains the fix.",
+          "type": "string"
+        },
+        {
+          "const": "affects_other_version",
+          "description": "Only other release lines or unreleased branches are affected.",
+          "type": "string"
+        },
+        {
+          "const": "component_not_in_build",
+          "description": "The affected module, feature or platform is absent from the monitored build.",
+          "type": "string"
+        }
+      ]
+    },
+    "RepositoryState": {
+      "enum": [
+        "git",
+        "not_git",
+        "unavailable"
       ],
       "type": "string"
     },
@@ -46,11 +76,41 @@
         "kind": {
           "$ref": "#/$defs/EventKind"
         },
+        "not_applicable_reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NotApplicableReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Required with `not_applicable`; forbidden otherwise."
+        },
         "provider": {
           "type": "string"
         },
         "rationale": {
           "type": "string"
+        },
+        "reviewed_instance_ids": {
+          "description": "Candidate instances examined when choosing the case scope.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "source_facts": {
+          "$ref": "#/$defs/SourceFacts",
+          "default": {
+            "affected_versions": "",
+            "fix_reference": "",
+            "fixed_in": "",
+            "identifiers": [],
+            "required_feature": ""
+          },
+          "description": "Answers to the research questions as the item states them. `fixed_in_monitored_version`\nrequires `fixed_in`, and `affects_other_version` requires `affected_versions`."
         },
         "title": {
           "type": "string"
@@ -64,11 +124,19 @@
         },
         "url": {
           "type": "string"
+        },
+        "workspace_revisions": {
+          "description": "Workspace revisions recorded by the CLI at import time.",
+          "items": {
+            "$ref": "#/$defs/WorkspaceRevision"
+          },
+          "type": "array"
         }
       },
       "required": [
         "upstream",
         "instance_ids",
+        "reviewed_instance_ids",
         "provider",
         "external_id",
         "kind",
@@ -107,6 +175,41 @@
       ],
       "type": "object"
     },
+    "SourceFacts": {
+      "additionalProperties": false,
+      "description": "What an upstream item itself states, quoted or closely paraphrased; an empty field means the\nitem does not say. These are the item's statements, not the agent's conclusions.",
+      "properties": {
+        "affected_versions": {
+          "default": "",
+          "description": "Versions or release lines the item says are affected.",
+          "type": "string"
+        },
+        "fix_reference": {
+          "default": "",
+          "description": "Pull request, commit or release that carries the fix.",
+          "type": "string"
+        },
+        "fixed_in": {
+          "default": "",
+          "description": "Version, release or backport the item says contains the fix.",
+          "type": "string"
+        },
+        "identifiers": {
+          "default": [],
+          "description": "CVE, GHSA, RUSTSEC or other advisory IDs the item cites.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "required_feature": {
+          "default": "",
+          "description": "Feature, configuration or deployment condition the item says the issue requires.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "SourceReview": {
       "additionalProperties": false,
       "properties": {
@@ -142,6 +245,57 @@
         "until",
         "coverage",
         "detail"
+      ],
+      "type": "object"
+    },
+    "WorkspaceRevision": {
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dirty": {
+          "description": "Changes excluding private paths, ignored files and submodule contents.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "repository": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/RepositoryState"
+        },
+        "workspace": {
+          "type": "string"
+        },
+        "worktree_status_sha256": {
+          "description": "Hash of Git's status entries and changed files, without retaining names or contents.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "workspace",
+        "state",
+        "observed_at"
       ],
       "type": "object"
     }
