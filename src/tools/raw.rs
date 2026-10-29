@@ -473,6 +473,20 @@ fn read_linked_issues(
                 ));
                 continue;
             };
+        if matches!(provider, Provider::GitHub { .. }) {
+            let discussion_key = format!("{issue_prefix}/discussions/{number}");
+            let discussion_url = format!("{issue_web_base}discussions/{number}");
+            if let Some(discussion) = result.items.iter().find(|item| {
+                item.kind == ItemKind::Discussion
+                    && item.key == discussion_key
+                    && item.url == discussion_url
+            }) {
+                let mut linked = discussion.clone();
+                linked.key = key;
+                result.linked_issues.push(linked);
+                continue;
+            }
+        }
         let path = result
             .provider
             .directory()

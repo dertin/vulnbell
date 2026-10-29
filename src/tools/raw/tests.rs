@@ -458,6 +458,17 @@ fn github_resolves_a_linked_discussion_outside_the_window() {
     response["errors"] = serde_json::json!([{"message":"Rate limited"}]);
     write(&fixture, &path, &response.to_string());
     assert!(!raw::read_target(directory.path(), &target).complete());
+
+    fs::remove_file(fixture.join(&path)).unwrap();
+    write(
+        &fixture,
+        &format!("{repo}/discussions.json"),
+        r#"[{"data":{"search":{"discussionCount":1,"nodes":[{"number":42,"title":"Authentication report","url":"https://github.com/example/project/discussions/42","updatedAt":"2026-10-20T00:00:00Z","body":"An attacker can bypass authentication.","category":{"name":"Q&A"}}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}]"#,
+    );
+    let in_window = raw::read_target(directory.path(), &target);
+    assert!(in_window.complete(), "{:?}", in_window.missing);
+    assert_eq!(in_window.linked_issues[0].key, "example/project#42");
+    assert!(screen::screen(&in_window.items[0], &in_window.linked_issues[0].body).is_some());
 }
 
 #[test]
