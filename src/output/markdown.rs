@@ -139,14 +139,25 @@ pub fn morning_markdown(report: &MorningReport) -> String {
     for check in &report.finding_checks {
         checks.entry(check.case_id.as_str()).or_insert(check);
     }
+    let assessed = |item: &&HandoffItem| case_impact(&checks, &item.case_id).is_some();
+    let actionable: Vec<&HandoffItem> = report.actionable.iter().filter(assessed).collect();
+    let needs_review: Vec<&HandoffItem> = report.needs_review.iter().filter(assessed).collect();
+    let mut unassessed: Vec<&HandoffItem> = report
+        .actionable
+        .iter()
+        .chain(&report.needs_review)
+        .filter(|item| !assessed(item))
+        .collect();
+    unassessed.sort_by_key(|item| !item.known_exploited);
     let mut text = fill(
         words.header,
         &[
             &inline(&report.project_name),
             &report.last_scan,
             &report.last_agent_review.as_deref().unwrap_or(words.pending),
-            &report.actionable.len(),
-            &report.needs_review.len(),
+            &actionable.len(),
+            &needs_review.len(),
+            &unassessed.len(),
             &report.informational_count,
             &report.dismissed_count,
             &report.not_applicable_count,
@@ -155,8 +166,8 @@ pub fn morning_markdown(report: &MorningReport) -> String {
         ],
     );
     for (items, label) in [
-        (&report.actionable, words.contained_actionable_prefix),
-        (&report.needs_review, words.contained_review_prefix),
+        (&actionable, words.contained_actionable_prefix),
+        (&needs_review, words.contained_review_prefix),
     ] {
         let contained_count = items
             .iter()
@@ -190,11 +201,36 @@ pub fn morning_markdown(report: &MorningReport) -> String {
             ),
         );
     }
+    let missing_verdict = actionable
+        .iter()
+        .chain(&needs_review)
+        .filter(|item| item.recorded_verdict.is_none())
+        .count();
+    if missing_verdict > 0 {
+        let message = if language == Language::Es {
+            "Con impacto evaluado, pero sin veredicto vigente"
+        } else {
+            "Impact assessed, but no current verdict"
+        };
+        text.push_str(&format!("{message}: **{missing_verdict}**.\n\n"));
+    }
+    if report.workspace_scope_changed {
+        text.push_str(if language == Language::Es {
+            "> **Workspaces modificados:** ejecute un nuevo scan antes de continuar.\n\n"
+        } else {
+            "> **Workspace configuration changed:** run a new scan before continuing.\n\n"
+        });
+    }
+    text.push_str(&workspace_revisions_markdown(
+        &report.workspace_revisions,
+        report.workspace_context_unrecorded,
+        language,
+    ));
     text.push_str(&inventory_markdown(&report.inventory, language));
-    text.push_str(&super::discovery::discovery_markdown(report));
+    text.push_str(&super::discovery::discovery_summary_markdown(report));
     for (decision, items) in [
-        (Decision::Actionable, &report.actionable),
-        (Decision::Review, &report.needs_review),
+        (Decision::Actionable, &actionable),
+        (Decision::Review, &needs_review),
     ] {
         let label = if decision == Decision::Actionable {
             words.heading_actionable
@@ -209,6 +245,7 @@ pub fn morning_markdown(report: &MorningReport) -> String {
         if decision == Decision::Review {
             let (contained_items, mut rows): (Vec<&HandoffItem>, Vec<&HandoffItem>) = items
                 .iter()
+                .copied()
                 .partition(|item| case_impact(&checks, &item.case_id).is_some_and(contained));
             rows.sort_by_key(|item| std::cmp::Reverse(impact_rank(&checks, &item.case_id)));
             if rows.is_empty() {
@@ -296,6 +333,7 @@ pub fn morning_markdown(report: &MorningReport) -> String {
         }
         let (contained_items, mut cards): (Vec<&HandoffItem>, Vec<&HandoffItem>) = items
             .iter()
+            .copied()
             .partition(|item| case_impact(&checks, &item.case_id).is_some_and(contained));
         cards.sort_by_key(|item| std::cmp::Reverse(impact_rank(&checks, &item.case_id)));
         if cards.is_empty() {
@@ -470,6 +508,26 @@ pub fn morning_markdown(report: &MorningReport) -> String {
             &contained_items,
             words.contained_actionable_heading,
         ));
+    }
+    if !unassessed.is_empty() {
+        text.push_str(if language == Language::Es {
+            "## Señales sin evaluación vigente\n\nLa evidencia anterior puede servir, pero debe contrastarse con los datos actuales. La lista completa está en el reporte JSON y la cola.\n\n"
+        } else {
+            "## Signals without a current assessment\n\nEarlier evidence may help but must be checked against current facts. The JSON report and queue contain the complete list.\n\n"
+        });
+        for item in unassessed.iter().take(8) {
+            text.push_str(&format!(
+                "- `{}` — {}: {}",
+                inline(&item.case_id),
+                inline(&components_label(&item.provenance, language)),
+                inline(&item.summary)
+            ));
+            if let Some(link) = item.evidence_links.first() {
+                text.push_str(&format!(" <{}>", link.replace(['<', '>', '\n', '\r'], "")));
+            }
+            text.push('\n');
+        }
+        text.push('\n');
     }
     text.push_str(&coverage_markdown(report));
     text.push_str(&fill(
@@ -705,8 +763,23 @@ fn verification_section(report: &MorningReport, impact_answers: bool) -> String 
     let (contained_checks, exposed): (Vec<&FindingCheck>, Vec<&FindingCheck>) = open
         .iter()
         .partition(|check| check.impact.as_ref().is_some_and(contained));
+    let exposed: Vec<&FindingCheck> = exposed
+        .into_iter()
+        .filter(|check| {
+            impact_answers
+                || (check.impact.is_some()
+                    && check
+                        .local_checks
+                        .iter()
+                        .any(|local| local.sandbox_needed || local.result != LocalResult::NotRun))
+        })
+        .collect();
     let words = text::text(report.language);
-    let mut text = verification::markdown(&exposed, impact_answers, report.language);
+    let mut text = if !impact_answers && exposed.is_empty() {
+        String::new()
+    } else {
+        verification::markdown(&exposed, impact_answers, report.language)
+    };
     if !contained_checks.is_empty() {
         text.push_str(&fill(words.open_contained_note, &[&contained_checks.len()]));
     }
@@ -780,4 +853,87 @@ fn source_facts_text(facts: &SourceFacts, language: Language) -> String {
         }
     }
     parts.join("; ")
+}
+
+pub(super) fn workspace_revisions_markdown(
+    revisions: &[crate::workspace_revision::WorkspaceComparison],
+    unrecorded: bool,
+    language: Language,
+) -> String {
+    let es = language == Language::Es;
+    if unrecorded {
+        return if es {
+            "> **Contexto Git no registrado:** ejecute un nuevo scan antes de continuar la revisión.\n\n".into()
+        } else {
+            "> **Git context not recorded:** run a new scan before continuing the review.\n\n"
+                .into()
+        };
+    }
+    if revisions.is_empty() {
+        return String::new();
+    }
+    let mut out = if es {
+        "## Workspaces revisados\n\n| Workspace | Rama | Commit | Estado |\n|---|---|---|---|\n"
+            .to_owned()
+    } else {
+        "## Reviewed workspaces\n\n| Workspace | Branch | Commit | State |\n|---|---|---|---|\n"
+            .to_owned()
+    };
+    for item in revisions {
+        let reviewed = &item.reviewed;
+        let state = if !item.matches {
+            if es {
+                "Cambió o no está disponible; ejecutar un nuevo scan"
+            } else {
+                "Changed or unavailable; run a new scan"
+            }
+        } else if reviewed.state == crate::workspace_revision::RepositoryState::NotGit {
+            if es {
+                "Sin repositorio Git"
+            } else {
+                "Not a Git repository"
+            }
+        } else if reviewed.dirty == Some(true) {
+            if es {
+                "Cambios locales; el commit no identifica todo el contenido"
+            } else {
+                "Local changes; the commit does not identify all content"
+            }
+        } else if es {
+            "Sin cambios locales detectados"
+        } else {
+            "No local changes detected"
+        };
+        let missing = if es { "no disponible" } else { "unavailable" };
+        let branch = reviewed
+            .branch
+            .as_deref()
+            .unwrap_or(if reviewed.commit.is_some() {
+                "detached HEAD"
+            } else {
+                missing
+            });
+        out.push_str(&format!(
+            "| `{}` | `{}` | `{}` | {} |\n",
+            inline(&reviewed.workspace),
+            inline(branch),
+            inline(reviewed.commit.as_deref().unwrap_or(missing)),
+            state
+        ));
+        if !item.matches {
+            out.push_str(&format!(
+                "| ↳ {} | `{}` | `{}` | {} |\n",
+                if es { "actual" } else { "current" },
+                inline(item.current.branch.as_deref().unwrap_or(missing)),
+                inline(item.current.commit.as_deref().unwrap_or(missing)),
+                if es {
+                    "requiere revisión"
+                } else {
+                    "requires review"
+                }
+            ));
+        }
+    }
+    out.push_str(if es { "\nEl estado local excluye archivos privados, archivos ignorados y contenido de submódulos.\n\n" } else { "\nLocal state excludes private paths, ignored files and submodule contents.\n\n" });
+    out
 }

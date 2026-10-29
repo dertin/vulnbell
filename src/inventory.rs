@@ -733,6 +733,7 @@ pub fn discover(
                                 sha256: hash.clone(),
                                 observed_at: crate::now(),
                                 workspace: Some(workspace.clone()),
+                                workspace_context_sha256: None,
                                 direct: package.direct,
                                 resolution: package.resolution,
                                 artifact_integrity: package.artifact_integrity,

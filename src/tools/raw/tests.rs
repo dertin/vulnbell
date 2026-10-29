@@ -26,6 +26,22 @@ fn target(upstream: &str) -> ResearchTarget {
 }
 
 #[test]
+fn closing_references_ignore_zero_issue_numbers() {
+    let references = super::closes(
+        "Fixes #000; closes #0; fixes #42; closes https://github.com/example/other/issues/7",
+        "https://github.com/example/project/",
+        "example/project",
+    );
+    assert_eq!(
+        references,
+        vec![
+            "example/project#42",
+            "https://github.com/example/other/issues/7"
+        ]
+    );
+}
+
+#[test]
 fn response_budget_is_shared_and_rejects_overflow() {
     let directory = tempfile::tempdir().unwrap();
     fs::write(directory.path().join("first.json"), b"[1]").unwrap();
@@ -142,6 +158,86 @@ fn github_release_edits_use_the_release_update_timestamp() {
             .iter()
             .any(|error| error.contains("lack update timestamps"))
     );
+}
+
+#[test]
+fn github_release_assets_do_not_exhaust_the_shared_budget_after_each_page() {
+    let directory = tempfile::tempdir().unwrap();
+    let target = target("https://github.com/example/project");
+    let root = directory
+        .path()
+        .join(window_directory(&target))
+        .join("github/example/project");
+    fs::create_dir_all(&root).unwrap();
+    for name in ["issues.page-1.json", "security-advisories.page-1.json"] {
+        fs::write(root.join(name), "[]").unwrap();
+    }
+    fs::write(root.join("discussions.json"), r#"[{"data":{"search":{"discussionCount":0,"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}]"#).unwrap();
+    let release = serde_json::json!({
+        "tag_name": "v1",
+        "html_url": "https://github.com/example/project/releases/tag/v1",
+        "updated_at": "2026-10-20T10:00:00Z",
+        "body": "Security update",
+        "assets": vec![serde_json::json!({"irrelevant": true}); 35],
+    });
+    let bytes = serde_json::to_vec(&vec![release]).unwrap();
+    fs::write(root.join("releases.page-1.json"), &bytes).unwrap();
+    let mut budget = RawBudget {
+        remaining_values: 130,
+        ..RawBudget::default()
+    };
+    let result = read_target_with_budget(directory.path(), &target, &mut budget);
+    assert!(result.complete(), "{:?}", result.errors);
+    assert_eq!(result.items.len(), 1);
+    assert_eq!(result.items[0].body, "Security update");
+    assert_eq!(fs::read(root.join("releases.page-1.json")).unwrap(), bytes);
+
+    let mut too_small = RawBudget {
+        remaining_values: 10,
+        ..RawBudget::default()
+    };
+    let result = read_target_with_budget(directory.path(), &target, &mut too_small);
+    assert!(!result.complete());
+    assert!(result.errors.iter().any(|error| error.contains("budget")));
+}
+
+#[test]
+fn github_issue_metadata_is_compacted_without_changing_the_signal() {
+    let directory = tempfile::tempdir().unwrap();
+    let target = target("https://github.com/example/project");
+    let root = directory
+        .path()
+        .join(window_directory(&target))
+        .join("github/example/project");
+    fs::create_dir_all(&root).unwrap();
+    for name in ["releases.page-1.json", "security-advisories.page-1.json"] {
+        fs::write(root.join(name), "[]").unwrap();
+    }
+    fs::write(root.join("discussions.json"), r#"[{"data":{"search":{"discussionCount":0,"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}]"#).unwrap();
+    let issue = serde_json::json!({
+        "number": 7,
+        "title": "Security fix",
+        "html_url": "https://github.com/example/project/pull/7",
+        "state": "open",
+        "updated_at": "2026-10-20T10:00:00Z",
+        "body": "Security update",
+        "labels": [{"name": "security", "unused": vec![true; 40]}],
+        "pull_request": {"unused": vec![true; 40]},
+        "unused": vec![true; 40],
+    });
+    let bytes = serde_json::to_vec(&vec![issue]).unwrap();
+    fs::write(root.join("issues.page-1.json"), &bytes).unwrap();
+    let mut budget = RawBudget {
+        remaining_values: 60,
+        ..RawBudget::default()
+    };
+    let result = read_target_with_budget(directory.path(), &target, &mut budget);
+    assert!(result.complete(), "{:?}", result.errors);
+    assert_eq!(result.items.len(), 1);
+    assert_eq!(result.items[0].kind, ItemKind::PullRequest);
+    assert_eq!(result.items[0].labels, ["security"]);
+    assert_eq!(result.items[0].body, "Security update");
+    assert_eq!(fs::read(root.join("issues.page-1.json")).unwrap(), bytes);
 }
 
 #[test]
@@ -282,6 +378,114 @@ fn github_requires_terminal_page_and_fetches_old_linked_issues() {
 }
 
 #[test]
+fn github_accepts_a_linked_pull_request_from_the_issues_endpoint() {
+    let directory = tempfile::tempdir().unwrap();
+    let raw = directory.path();
+    let target = target("https://github.com/example/project");
+    let fixture = raw.join(raw::window_directory(&target));
+    let repo = "github/example/project";
+    write(
+        &fixture,
+        &format!("{repo}/issues.page-1.json"),
+        r#"[{"number":1,"title":"Maintenance","html_url":"https://github.com/example/project/pull/1","state":"open","updated_at":"2026-10-20T00:00:00Z","labels":[],"body":"Fixes #42","pull_request":{}}]"#,
+    );
+    for name in ["releases.page-1.json", "security-advisories.page-1.json"] {
+        write(&fixture, &format!("{repo}/{name}"), "[]");
+    }
+    write(
+        &fixture,
+        &format!("{repo}/discussions.json"),
+        r#"[{"data":{"search":{"discussionCount":0,"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}]"#,
+    );
+    let path = format!("{repo}/linked-issues/42.json");
+    write(
+        &fixture,
+        &path,
+        r#"{"number":42,"title":"Old fix","html_url":"https://github.com/example/project/pull/42","state":"closed","updated_at":"2025-01-01T00:00:00Z","labels":[],"body":"An attacker can bypass authentication.","pull_request":{}}"#,
+    );
+    let collected = raw::read_target(raw, &target);
+    assert!(collected.complete(), "{:?}", collected.errors);
+    assert_eq!(collected.linked_issues[0].kind, ItemKind::PullRequest);
+    assert!(screen::screen(&collected.items[0], &collected.linked_issues[0].body).is_some());
+    write(
+        &fixture,
+        &path,
+        r#"{"number":42,"title":"Old fix","html_url":"https://github.com/other/project/pull/42","state":"closed","updated_at":"2025-01-01T00:00:00Z","labels":[],"body":"","pull_request":{}}"#,
+    );
+    let invalid = raw::read_target(raw, &target);
+    assert!(!invalid.complete());
+    assert!(!invalid.errors.is_empty());
+}
+
+#[test]
+fn ambiguous_github_reference_requires_an_explicit_matching_issue() {
+    let directory = tempfile::tempdir().unwrap();
+    let raw = directory.path();
+    let target = target("https://github.com/example/project");
+    let fixture = raw.join(raw::window_directory(&target));
+    let repo = "github/example/project";
+    write(
+        &fixture,
+        &format!("{repo}/issues.page-1.json"),
+        r#"[{"number":1,"title":"Maintenance","html_url":"https://github.com/example/project/pull/1","state":"open","updated_at":"2026-10-20T00:00:00Z","labels":[],"body":"Fixes example#42","pull_request":{}}]"#,
+    );
+    for name in ["releases.page-1.json", "security-advisories.page-1.json"] {
+        write(&fixture, &format!("{repo}/{name}"), "[]");
+    }
+    write(
+        &fixture,
+        &format!("{repo}/discussions.json"),
+        r#"[{"data":{"search":{"discussionCount":0,"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}]"#,
+    );
+    let unresolved = raw::read_target(raw, &target);
+    assert!(!unresolved.complete());
+    assert!(
+        unresolved
+            .errors
+            .iter()
+            .any(|error| error.contains("example#42"))
+    );
+
+    let resolution_path = raw::manual_resolution_path(Path::new(repo), "example#42");
+    let mut resolution = serde_json::json!({
+        "reference": "example#42",
+        "rationale": "The change and issue describe the same defect.",
+        "issue": {"number":42,"title":"Old issue","html_url":"https://github.com/example/project/issues/42","state":"open","updated_at":"2025-01-01T00:00:00Z","labels":[],"body":"Security issue"}
+    });
+    resolution["issue"]["number"] = 43.into();
+    write(
+        &fixture,
+        resolution_path.to_str().unwrap(),
+        &resolution.to_string(),
+    );
+    let wrong_issue = raw::read_target(raw, &target);
+    assert!(!wrong_issue.complete());
+
+    resolution["issue"]["number"] = 42.into();
+    resolution["rationale"] = "".into();
+    write(
+        &fixture,
+        resolution_path.to_str().unwrap(),
+        &resolution.to_string(),
+    );
+    assert!(!raw::read_target(raw, &target).complete());
+
+    resolution["rationale"] = "The change and issue describe the same defect.".into();
+    write(
+        &fixture,
+        resolution_path.to_str().unwrap(),
+        &resolution.to_string(),
+    );
+    let resolved = raw::read_target(raw, &target);
+    assert!(resolved.complete(), "{:?}", resolved.errors);
+    assert_eq!(resolved.linked_issues[0].key, "example#42");
+    assert_eq!(
+        resolved.linked_issues[0].url,
+        "https://github.com/example/project/issues/42"
+    );
+}
+
+#[test]
 fn raw_responses_are_isolated_by_upstream_and_exact_window() {
     let directory = tempfile::tempdir().unwrap();
     let raw = directory.path();
@@ -327,7 +531,7 @@ fn raw_responses_are_isolated_by_upstream_and_exact_window() {
 }
 
 #[test]
-fn cross_repository_issue_references_keep_research_incomplete() {
+fn github_cross_repository_issue_references_are_fetched_without_following_other_hosts() {
     let directory = tempfile::tempdir().unwrap();
     let raw = directory.path();
     let target = target("https://github.com/example/project");
@@ -341,7 +545,8 @@ fn cross_repository_issue_references_keep_research_incomplete() {
         pull(2, "Fixes https://github.com/example/project/issues/7"),
         pull(3, "Fixes example/other#42"),
         pull(4, "Fixes https://github.com/example/other/issues/43"),
-        pull(5, "Fixes https://gitlab.com/group/project/-/issues/44")
+        pull(5, "Fixes https://gitlab.com/group/project/-/issues/44"),
+        pull(6, "Fixes project#7")
     ]);
     write(
         &fixture,
@@ -362,15 +567,47 @@ fn cross_repository_issue_references_keep_research_incomplete() {
     let collected = raw::read_target(raw, &target);
     assert_eq!(collected.items[1].closes, vec!["example/project#7"]);
     assert_eq!(collected.items[2].closes, vec!["example/project#7"]);
+    assert_eq!(collected.items[6].closes, vec!["example/project#7"]);
     assert!(!collected.complete());
-    assert_eq!(collected.errors.len(), 3);
+    assert_eq!(collected.errors.len(), 1);
     assert!(
         collected
             .errors
             .iter()
             .all(|error| error.contains("cross-repository reference requires manual research"))
     );
+    assert_eq!(collected.missing.len(), 2);
+    assert!(collected.missing.iter().any(|fetch| {
+        fetch.request == "repos/example/other/issues/42"
+            && fetch.path.ends_with("linked-issues/example/other/42.json")
+    }));
+    assert!(collected.missing.iter().any(|fetch| {
+        fetch.request == "repos/example/other/issues/43"
+            && fetch.path.ends_with("linked-issues/example/other/43.json")
+    }));
+    for number in [42, 43] {
+        write(
+            &fixture,
+            &format!("{repo}/linked-issues/example/other/{number}.json"),
+            &serde_json::json!({"number":number,"title":"Security issue","html_url":format!("https://github.com/example/other/issues/{number}"),"state":"open","updated_at":"2026-10-20T10:00:00Z","labels":[],"body":"An attacker can bypass authorization."}).to_string(),
+        );
+    }
+    let collected = raw::read_target(raw, &target);
+    assert_eq!(collected.linked_issues.len(), 2);
     assert!(collected.missing.is_empty());
+    assert_eq!(collected.errors.len(), 1);
+    write(
+        &fixture,
+        &format!("{repo}/linked-issues/example/other/42.json"),
+        r#"{"number":42,"title":"Wrong repository","html_url":"https://github.com/evil/other/issues/42","state":"open","updated_at":"2026-10-20T10:00:00Z","labels":[],"body":""}"#,
+    );
+    let invalid = raw::read_target(raw, &target);
+    assert!(
+        invalid
+            .errors
+            .iter()
+            .any(|error| error.contains("linked response URL"))
+    );
 }
 
 #[test]

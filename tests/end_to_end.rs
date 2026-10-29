@@ -106,6 +106,7 @@ fn manual_then_mixed_monitor_is_auditable_and_preserves_history() {
     assert!(first.partial);
     let case = &first.cases[0];
     let forged = Verdict {
+        workspace_revisions: Vec::new(),
         schema_version: 1,
         case_id: case.case_id.clone(),
         facts_sha256: case.facts_sha256.clone(),
@@ -395,6 +396,7 @@ fn a_repository_advisory_confirms_the_version_and_absorbs_the_research_case() {
     assert!(first.cases.is_empty());
     let instance = first.instances[0].clone();
     let research = vulnbell::model::Case {
+            workspace_revisions: Vec::new(),
         schema_version: 1,
         case_id: "SIG-synthetic-research-advisory".into(),
         project_id: project.to_string(),
@@ -499,6 +501,7 @@ fn a_repository_advisory_confirms_the_version_and_absorbs_the_research_case() {
     );
 
     let late_research = vulnbell::model::Case {
+        workspace_revisions: Vec::new(),
         case_id: "SIG-0-late-research".into(),
         snapshot_id: second.id.clone(),
         ..research.clone()
@@ -536,6 +539,7 @@ fn reimported_research_keeps_promoted_advisory_and_evidence() {
     let plan = research::plan_page(&store, "", 20).unwrap();
     let target = &plan.targets[0];
     let event = ResearchEvent {
+        workspace_revisions: Vec::new(),
         upstream: target.upstream.clone(), instance_ids: target.instance_ids.clone(),
         reviewed_instance_ids: target.instance_ids.clone(), provider: "github".into(),
         external_id: "synthetic-org/synthetic-crate/GHSA-synt-hetc-0001".into(),
@@ -691,6 +695,7 @@ fn refreshing_an_affected_repository_advisory_with_ambiguous_details_keeps_it_op
         "https://api.github.com/repos/synthetic-org/synthetic-crate/security-advisories/{id}"
     );
     let case = vulnbell::model::Case {
+        workspace_revisions: Vec::new(),
         schema_version: 1,
         case_id: "SIG-refresh-advisory".into(),
         project_id: project.to_string(),

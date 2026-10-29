@@ -22,6 +22,8 @@ pub enum WorkState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkEvent {
     pub facts_sha256: String,
+    #[serde(default)]
+    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     /// Fingerprint of case evidence and outcome when the interval was recorded.
     #[serde(default)]
     pub context_sha256: String,
@@ -211,6 +213,7 @@ pub fn record(
     next_step: Option<&str>,
 ) -> Result<WorkEvent> {
     let _lock = store.lock()?;
+    store.ensure_workspace_current()?;
     let active: bool = store.connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM cases WHERE id=?1)",
         [case_id],
@@ -252,6 +255,7 @@ pub fn record(
     let elapsed_seconds = (now - start).num_seconds().max(0) as u64;
     let event = WorkEvent {
         facts_sha256: case.facts_sha256.clone(),
+        workspace_revisions: case.workspace_revisions.clone(),
         context_sha256: context_hash(&case)?,
         state,
         recorded_at: now.to_rfc3339(),

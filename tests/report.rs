@@ -6,6 +6,7 @@ fn coverage_groups_keep_the_first_seen_order_and_scope_labels() {
     let project = uuid::Uuid::new_v4().to_string();
     let store = Store::open(&project).unwrap();
     let snapshot = Snapshot {
+        workspace_revisions: Vec::new(),
         schema_version: 1,
         id: "snapshot".into(),
         project_id: project.clone(),
@@ -82,6 +83,7 @@ fn report_explains_the_matched_package_without_recommending_another_packages_fix
         });
     }
     let mut case = Case {
+        workspace_revisions: Vec::new(),
         schema_version: 1,
         case_id: "SIG-synthetic-report".into(),
         project_id: project.clone(),
@@ -135,6 +137,7 @@ fn report_explains_the_matched_package_without_recommending_another_packages_fix
     .unwrap();
     case = store.case(&case.case_id).unwrap();
     let snapshot = Snapshot {
+        workspace_revisions: Vec::new(),
         schema_version: 1,
         id: "synthetic".into(),
         project_id: project.clone(),
@@ -160,9 +163,11 @@ fn report_explains_the_matched_package_without_recommending_another_packages_fix
     );
     let markdown = vulnbell::output::morning_markdown(&report);
     assert!(markdown.contains("event_id injection in \\_parse\\_"));
-    assert!(markdown.contains("### SIG-synthetic-report — Actionable"));
-    assert!(markdown.contains("- **OSV GHSA-synthetic:**"));
-    assert!(markdown.contains("- **GitHub Advisory Database reference:**"));
+    assert!(markdown.contains("### SIG-synthetic-report — SYNTHETIC"));
+    let verification = vulnbell::output::verification_markdown(&report);
+    assert!(verification.contains("- **OSV GHSA-synthetic:**"));
+    assert!(verification.contains("- **GitHub Advisory Database reference:**"));
+    assert!(!markdown.contains("## References and local verification"));
     assert!(markdown.contains("newline injection"));
     assert!(markdown.contains("attacker-controlled event identifiers"));
     assert!(markdown.contains("1.2.3"));
@@ -271,8 +276,11 @@ fn report_explains_the_matched_package_without_recommending_another_packages_fix
     let spanish = vulnbell::output::morning_report(&snapshot, &store, "manager").unwrap();
     assert_eq!(spanish.language, vulnbell::profile::Language::Es);
     let markdown = vulnbell::output::morning_markdown(&spanish);
-    assert!(markdown.contains("### SIG-synthetic-report — Accionable"));
-    assert!(markdown.contains("- **Referencia de GitHub Advisory Database:**"));
+    assert!(markdown.contains("### SIG-synthetic-report — SYNTHETIC"));
+    assert!(
+        vulnbell::output::verification_markdown(&spanish)
+            .contains("- **Referencia de GitHub Advisory Database:**")
+    );
     assert!(markdown.contains(
         "**Funcionalidad afectada en uso:** sí — src/stream.rs:42 calls the affected parser."
     ));
@@ -307,6 +315,7 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
         feeds: Vec::new(),
     });
     let mut case = Case {
+        workspace_revisions: Vec::new(),
         schema_version: 1,
         case_id: "SIG-review".into(),
         project_id: project.clone(),
@@ -358,6 +367,7 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
         updated_at: vulnbell::now(),
     };
     let mut snapshot = Snapshot {
+        workspace_revisions: Vec::new(),
         schema_version: 1,
         id: "snapshot".into(),
         project_id: project.clone(),
@@ -382,18 +392,11 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
         assert!(summary.contains("| Status | Cases | Meaning |"));
         assert!(summary.contains("they are not security findings"));
         if decision == Decision::Review {
-            assert!(summary.contains("| In review | 1 |"));
+            assert!(summary.contains("| In review with impact assessment | 0 |"));
+            assert!(summary.contains("| Impact assessment pending | 1 |"));
             assert!(summary.contains("SYNTHETIC hypothesis"));
-            assert!(summary.contains("Why it is still in review"));
-            assert!(summary.contains("Applicability: unknown; verification: confirmed by source"));
-            assert!(
-                summary.contains("Confirm whether version 1.0.0 includes the reported function")
-            );
-            assert!(summary.contains(
-                "According to the source: cites CVE-2026-0001; affects: 1.0.x; fixed in: 1.1.0; requires: SSE endpoint enabled."
-            ));
-            assert_eq!(summary.matches("According to the source").count(), 1);
-            assert!(summary.contains("Next step"));
+            assert!(summary.contains("Signals without a current assessment"));
+            assert!(!summary.contains("Why it is still in review"));
             assert!(summary.contains("https://github.com/example/project/issues/1"));
         }
         assert_eq!(report.finding_checks.len(), 1);
@@ -413,6 +416,35 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
             assert!(report.verification_pending.is_empty());
         }
     }
+    let verdict = Verdict {
+        schema_version: 1,
+        case_id: case.case_id.clone(),
+        workspace_revisions: Vec::new(),
+        facts_sha256: case.facts_sha256.clone(),
+        applicability: Applicability::Unknown,
+        verification: Verification::Inconclusive,
+        decision: Decision::Review,
+        rationale: "Review the current version.".into(),
+        evidence: Vec::new(),
+    };
+    let recorded = store
+        .record_evidence(
+            &serde_json::to_vec(&verdict).unwrap(),
+            "agent_verdict",
+            None,
+            EvidenceKind::Context,
+        )
+        .unwrap();
+    let mut current = case.clone();
+    current.decision = Decision::Review;
+    current.evidence.push(recorded);
+    snapshot.cases = vec![current.clone()];
+    let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    assert!(report.needs_review[0].recorded_verdict.is_some());
+    current.facts_sha256 = "different facts".into();
+    snapshot.cases = vec![current];
+    let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    assert!(report.needs_review[0].recorded_verdict.is_none());
     store.save_case(&case).unwrap();
     let blocked = vulnbell::sandbox::record_blocker(
         &mut store,
@@ -478,7 +510,7 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
     );
     let summary = vulnbell::output::morning_markdown(&report);
     assert!(summary.contains("5 components 1.0.0"));
-    assert!(summary.contains("Resolve the recorded blocker"));
+    assert!(summary.contains("Signals without a current assessment"));
     assert!(!summary.contains("artifact-4 1.0.0"));
     drop(store);
     std::fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
@@ -511,6 +543,7 @@ fn cards_cite_the_lockfile_line_and_the_inventory_is_summarized_per_lockfile() {
     sibling.id = "sibling".into();
     sibling.reference = "pkg:cargo/other".into();
     let case = Case {
+        workspace_revisions: Vec::new(),
         schema_version: 1,
         case_id: "SIG-provenance".into(),
         project_id: project.clone(),
@@ -533,6 +566,7 @@ fn cards_cite_the_lockfile_line_and_the_inventory_is_summarized_per_lockfile() {
         updated_at: vulnbell::now(),
     };
     let snapshot = Snapshot {
+        workspace_revisions: Vec::new(),
         schema_version: 1,
         id: "snapshot".into(),
         project_id: project.clone(),
@@ -599,6 +633,7 @@ fn contained_advisories_collapse_into_one_row_and_exposed_cases_keep_their_card(
             )
             .unwrap();
         let case = Case {
+            workspace_revisions: Vec::new(),
             schema_version: 1,
             case_id: case_id.into(),
             project_id: project.clone(),
@@ -669,6 +704,7 @@ fn contained_advisories_collapse_into_one_row_and_exposed_cases_keep_their_card(
         cases.push(store.case(case_id).unwrap());
     }
     let snapshot = Snapshot {
+        workspace_revisions: Vec::new(),
         schema_version: 1,
         id: "snapshot".into(),
         project_id: project.clone(),
@@ -750,6 +786,7 @@ fn unconfirmed_versions_need_a_review_disposition_without_requiring_a_test() {
         ),
     ] {
         let case = Case {
+            workspace_revisions: Vec::new(),
             schema_version: 1,
             case_id: case_id.into(),
             project_id: project.clone(),
@@ -807,6 +844,7 @@ fn unconfirmed_versions_need_a_review_disposition_without_requiring_a_test() {
         cases.push(store.case(case_id).unwrap());
     }
     let mut snapshot = Snapshot {
+        workspace_revisions: Vec::new(),
         schema_version: 1,
         id: "snapshot".into(),
         project_id: project.clone(),

@@ -267,7 +267,7 @@ fn missing(error: &anyhow::Error) -> bool {
     })
 }
 
-fn private_name(value: &str) -> bool {
+pub(crate) fn private_name(value: &str) -> bool {
     let name = value.to_ascii_lowercase();
     name == ".git"
         || name == ".env"
@@ -297,7 +297,7 @@ fn private_name(value: &str) -> bool {
             "id_ed25519",
         ]
         .contains(&name.as_str())
-        || [".pem", ".key", ".p12", ".pfx"]
+        || [".pem", ".key", ".p12", ".pfx", ".tfvars", ".tfvars.json"]
             .iter()
             .any(|suffix| name.ends_with(suffix))
 }
@@ -629,7 +629,7 @@ fn read_slice(root: &str, relative: &str, id: &str, offset: u64) -> Result<FileS
 }
 
 #[cfg(unix)]
-fn open_file(root: &str, relative: &str) -> Result<fs::File> {
+pub(crate) fn open_file(root: &str, relative: &str) -> Result<fs::File> {
     use nix::{
         fcntl::{OFlag, open, openat},
         sys::stat::Mode,
@@ -657,7 +657,7 @@ fn open_file(root: &str, relative: &str) -> Result<fs::File> {
 }
 
 #[cfg(not(unix))]
-fn open_file(root: &str, relative: &str) -> Result<fs::File> {
+pub(crate) fn open_file(root: &str, relative: &str) -> Result<fs::File> {
     Ok(fs::File::open(checked_path(root, relative)?)?)
 }
 

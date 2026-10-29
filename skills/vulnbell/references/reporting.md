@@ -10,19 +10,28 @@ Cutoff: <date/time/zone> · Coverage: <full/partial>
 
 | Status | Cases | Meaning |
 |---|---:|---|
-| Actionable | ... | Affected artifact/version confirmed; assess project impact and update or mitigate. |
-| In review | ... | An issue/PR signal, uncertain artifact identity, or incomplete/conflicting evidence still needs corroboration. |
+| Actionable with impact assessed | ... | A recorded assessment identifies a concrete action. |
+| In review with impact assessed | ... | The signal was assessed and a specific question remains. |
+| Impact assessment pending | ... | Current facts still need assessment; this does not establish project impact. |
 | Informational | ... | Useful context with no pending security action. |
 | Dismissed | ... | An evidence-backed verdict closed the case within the assessed scope. |
 | Not applicable | ... | Upstream events that, per cited version evidence, do not affect the monitored version; no case opened. |
 
 Coverage gaps: <count> incomplete source or inventory checks; these are not security findings.
 
+## Reviewed workspaces
+
+List each workspace's recorded Git branch and full commit. Show detached HEAD, uncommitted changes, unavailable Git state, and any change since the scan. A commit does not identify uncommitted edits, ignored files or submodule contents. Describe these limits without claiming the current checkout was reviewed when it differs.
+
 ## Inventory
 
 | Component | Version | Origin |
 |---|---|---|
 | ... | ... | tracked / locked / deployed |
+
+## Dependency audit
+
+For an available lockfile scanner, state tool and version, scan date, lockfile/hash, advisory database revision/date, findings and warnings, filters and limitations. Distinguish version matches from assessed project impact; link detailed results without counting an advisory twice. If the scanner could not run or its database is stale, say so instead of reporting zero findings.
 
 ## Actionable
 
@@ -52,9 +61,11 @@ Coverage gaps: <count> incomplete source or inventory checks; these are not secu
 
 Keep scheduled reports within 500 words; aim for 350–450. Prioritize actionable findings and at most three hypotheses. Give counts for the remaining cases. Group duplicate symptoms and link full cases and evidence for details. If the user requests a full report, include all relevant cases in the same structure.
 
-Use the recorded case decision for the counts. Each in-review entry needs its case ID, affected component/version, a short description of the claim, what is already verified, and what still prevents a conclusion. A bare issue title or “investigation pending” is insufficient when the recorded evidence has more detail. Explain missing data explicitly. Project-impact uncertainty is separate from confirmation that the artifact/version is affected.
+Use the recorded case decision and current impact assessment for the counts. Each in-review entry needs its case ID, affected component/version, a short description of the claim, what is already verified, and what still prevents a conclusion. A bare issue title or “investigation pending” is insufficient when the recorded evidence has more detail. Explain missing data explicitly. Project-impact uncertainty is separate from confirmation that the artifact/version is affected.
 
-Scheduled reports append the discovery progress and complete source map from recorded CLI data. Do not repeat that table in the generated narrative. Count it separately from the narrative word budget. Agent-observed dependencies have not been attested by a native lockfile parser or deployment record.
+Separate signals without a current impact assessment from assessed cases that remain in review. The former can contain new items or evidence from an older context; do not claim all were reviewed or require human review. State when a changed context reopened work and distinguish counts of cases, verdicts and research windows without adding overlapping counts. Prioritize actionable and material reviewed risks; summarize unevaluated signals and link their complete queue instead of reproducing a long list of titles. For every reviewed uncertainty give a specific owner or next check.
+
+Summarize discovery progress and source mapping; keep the complete source map in the JSON report. Agent-observed dependencies have not been attested by a native lockfile parser or deployment record.
 
 `last_scan` is the completed snapshot's finish time. `last_successful_scan: null` means no scan with full source coverage has been recorded. It does **not** mean the job failed or never ran. Say “scan completed with partial coverage,” in the report's language. Report runner/import failures only when the CLI provides them. Keep the scan cutoff separate from the later agent-review/report time.
 

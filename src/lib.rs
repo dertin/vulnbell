@@ -20,6 +20,7 @@ pub mod store;
 pub mod tools;
 pub mod upstream;
 pub mod vendor;
+pub mod workspace_revision;
 
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};

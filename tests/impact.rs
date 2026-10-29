@@ -38,6 +38,7 @@ fn fixture() -> (String, Store, Case, EvidenceReference) {
         )
         .unwrap();
     let case = Case {
+        workspace_revisions: Vec::new(),
         schema_version: 1,
         case_id: "SIG-impact".into(),
         project_id: project.clone(),

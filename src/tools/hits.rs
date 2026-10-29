@@ -30,6 +30,7 @@ const HTTP_BUDGET: usize = 3000;
 pub struct Prepared {
     pub project_id: String,
     pub snapshot_id: String,
+    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     pub targets: Vec<PreparedTarget>,
     pub resolutions: BTreeMap<String, Resolution>,
 }
@@ -98,6 +99,7 @@ pub fn prepare_for_upstream(
     recheck: bool,
     upstream: Option<&str>,
 ) -> Result<Prepared> {
+    store.ensure_workspace_current()?;
     let plan = crate::research::full_plan(store)?;
     if upstream.is_some_and(|url| !plan.targets.iter().any(|target| target.upstream == url)) {
         anyhow::bail!("upstream is outside the current research plan");
@@ -117,7 +119,7 @@ pub fn prepare_for_upstream(
             .items
             .iter()
             .chain(&collected.linked_issues)
-            .filter(|item| item.kind == ItemKind::Issue)
+            .filter(|item| matches!(item.kind, ItemKind::Issue | ItemKind::PullRequest))
             .map(|item| (item.key.clone(), screen::LinkedSignals::from_issue(item)))
             .collect();
         let mut not_selected = 0;
@@ -190,6 +192,7 @@ pub fn prepare_for_upstream(
     Ok(Prepared {
         project_id: plan.project_id,
         snapshot_id: plan.snapshot_id,
+        workspace_revisions: plan.workspace_revisions,
         targets,
         resolutions,
     })
@@ -450,6 +453,7 @@ pub struct ReviewPacket {
     pub schema_version: u32,
     pub project_id: String,
     pub snapshot_id: String,
+    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     pub summary: PacketSummary,
     /// Responses still to fetch; rerun `tools hits` after writing them.
     pub missing: Vec<MissingFetch>,
@@ -619,8 +623,13 @@ pub fn packet_with_recheck(
             }
         }
         for entry in &prepared_target.entries {
-            let lookup =
-                decisions.map(|decisions| decisions.lookup(&entry.item, &prepared_target.target));
+            let lookup = decisions.map(|decisions| {
+                decisions.lookup(
+                    &entry.item,
+                    &prepared_target.target,
+                    &prepared.workspace_revisions,
+                )
+            });
             let unpublished: &[String] = match &entry.disposition {
                 Disposition::Unchanged => {
                     summary.unchanged += 1;
@@ -702,6 +711,7 @@ pub fn packet_with_recheck(
         schema_version: 1,
         project_id: prepared.project_id.clone(),
         snapshot_id: prepared.snapshot_id.clone(),
+        workspace_revisions: prepared.workspace_revisions.clone(),
         summary,
         missing,
         errors,

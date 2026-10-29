@@ -96,6 +96,11 @@ pub fn markdown(snapshot: &Snapshot) -> String {
         snapshot.instances.len(),
         snapshot.cases.len()
     );
+    report.push_str(&markdown::workspace_revisions_markdown(
+        &crate::workspace_revision::compare(&snapshot.workspace_revisions),
+        false,
+        Language::En,
+    ));
     for case in &snapshot.cases {
         report.push_str(&format!(
             "- `{}`: {:?}; {:?}; {:?}\n",
@@ -130,6 +135,10 @@ pub struct MorningReport {
     pub last_successful_scan: Option<String>,
     pub last_agent_review: Option<String>,
     pub scheduler_id: Option<String>,
+    /// Git identities recorded by the scan and the workspace state at report time.
+    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceComparison>,
+    pub workspace_context_unrecorded: bool,
+    pub workspace_scope_changed: bool,
     pub inventory: Vec<MonitoredComponent>,
     pub actionable: Vec<HandoffItem>,
     pub needs_review: Vec<HandoffItem>,
@@ -256,6 +265,39 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
             }
         }
         None => (None, Vec::new(), Language::default()),
+    };
+    let workspace_revisions = crate::workspace_revision::compare(&snapshot.workspace_revisions);
+    let workspace_scope_changed = if !snapshot.workspace_revisions.is_empty() {
+        store
+            .meta("profile_path")?
+            .and_then(|path| {
+                let profile = crate::profile::load(std::path::Path::new(&path)).ok()?;
+                Some(!crate::workspace_revision::configured_paths_match(
+                    &snapshot.workspace_revisions,
+                    &profile,
+                    std::path::Path::new(&path),
+                ))
+            })
+            .unwrap_or(true)
+    } else {
+        false
+    };
+    let workspace_context_unrecorded = if snapshot.workspace_revisions.is_empty() {
+        store
+            .meta("profile_path")?
+            .and_then(|path| {
+                let profile = crate::profile::load(std::path::Path::new(&path)).ok()?;
+                Some(
+                    crate::workspace_revision::capture(&profile, std::path::Path::new(&path))
+                        .iter()
+                        .any(|revision| {
+                            revision.state != crate::workspace_revision::RepositoryState::NotGit
+                        }),
+                )
+            })
+            .unwrap_or(false)
+    } else {
+        false
     };
     let words = text::text(language);
     let active_ids: std::collections::HashSet<&str> = snapshot
@@ -402,6 +444,9 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
         last_successful_scan: store.meta("last_successful_scan")?,
         last_agent_review: store.meta("last_agent_review")?,
         scheduler_id: store.meta("scheduler_id")?,
+        workspace_revisions,
+        workspace_context_unrecorded,
+        workspace_scope_changed,
         inventory: snapshot
             .instances
             .iter()
@@ -505,6 +550,9 @@ fn recorded_verdict(
     )
     .ok()?;
     let verdict: crate::model::Verdict = serde_json::from_slice(&bytes).ok()?;
+    if verdict.facts_sha256 != case.facts_sha256 {
+        return None;
+    }
     Some(format!(
         "{}: {}",
         text::decision(language, verdict.decision),

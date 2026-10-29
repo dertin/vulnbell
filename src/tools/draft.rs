@@ -45,6 +45,9 @@ pub struct ItemDecision {
     pub updated_at: String,
     /// Context fingerprint returned by tools hits for the exact reviewed target.
     pub context_sha256: String,
+    /// Workspace revisions reported by `tools hits` for this reading.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     pub assessment: Assessment,
     /// Required with `not_applicable`; forbidden otherwise.
     #[serde(default)]
@@ -137,7 +140,12 @@ impl ResearchDecisions {
         Ok(())
     }
 
-    pub fn lookup(&self, item: &Item, target: &ResearchTarget) -> DecisionLookup<'_> {
+    pub fn lookup(
+        &self,
+        item: &Item,
+        target: &ResearchTarget,
+        revisions: &[crate::workspace_revision::WorkspaceRevision],
+    ) -> DecisionLookup<'_> {
         match self
             .decisions
             .iter()
@@ -145,7 +153,13 @@ impl ResearchDecisions {
         {
             Some(decision)
                 if super::same_instant(&decision.updated_at, &item.updated_at)
-                    && decision.context_sha256 == target.context_sha256 =>
+                    && decision.context_sha256 == target.context_sha256
+                    && (decision.workspace_revisions.is_empty()
+                        && crate::workspace_revision::fingerprint(revisions).is_none()
+                        || crate::workspace_revision::same_revisions(
+                            &decision.workspace_revisions,
+                            revisions,
+                        )) =>
             {
                 DecisionLookup::Current(decision)
             }
@@ -181,7 +195,13 @@ pub fn draft(
         if !complete {
             incomplete.push(prepared_target.target.upstream.clone());
         }
-        let review = target_events(prepared_target, decisions, &mut events, &mut undecided)?;
+        let review = target_events(
+            prepared_target,
+            decisions,
+            &prepared.workspace_revisions,
+            &mut events,
+            &mut undecided,
+        )?;
         let coverage = if complete && review.undecided == 0 {
             ReviewCoverage::Complete
         } else {
@@ -209,6 +229,9 @@ pub fn draft(
             undecided.len(),
             preview(&undecided)
         );
+    }
+    for event in &mut events {
+        event.workspace_revisions = prepared.workspace_revisions.clone();
     }
     let mut assessments: BTreeMap<String, usize> = BTreeMap::new();
     for event in &events {
@@ -250,6 +273,7 @@ struct TargetReview {
 fn target_events(
     prepared_target: &PreparedTarget,
     decisions: &ResearchDecisions,
+    revisions: &[crate::workspace_revision::WorkspaceRevision],
     events: &mut Vec<ResearchEvent>,
     undecided: &mut Vec<String>,
 ) -> Result<TargetReview> {
@@ -261,7 +285,10 @@ fn target_events(
             review.unchanged += 1;
             continue;
         }
-        let reading = match (decisions.lookup(&entry.item, target), &entry.disposition) {
+        let reading = match (
+            decisions.lookup(&entry.item, target, revisions),
+            &entry.disposition,
+        ) {
             (DecisionLookup::Current(decision), _) if decision.needs_scope(target) => {
                 review.undecided += 1;
                 undecided.push(format!(
@@ -351,6 +378,7 @@ fn event(
         EXCERPT_CHARS,
     );
     Ok(ResearchEvent {
+        workspace_revisions: Vec::new(),
         upstream: target.upstream.clone(),
         instance_ids: if reading.instance_ids.is_empty() {
             target.instance_ids.clone()

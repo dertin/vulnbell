@@ -192,6 +192,14 @@ fn run() -> Result<i32> {
             ..
         } => {
             let (_, mut store) = store_for(&project)?;
+            if release_tree.is_some()
+                || evidence_url.is_some()
+                || evidence_file.is_some()
+                || validation_blocker.is_some()
+                || clear_validation_blocker.is_some()
+            {
+                store.ensure_workspace_current()?;
+            }
             let mut case = store.case(&id)?;
             let evidence_before = case.evidence.len();
             let modifies = release_tree.is_some()

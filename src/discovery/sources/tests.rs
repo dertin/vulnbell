@@ -99,6 +99,7 @@ fn mapped_sources_require_acquired_evidence_and_every_category() {
     let instance = Instance::declared(&profile.components[0]);
     store
         .save_snapshot(&crate::model::Snapshot {
+            workspace_revisions: Vec::new(),
             schema_version: 1,
             id: uuid::Uuid::new_v4().to_string(),
             project_id: project.clone(),

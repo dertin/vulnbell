@@ -13,6 +13,7 @@ mod sources;
 mod workspace;
 pub use contracts::*;
 pub use sources::{RegistryFailure, RegistryRun};
+pub(crate) use workspace::{open_file, private_name};
 
 /// Discovery state is keyed by project and workspace roots only, so editing components,
 /// research topics or schedules keeps completed file reviews.
@@ -147,6 +148,7 @@ pub fn import(
         bail!("general discovery is explicitly disabled in this profile");
     }
     let _lock = store.lock()?;
+    store.ensure_workspace_current()?;
     let current_scope = scope(profile, path)?;
     match batch {
         DiscoveryBatch::Workspace {

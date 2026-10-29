@@ -84,6 +84,7 @@ fn multi_component_review_requires_an_explicit_scope() {
         super::hits::Prepared {
             project_id: "project".into(),
             snapshot_id: "snapshot".into(),
+            workspace_revisions: Vec::new(),
             targets: vec![super::hits::PreparedTarget {
                 target,
                 collected: empty_collected(upstream),
@@ -102,6 +103,7 @@ fn multi_component_review_requires_an_explicit_scope() {
     let mut decisions = ResearchDecisions {
         schema_version: 1,
         decisions: vec![ItemDecision {
+            workspace_revisions: Vec::new(),
             upstream: upstream.into(),
             key: "example/project#1".into(),
             updated_at: "2026-10-20T10:00:00+00:00".into(),
@@ -493,6 +495,7 @@ fn truncated_identifiers_require_review_for_releases_and_dependency_updates() {
     let prepared = super::hits::Prepared {
         project_id: "project".into(),
         snapshot_id: "snapshot".into(),
+        workspace_revisions: Vec::new(),
         targets: vec![super::hits::PreparedTarget {
             target: target("https://github.com/example/project"),
             collected,
@@ -591,6 +594,7 @@ fn repository_advisories_are_evaluated_against_the_target_instances() {
 #[test]
 fn decisions_are_validated_and_stale_ones_are_reported() {
     let decision = ItemDecision {
+        workspace_revisions: Vec::new(),
         upstream: "https://github.com/example/project".into(),
         key: "example/project#7".into(),
         updated_at: "2026-10-20T10:00:00Z".into(),
@@ -614,12 +618,20 @@ fn decisions_are_validated_and_stale_ones_are_reported() {
     reviewed.key = "example/project#7".into();
     reviewed.updated_at = "2026-10-20T10:00:00+00:00".into();
     assert!(matches!(
-        decisions.lookup(&reviewed, &target("https://github.com/example/project")),
+        decisions.lookup(
+            &reviewed,
+            &target("https://github.com/example/project"),
+            &[]
+        ),
         DecisionLookup::Current(_)
     ));
     reviewed.updated_at = "2026-10-20T12:00:00+00:00".into();
     assert!(matches!(
-        decisions.lookup(&reviewed, &target("https://github.com/example/project")),
+        decisions.lookup(
+            &reviewed,
+            &target("https://github.com/example/project"),
+            &[]
+        ),
         DecisionLookup::Stale(_)
     ));
 
@@ -642,6 +654,7 @@ fn decisions_with_the_same_key_are_scoped_to_the_upstream() {
     let make_prepared = || super::hits::Prepared {
         project_id: "project".into(),
         snapshot_id: "snapshot".into(),
+        workspace_revisions: Vec::new(),
         targets: [github, gitlab]
             .into_iter()
             .map(|upstream| {
@@ -670,6 +683,7 @@ fn decisions_with_the_same_key_are_scoped_to_the_upstream() {
     let mut decisions = ResearchDecisions {
         schema_version: 1,
         decisions: vec![ItemDecision {
+            workspace_revisions: Vec::new(),
             upstream: github.into(),
             key: "example/project#1".into(),
             updated_at: "2026-10-20T10:00:00+00:00".into(),
@@ -767,5 +781,56 @@ fn truncated_seen_item_requires_a_review_decision() {
         &research_target,
         &report,
         &screen
+    ));
+}
+
+#[test]
+fn decision_workspace_metadata_must_match_the_review_packet() {
+    use crate::workspace_revision::{RepositoryState, WorkspaceRevision};
+    let revision = WorkspaceRevision {
+        workspace: "/example/project".into(),
+        state: RepositoryState::Git,
+        repository: Some("/example/project".into()),
+        branch: Some("main".into()),
+        commit: Some("a".repeat(40)),
+        dirty: Some(false),
+        worktree_status_sha256: Some("b".repeat(64)),
+        observed_at: "2026-10-20T10:00:00Z".into(),
+    };
+    let mut reviewed = item(ItemKind::Issue, "Security issue", "");
+    reviewed.key = "example/project#7".into();
+    let decision = ItemDecision {
+        upstream: "https://github.com/example/project".into(),
+        key: reviewed.key.clone(),
+        updated_at: reviewed.updated_at.clone(),
+        context_sha256: "a".repeat(64),
+        workspace_revisions: vec![revision.clone()],
+        assessment: Assessment::Review,
+        not_applicable_reason: None,
+        rationale: "Review the issue.".into(),
+        source_facts: SourceFacts::default(),
+        instance_ids: vec![],
+        all_instances: false,
+    };
+    let decisions = ResearchDecisions {
+        schema_version: 1,
+        decisions: vec![decision],
+    };
+    let mut next_observation = revision.clone();
+    next_observation.observed_at = "2026-10-20T12:00:00Z".into();
+    let source = target("https://github.com/example/project");
+    assert!(matches!(
+        decisions.lookup(&reviewed, &source, &[next_observation]),
+        DecisionLookup::Current(_)
+    ));
+    let mut changed = revision;
+    changed.branch = Some("other".into());
+    assert!(matches!(
+        decisions.lookup(&reviewed, &source, &[changed]),
+        DecisionLookup::Stale(_)
+    ));
+    assert!(matches!(
+        decisions.lookup(&reviewed, &source, &[]),
+        DecisionLookup::Stale(_)
     ));
 }

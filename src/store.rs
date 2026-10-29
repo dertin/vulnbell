@@ -237,7 +237,43 @@ impl Store {
                 })?;
         Ok(serde_json::from_str(&body)?)
     }
+    pub fn ensure_workspace_current(&self) -> Result<()> {
+        let Some(_) = self.meta("last_snapshot")? else {
+            return Ok(());
+        };
+        let snapshot = self.latest()?;
+        if !snapshot.workspace_revisions.is_empty()
+            && let Some(path) = self.meta("profile_path")?
+        {
+            let path = Path::new(&path);
+            let profile = crate::profile::load(path)?;
+            if !crate::workspace_revision::configured_paths_match(
+                &snapshot.workspace_revisions,
+                &profile,
+                path,
+            ) {
+                bail!("workspace configuration changed; rescan before recording review results");
+            }
+        }
+        if snapshot.workspace_revisions.is_empty() {
+            if let Some(path) = self.meta("profile_path")? {
+                let path = Path::new(&path);
+                let profile = crate::profile::load(path)?;
+                let current = crate::workspace_revision::capture(&profile, path);
+                if current.iter().any(|revision| {
+                    revision.state != crate::workspace_revision::RepositoryState::NotGit
+                }) {
+                    bail!(
+                        "workspace Git context was not recorded; rescan before recording review results"
+                    );
+                }
+            }
+            return Ok(());
+        }
+        crate::workspace_revision::ensure_current(&snapshot.workspace_revisions)
+    }
     pub fn save_case(&mut self, case: &Case) -> Result<()> {
+        self.ensure_workspace_current()?;
         let body = serde_json::to_string(case)?;
         let current_snapshot = self.meta("last_snapshot")?;
         let active = current_snapshot

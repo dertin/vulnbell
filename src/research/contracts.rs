@@ -75,6 +75,9 @@ pub enum EventKind {
 #[serde(deny_unknown_fields)]
 pub struct ResearchEvent {
     pub upstream: String,
+    /// Workspace revisions recorded by the CLI at import time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     pub instance_ids: Vec<String>,
     /// Candidate instances examined when choosing the case scope.
     pub reviewed_instance_ids: Vec<String>,
@@ -153,6 +156,7 @@ pub struct ResearchPlan {
     pub schema_version: u32,
     pub project_id: String,
     pub snapshot_id: String,
+    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     pub targets: Vec<ResearchTarget>,
     /// Inventory instances outside tracker exploration; advisories are still scanned separately.
     pub tracker_scope: crate::profile::TrackerScope,

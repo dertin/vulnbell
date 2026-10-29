@@ -409,7 +409,7 @@ fn build_plan(
             context_reopened,
         });
     }
-    Ok(ResearchPlan {schema_version:1,project_id:snapshot.project_id,snapshot_id:snapshot.id,targets,tracker_scope:research.tracker_scope,deferred_transitive_instances,deferred_unknown_instances,scope_unselected,follow_suggestions:suggestions,follow_suggestions_total,next_cursor,required_agent_sites:vec!["github.com".into(),"gitlab.com".into(),"launchpad.net (bugs and merge proposals)".into()],policy:"Review issues, proposed changes, discussions, documentation, changelogs, releases and advisories at each selected mapped source. Deferred transitive and unknown-depth instances remain in the inventory and advisory scan, not proven safe; inspect follow_suggestions and add exact references to research.follow for targeted investigation where warranted. Exhaust relevant pages and linked context in the supplied window. Screen each item on its title, labels and full acquired body, not the title alone; for a proposed change also read the issue it closes. For every item with a security claim, answer from the item in source_facts: which advisory IDs it cites, which versions it says are affected, where it says the fix is (version, release or backport) and through which change, and which feature or configuration it requires; leave a field empty when the item does not say, never infer it. Then judge it against the monitored version. A seen event whose updated_at is unchanged and whose context_current is true keeps its recorded assessment and needs no new review; resend an event when it changed or its context_current is false. Only complete reviews advance source checkpoints. Follow next_cursor for remaining targets. seen_truncated means the prompt contains only a sample; the CLI still deduplicates all imported events. The initial window uses research.initial_since if configured, otherwise exact registry release dates when enabled or a 30 day fallback; shared targets use the earliest date. Later windows overlap the last completed review by 5 minutes. Earlier activity is outside this window, not established safe; advisory scans are independent.".into()})
+    Ok(ResearchPlan {schema_version:1,project_id:snapshot.project_id,snapshot_id:snapshot.id,workspace_revisions:snapshot.workspace_revisions,targets,tracker_scope:research.tracker_scope,deferred_transitive_instances,deferred_unknown_instances,scope_unselected,follow_suggestions:suggestions,follow_suggestions_total,next_cursor,required_agent_sites:vec!["github.com".into(),"gitlab.com".into(),"launchpad.net (bugs and merge proposals)".into()],policy:"Review issues, proposed changes, discussions, documentation, changelogs, releases and advisories at each selected mapped source. Deferred transitive and unknown-depth instances remain in the inventory and advisory scan, not proven safe; inspect follow_suggestions and add exact references to research.follow for targeted investigation where warranted. Exhaust relevant pages and linked context in the supplied window. Screen each item on its title, labels and full acquired body, not the title alone; for a proposed change also read the issue it closes. For every item with a security claim, answer from the item in source_facts: which advisory IDs it cites, which versions it says are affected, where it says the fix is (version, release or backport) and through which change, and which feature or configuration it requires; leave a field empty when the item does not say, never infer it. Then judge it against the monitored version. A seen event whose updated_at is unchanged and whose context_current is true keeps its recorded assessment and needs no new review; resend an event when it changed or its context_current is false. Only complete reviews advance source checkpoints. Follow next_cursor for remaining targets. seen_truncated means the prompt contains only a sample; the CLI still deduplicates all imported events. The initial window uses research.initial_since if configured, otherwise exact registry release dates when enabled or a 30 day fallback; shared targets use the earliest date. Later windows overlap the last completed review by 5 minutes. Earlier activity is outside this window, not established safe; advisory scans are independent.".into()})
 }
 fn tracker_context(
     instance_ids: &[String],
@@ -468,6 +468,7 @@ fn event_hash(
 pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json::Value> {
     use rusqlite::{OptionalExtension, params};
     let _lock = store.lock()?;
+    store.ensure_workspace_current()?;
     let plan = build_plan(store, "", usize::MAX, false)?;
     if batch.schema_version != 1
         || batch.project_id != plan.project_id
@@ -479,6 +480,9 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
         bail!("research batch exceeds limits");
     }
     let snapshot = store.latest()?;
+    for event in &mut batch.events {
+        event.workspace_revisions = snapshot.workspace_revisions.clone();
+    }
     let instance_index = index_instances(&snapshot.instances);
     let target_ids: HashMap<&str, HashSet<&str>> = plan
         .targets
@@ -742,6 +746,7 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
                 case_id,
                 project_id: batch.project_id.clone(),
                 snapshot_id: batch.snapshot_id.clone(),
+                workspace_revisions: snapshot.workspace_revisions.clone(),
                 instances: instances.clone(),
                 claims: Vec::new(),
                 upstream_events: vec![upstream_event.clone()],

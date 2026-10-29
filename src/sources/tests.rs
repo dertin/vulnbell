@@ -178,6 +178,7 @@ fn prior_advisory_refreshes_deferred_repository_without_expanding_tracker_scope(
         known_exploited: false,
     };
     let case = Case {
+        workspace_revisions: Vec::new(),
         schema_version: 1,
         case_id: "fixture".into(),
         project_id: project.clone(),
@@ -238,6 +239,7 @@ fn case_advisory_promotion_requires_official_published_matching_source_and_exact
         kind: EvidenceKind::Context,
     };
     let mut case = Case {
+        workspace_revisions: Vec::new(),
         schema_version: 1,
         case_id: "fixture".into(),
         project_id: "fixture".into(),

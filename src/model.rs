@@ -44,6 +44,9 @@ pub struct Provenance {
     pub sha256: String,
     pub observed_at: String,
     pub workspace: Option<String>,
+    /// Fingerprint of the Git workspaces reviewed with this inventory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_context_sha256: Option<String>,
     pub direct: Option<bool>,
     pub resolution: Option<String>,
     pub artifact_integrity: Option<String>,
@@ -105,6 +108,7 @@ impl Instance {
                 ),
                 observed_at: crate::now(),
                 workspace: None,
+                workspace_context_sha256: None,
                 direct: Some(true),
                 resolution: None,
                 artifact_integrity: None,
@@ -138,7 +142,12 @@ impl Instance {
             &self.purl,
             declaration,
         );
-        crate::digest(&serde_json::to_vec(&context).expect("instance context serializes"))
+        let original =
+            crate::digest(&serde_json::to_vec(&context).expect("instance context serializes"));
+        match &self.provenance.workspace_context_sha256 {
+            Some(git_context) => crate::digest(format!("{original}:{git_context}").as_bytes()),
+            None => original,
+        }
     }
 
     /// True when a previously mapped upstream or CPE now points elsewhere.
@@ -247,6 +256,9 @@ pub struct Case {
     pub case_id: String,
     pub project_id: String,
     pub snapshot_id: String,
+    /// Git workspaces that bound the facts and review for this case.
+    #[serde(default)]
+    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     pub instances: Vec<Instance>,
     pub claims: Vec<Claim>,
     pub upstream_events: Vec<UpstreamEvent>,
@@ -274,6 +286,9 @@ pub struct Snapshot {
     pub profile_sha256: String,
     pub started_at: String,
     pub finished_at: String,
+    /// Workspace state at the start and end of the scan.
+    #[serde(default)]
+    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     pub instances: Vec<Instance>,
     pub coverage: Vec<Coverage>,
     pub cases: Vec<Case>,
@@ -285,6 +300,9 @@ pub struct Snapshot {
 pub struct Verdict {
     pub schema_version: u32,
     pub case_id: String,
+    /// Recorded by the CLI from the current case.
+    #[serde(default)]
+    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     pub facts_sha256: String,
     pub applicability: Applicability,
     pub verification: Verification,

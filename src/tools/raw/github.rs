@@ -1,7 +1,7 @@
 use super::{FetchTool, MissingFetch};
 use super::{
-    GitHubLabel, GitHubRelease, MAX_PAGES, RawReader, TargetItems, body, closes, read_values,
-    relative, rest_records, time, utc_z,
+    GitHubLabel, GitHubRelease, MAX_JSON_VALUES, MAX_PAGES, RawReader, TargetItems, body, closes,
+    count_json_values, read_values, relative, rest_records, time, utc_z,
 };
 use crate::research::ResearchTarget;
 use crate::tools::{AdvisoryPackage, Item, ItemKind, RepositoryAdvisory};
@@ -48,7 +48,15 @@ pub(super) fn read_github(
         let mut complete = false;
         for page in 1..=MAX_PAGES {
             let path = directory.join(format!("{name}.page-{page}.json"));
-            let values = match read_values(raw, &path) {
+            let value_budget_before = raw.budget.remaining_values;
+            if matches!(name, "issues" | "releases") {
+                raw.budget.remaining_values = MAX_JSON_VALUES;
+            }
+            let read_result = read_values(raw, &path);
+            if matches!(name, "issues" | "releases") {
+                raw.budget.remaining_values = value_budget_before;
+            }
+            let values = match read_result {
                 Ok(Some(values)) => values,
                 Ok(None) => {
                     result.missing.push(MissingFetch {
@@ -65,7 +73,14 @@ pub(super) fn read_github(
                 }
             };
             match rest_records(values) {
-                Ok(page_records) if page_records.len() <= 100 => {
+                Ok(mut page_records) if page_records.len() <= 100 => {
+                    if matches!(name, "issues" | "releases")
+                        && let Err(error) =
+                            compact_github_page(name, &mut page_records, raw, value_budget_before)
+                    {
+                        result.errors.push(format!("{}: {error}", relative(&path)));
+                        break;
+                    }
                     let last_page = page_records.len() < 100;
                     records.extend(page_records);
                     if last_page {
@@ -129,6 +144,61 @@ pub(super) fn read_github(
             Err(error) => result.errors.push(format!("{}: {error}", relative(&path))),
         }
     }
+}
+
+fn compact_github_page(
+    name: &str,
+    records: &mut [Value],
+    raw: &mut RawReader<'_>,
+    previous_budget: u64,
+) -> Result<()> {
+    for record in records.iter_mut() {
+        if let Value::Object(fields) = record {
+            if name == "releases" {
+                fields.retain(|key, _| {
+                    matches!(
+                        key.as_str(),
+                        "tag_name"
+                            | "name"
+                            | "html_url"
+                            | "published_at"
+                            | "created_at"
+                            | "updated_at"
+                            | "body"
+                            | "draft"
+                    )
+                });
+            } else {
+                fields.retain(|key, _| {
+                    matches!(
+                        key.as_str(),
+                        "number"
+                            | "title"
+                            | "html_url"
+                            | "state"
+                            | "updated_at"
+                            | "labels"
+                            | "body"
+                            | "pull_request"
+                    )
+                });
+                if let Some(Value::Array(labels)) = fields.get_mut("labels") {
+                    for label in labels {
+                        if let Value::Object(fields) = label {
+                            fields.retain(|key, _| key == "name");
+                        }
+                    }
+                }
+                if let Some(Value::Object(pull_request)) = fields.get_mut("pull_request") {
+                    pull_request.clear();
+                }
+            }
+        }
+    }
+    let projected = serde_json::to_vec(records)?;
+    let retained = count_json_values(&projected, previous_budget)?;
+    raw.budget.remaining_values = previous_budget - retained;
+    Ok(())
 }
 
 #[derive(Deserialize)]

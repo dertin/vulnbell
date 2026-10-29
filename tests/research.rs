@@ -353,6 +353,7 @@ fn scoped_event_stays_current_until_a_reviewed_candidate_changes() {
     let target = &plan.targets[0];
     let selected = target.instance_ids[0].clone();
     let event = ResearchEvent {
+        workspace_revisions: Vec::new(),
         upstream: target.upstream.clone(),
         instance_ids: vec![selected.clone()],
         reviewed_instance_ids: target.instance_ids.clone(),
@@ -453,6 +454,7 @@ fn shared_upstream_event_opens_one_case_and_not_applicable_needs_a_reason() {
     let target = &plan.targets[0];
     assert_eq!(target.instance_ids.len(), 2);
     let event = |url: &str, assessment, reason| ResearchEvent {
+        workspace_revisions: Vec::new(),
         upstream: target.upstream.clone(),
         instance_ids: target.instance_ids.clone(),
         reviewed_instance_ids: target.instance_ids.clone(),
@@ -565,6 +567,96 @@ fn shared_upstream_event_opens_one_case_and_not_applicable_needs_a_reason() {
     drop(store);
     fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
 }
+
+#[test]
+fn research_case_reopens_against_the_current_version_after_an_upgrade() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = uuid::Uuid::new_v4().to_string();
+    let path = directory.path().join("vulnbell.yaml");
+    let profile_text = format!(
+        "schema: 1\nproject_id: {project}\nname: version-fixture\ncomponents:\n  - ref: example-core\n    version: '1.0.0'\n    upstream: https://launchpad.net/example\n  - ref: example-server\n    version: '1.0.0'\n    upstream: https://launchpad.net/example\n"
+    );
+    fs::write(&path, &profile_text).unwrap();
+    let profile = vulnbell::profile::load(&path).unwrap();
+    vulnbell::engine::scan(&profile, &path, true).unwrap();
+    let mut store = Store::open(&project).unwrap();
+    let plan = vulnbell::research::plan_page(&store, "", 20).unwrap();
+    let target = &plan.targets[0];
+    let event = ResearchEvent {
+        workspace_revisions: Vec::new(),
+        upstream: target.upstream.clone(),
+        instance_ids: target.instance_ids.clone(),
+        reviewed_instance_ids: target.instance_ids.clone(),
+        provider: "launchpad".into(),
+        external_id: "1".into(),
+        kind: EventKind::Issue,
+        url: "https://bugs.launchpad.net/example/+bug/1".into(),
+        title: "Synthetic issue".into(),
+        excerpt: "Synthetic evidence".into(),
+        updated_at: target.until.clone(),
+        assessment: Assessment::Review,
+        not_applicable_reason: None,
+        rationale: "The source needs review".into(),
+        source_facts: Default::default(),
+    };
+    vulnbell::research::import(
+        &mut store,
+        ResearchBatch {
+            schema_version: 1,
+            project_id: project.clone(),
+            snapshot_id: plan.snapshot_id,
+            sources: vec![SourceReview {
+                upstream: target.upstream.clone(),
+                from: target.from.clone(),
+                until: target.until.clone(),
+                coverage: ReviewCoverage::Partial,
+                detail: "Synthetic review".into(),
+                continuation: None,
+            }],
+            events: vec![event],
+        },
+    )
+    .unwrap();
+    let old = store.cases().unwrap().remove(0);
+    drop(store);
+
+    fs::write(
+        &path,
+        profile_text.replacen("version: '1.0.0'", "version: '2.0.0'", 1),
+    )
+    .unwrap();
+    let profile = vulnbell::profile::load(&path).unwrap();
+    let snapshot = vulnbell::engine::scan(&profile, &path, true).unwrap();
+    let current = snapshot
+        .cases
+        .iter()
+        .find(|case| case.case_id == old.case_id)
+        .unwrap();
+    assert_ne!(current.facts_sha256, old.facts_sha256);
+    assert_eq!(current.decision, Decision::Review);
+    assert_eq!(current.upstream_events.len(), 1);
+    assert!(current.instances.iter().all(|instance| {
+        snapshot
+            .instances
+            .iter()
+            .any(|active| active.id == instance.id)
+    }));
+    assert!(
+        current
+            .instances
+            .iter()
+            .any(|instance| instance.reference == "example-core"
+                && instance.resolved_version.as_deref() == Some("2.0.0"))
+    );
+    assert!(
+        current
+            .instances
+            .iter()
+            .any(|instance| instance.reference == "example-server"
+                && instance.resolved_version.as_deref() == Some("1.0.0"))
+    );
+    fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+}
 #[test]
 fn agent_reviews_github_gitlab_launchpad_with_dedupe_and_failure_safe_checkpoints() {
     let directory = tempfile::tempdir().unwrap();
@@ -596,6 +688,7 @@ fn agent_reviews_github_gitlab_launchpad_with_dedupe_and_failure_safe_checkpoint
     .into_iter()
     .enumerate()
     .map(|(index, (provider, url, kind))| ResearchEvent {
+        workspace_revisions: Vec::new(),
         upstream: target.upstream.clone(),
         instance_ids: target.instance_ids.clone(),
         reviewed_instance_ids: target.instance_ids.clone(),
@@ -780,6 +873,7 @@ fn same_link_from_distinct_upstreams_preserves_each_case() {
         .iter()
         .enumerate()
         .map(|(index, target)| ResearchEvent {
+            workspace_revisions: Vec::new(),
             upstream: target.upstream.clone(),
             instance_ids: target.instance_ids.clone(),
             reviewed_instance_ids: target.instance_ids.clone(),

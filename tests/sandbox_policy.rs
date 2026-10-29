@@ -19,6 +19,7 @@ fn unavailable_guest_returns_inconclusive_without_executing_the_test_on_the_host
     };
     let instance = Instance::declared(&component);
     let case = Case {
+        workspace_revisions: Vec::new(),
         schema_version: 1,
         case_id: "SIG-synthetic-unavailable".into(),
         project_id: project.clone(),

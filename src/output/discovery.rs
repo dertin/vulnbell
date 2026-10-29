@@ -10,6 +10,14 @@ use std::collections::{BTreeSet, HashMap};
 const SUMMARY_LIST: usize = 30;
 
 pub fn discovery_markdown(report: &MorningReport) -> String {
+    render_discovery(report, true)
+}
+
+pub(super) fn discovery_summary_markdown(report: &MorningReport) -> String {
+    render_discovery(report, false)
+}
+
+fn render_discovery(report: &MorningReport, detailed_sources: bool) -> String {
     let language = report.language;
     let words = text::text(language);
     let mut text = String::new();
@@ -78,6 +86,9 @@ pub fn discovery_markdown(report: &MorningReport) -> String {
                 &without_repository.len(),
             ],
         ));
+        if !detailed_sources {
+            return text;
+        }
         if !without_repository.is_empty() {
             let mut names: Vec<&str> = without_repository.clone();
             names.sort_unstable();

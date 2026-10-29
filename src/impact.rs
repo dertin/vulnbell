@@ -68,6 +68,7 @@ pub struct ImpactTarget {
 pub struct ImpactPlan {
     pub schema_version: u32,
     pub case_id: String,
+    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     pub facts_sha256: String,
     pub affected_version_confirmed: bool,
     pub targets: Vec<ImpactTarget>,
@@ -106,6 +107,8 @@ pub struct InstanceImpact {
 pub struct ImpactResult {
     pub schema_version: u32,
     pub case_id: String,
+    #[serde(default)]
+    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     pub facts_sha256: String,
     pub verdict: ImpactVerdict,
     pub confidence: ImpactConfidence,
@@ -118,6 +121,7 @@ pub fn plan(case: &Case, store: &Store) -> ImpactPlan {
     ImpactPlan {
         schema_version: 1,
         case_id: case.case_id.clone(),
+        workspace_revisions: case.workspace_revisions.clone(),
         facts_sha256: case.facts_sha256.clone(),
         affected_version_confirmed: case
             .instances
@@ -140,6 +144,7 @@ pub fn plan(case: &Case, store: &Store) -> ImpactPlan {
 
 pub fn assess(store: &mut Store, id: &str, submission: ImpactSubmission) -> Result<ImpactResult> {
     let _lock = store.lock()?;
+    store.ensure_workspace_current()?;
     let mut case = store.case(id)?;
     validate_submission(&case, store, id, &submission)?;
 
@@ -165,6 +170,7 @@ pub fn assess(store: &mut Store, id: &str, submission: ImpactSubmission) -> Resu
     let result = ImpactResult {
         schema_version: 1,
         case_id: case.case_id.clone(),
+        workspace_revisions: case.workspace_revisions.clone(),
         facts_sha256: case.facts_sha256.clone(),
         verdict: aggregate_verdict(&instances),
         confidence: aggregate_confidence(&instances),

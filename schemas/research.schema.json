@@ -47,6 +47,14 @@
         }
       ]
     },
+    "RepositoryState": {
+      "enum": [
+        "git",
+        "not_git",
+        "unavailable"
+      ],
+      "type": "string"
+    },
     "ResearchEvent": {
       "additionalProperties": false,
       "properties": {
@@ -116,6 +124,13 @@
         },
         "url": {
           "type": "string"
+        },
+        "workspace_revisions": {
+          "description": "Workspace revisions recorded by the CLI at import time.",
+          "items": {
+            "$ref": "#/$defs/WorkspaceRevision"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -230,6 +245,57 @@
         "until",
         "coverage",
         "detail"
+      ],
+      "type": "object"
+    },
+    "WorkspaceRevision": {
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dirty": {
+          "description": "Changes excluding private paths, ignored files and submodule contents.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "repository": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/RepositoryState"
+        },
+        "workspace": {
+          "type": "string"
+        },
+        "worktree_status_sha256": {
+          "description": "Hash of Git's status entries and changed files, without retaining names or contents.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "workspace",
+        "state",
+        "observed_at"
       ],
       "type": "object"
     }

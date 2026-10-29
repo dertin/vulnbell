@@ -69,6 +69,13 @@
         "upstream": {
           "description": "Upstream reported by `tools hits`.",
           "type": "string"
+        },
+        "workspace_revisions": {
+          "description": "Workspace revisions reported by `tools hits` for this reading.",
+          "items": {
+            "$ref": "#/$defs/WorkspaceRevision"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -99,6 +106,14 @@
           "type": "string"
         }
       ]
+    },
+    "RepositoryState": {
+      "enum": [
+        "git",
+        "not_git",
+        "unavailable"
+      ],
+      "type": "string"
     },
     "SourceFacts": {
       "additionalProperties": false,
@@ -133,6 +148,57 @@
           "type": "string"
         }
       },
+      "type": "object"
+    },
+    "WorkspaceRevision": {
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dirty": {
+          "description": "Changes excluding private paths, ignored files and submodule contents.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "repository": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/RepositoryState"
+        },
+        "workspace": {
+          "type": "string"
+        },
+        "worktree_status_sha256": {
+          "description": "Hash of Git's status entries and changed files, without retaining names or contents.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "workspace",
+        "state",
+        "observed_at"
+      ],
       "type": "object"
     }
   },

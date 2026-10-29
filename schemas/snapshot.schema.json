@@ -85,6 +85,14 @@
         },
         "verification": {
           "$ref": "#/$defs/Verification"
+        },
+        "workspace_revisions": {
+          "default": [],
+          "description": "Git workspaces that bound the facts and review for this case.",
+          "items": {
+            "$ref": "#/$defs/WorkspaceRevision"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -363,6 +371,13 @@
             "string",
             "null"
           ]
+        },
+        "workspace_context_sha256": {
+          "description": "Fingerprint of the Git workspaces reviewed with this inventory.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -389,6 +404,14 @@
         "evidence"
       ],
       "type": "object"
+    },
+    "RepositoryState": {
+      "enum": [
+        "git",
+        "not_git",
+        "unavailable"
+      ],
+      "type": "string"
     },
     "SandboxAvailability": {
       "properties": {
@@ -489,6 +512,57 @@
         "disproven"
       ],
       "type": "string"
+    },
+    "WorkspaceRevision": {
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dirty": {
+          "description": "Changes excluding private paths, ignored files and submodule contents.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "repository": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/RepositoryState"
+        },
+        "workspace": {
+          "type": "string"
+        },
+        "worktree_status_sha256": {
+          "description": "Hash of Git's status entries and changed files, without retaining names or contents.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "workspace",
+        "state",
+        "observed_at"
+      ],
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -536,6 +610,14 @@
     },
     "started_at": {
       "type": "string"
+    },
+    "workspace_revisions": {
+      "default": [],
+      "description": "Workspace state at the start and end of the scan.",
+      "items": {
+        "$ref": "#/$defs/WorkspaceRevision"
+      },
+      "type": "array"
     }
   },
   "required": [

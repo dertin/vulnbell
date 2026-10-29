@@ -515,6 +515,13 @@
         },
         "verdict": {
           "$ref": "#/$defs/ImpactVerdict"
+        },
+        "workspace_revisions": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WorkspaceRevision"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -780,6 +787,14 @@
       ],
       "type": "object"
     },
+    "RepositoryState": {
+      "enum": [
+        "git",
+        "not_git",
+        "unavailable"
+      ],
+      "type": "string"
+    },
     "ReviewHandoff": {
       "additionalProperties": false,
       "description": "A reviewed case may be handed off with open uncertainty without requiring a laboratory test.",
@@ -939,6 +954,77 @@
         "disproven"
       ],
       "type": "string"
+    },
+    "WorkspaceComparison": {
+      "properties": {
+        "current": {
+          "$ref": "#/$defs/WorkspaceRevision"
+        },
+        "matches": {
+          "description": "The recorded Git identity and available changed-file fingerprint match.",
+          "type": "boolean"
+        },
+        "reviewed": {
+          "$ref": "#/$defs/WorkspaceRevision"
+        }
+      },
+      "required": [
+        "reviewed",
+        "current",
+        "matches"
+      ],
+      "type": "object"
+    },
+    "WorkspaceRevision": {
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dirty": {
+          "description": "Changes excluding private paths, ignored files and submodule contents.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "repository": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/RepositoryState"
+        },
+        "workspace": {
+          "type": "string"
+        },
+        "worktree_status_sha256": {
+          "description": "Hash of Git's status entries and changed files, without retaining names or contents.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "workspace",
+        "state",
+        "observed_at"
+      ],
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1058,6 +1144,19 @@
         "$ref": "#/$defs/PendingVerification"
       },
       "type": "array"
+    },
+    "workspace_context_unrecorded": {
+      "type": "boolean"
+    },
+    "workspace_revisions": {
+      "description": "Git identities recorded by the scan and the workspace state at report time.",
+      "items": {
+        "$ref": "#/$defs/WorkspaceComparison"
+      },
+      "type": "array"
+    },
+    "workspace_scope_changed": {
+      "type": "boolean"
     }
   },
   "required": [
@@ -1068,6 +1167,9 @@
     "project_name",
     "generated_at",
     "last_scan",
+    "workspace_revisions",
+    "workspace_context_unrecorded",
+    "workspace_scope_changed",
     "inventory",
     "actionable",
     "needs_review",

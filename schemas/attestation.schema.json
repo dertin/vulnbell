@@ -58,6 +58,14 @@
       ],
       "type": "string"
     },
+    "RepositoryState": {
+      "enum": [
+        "git",
+        "not_git",
+        "unavailable"
+      ],
+      "type": "string"
+    },
     "Verification": {
       "enum": [
         "source_confirmed",
@@ -67,6 +75,57 @@
         "disproven"
       ],
       "type": "string"
+    },
+    "WorkspaceRevision": {
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dirty": {
+          "description": "Changes excluding private paths, ignored files and submodule contents.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "repository": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/RepositoryState"
+        },
+        "workspace": {
+          "type": "string"
+        },
+        "worktree_status_sha256": {
+          "description": "Hash of Git's status entries and changed files, without retaining names or contents.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "workspace",
+        "state",
+        "observed_at"
+      ],
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -183,6 +242,13 @@
     },
     "verification": {
       "$ref": "#/$defs/Verification"
+    },
+    "workspace_revisions": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/WorkspaceRevision"
+      },
+      "type": "array"
     }
   },
   "required": [

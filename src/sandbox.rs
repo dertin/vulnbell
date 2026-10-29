@@ -75,6 +75,8 @@ pub enum BlockerKind {
 pub struct VerificationBlocker {
     pub schema_version: u32,
     pub case_id: String,
+    #[serde(default)]
+    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     pub facts_sha256: String,
     pub instance_id: String,
     /// Absent for failed runs; an uncategorized blocker does not settle a needed check.
@@ -95,6 +97,7 @@ pub fn record_blocker(
     reason: &str,
 ) -> Result<Case> {
     let _lock = store.lock()?;
+    store.ensure_workspace_current()?;
     let mut case = store.case(id)?;
     let instance_ids: Vec<String> = match instance_id {
         Some(instance_id) => vec![instance_id.to_owned()],
@@ -119,6 +122,7 @@ pub fn clear_blocker(
     reason: &str,
 ) -> Result<Case> {
     let _lock = store.lock()?;
+    store.ensure_workspace_current()?;
     let mut case = store.case(id)?;
     let ids: Vec<String> = match instance_id {
         Some(id) => vec![id.to_owned()],
@@ -155,6 +159,7 @@ fn append_blocker(
     let blocker = VerificationBlocker {
         schema_version: 1,
         case_id: case.case_id.clone(),
+        workspace_revisions: case.workspace_revisions.clone(),
         facts_sha256: case.facts_sha256.clone(),
         instance_id: instance_id.into(),
         kind,
@@ -241,6 +246,8 @@ pub struct Attestation {
     pub schema_version: u32,
     pub project_id: String,
     pub case_id: String,
+    #[serde(default)]
+    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     pub facts_sha256: String,
     pub instance_id: String,
     pub artifact_version: String,
@@ -345,6 +352,7 @@ pub fn verify(
         );
     }
     let _lock = store.lock()?;
+    store.ensure_workspace_current()?;
     let mut case = store.case(id)?;
     let test_bytes = crate::read_limited(spec_path, 1024 * 1024)?;
     let test: TestSpec = crate::parse_yaml(&test_bytes)?;
@@ -538,6 +546,7 @@ pub fn verify(
         schema_version: 2,
         project_id: case.project_id.clone(),
         case_id: case.case_id.clone(),
+        workspace_revisions: case.workspace_revisions.clone(),
         facts_sha256: case.facts_sha256.clone(),
         instance_id: test.instance_id.clone(),
         artifact_version: test.artifact_version.clone(),
