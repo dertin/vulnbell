@@ -452,6 +452,131 @@ fn npm_nested_versions_do_not_inherit_the_root_directness() {
 }
 
 #[test]
+fn npm_workspaces_resolve_hoisted_and_nested_direct_dependencies() {
+    let lock = br#"{
+      "lockfileVersion": 3,
+      "packages": {
+        "": {"workspaces":["packages/*"],"dependencies":{"foo":"2.0.0","local":"file:vendor/local"}},
+        "node_modules/app": {"resolved":"packages/app","link":true},
+        "node_modules/local": {"resolved":"vendor/local","link":true},
+        "packages/app": {"name":"app","version":"1.0.0","dependencies":{"foo":"1.0.0","hoisted":"3.0.0","alias":"npm:real@4.0.0"},"devDependencies":{"@scope/dev":"5.0.0"}},
+        "vendor/local": {"name":"local","version":"1.0.0","dependencies":{"transitive":"1.0.0"}},
+        "node_modules/foo": {"version":"2.0.0"},
+        "packages/app/node_modules/foo": {"version":"1.0.0"},
+        "node_modules/hoisted": {"version":"3.0.0"},
+        "node_modules/alias": {"name":"real","version":"4.0.0"},
+        "node_modules/@scope/dev": {"version":"5.0.0"},
+        "node_modules/transitive": {"version":"1.0.0"},
+        "node_modules/parent/node_modules/hoisted": {"version":"2.0.0"}
+      }
+    }"#;
+    let packages = parse_lock("package-lock.json", lock).unwrap();
+    let at = |path: &str| {
+        packages
+            .iter()
+            .find(|package| package.resolution.as_deref() == Some(path))
+            .unwrap()
+    };
+    assert_eq!(at("node_modules/foo").direct, Some(true));
+    assert_eq!(at("packages/app/node_modules/foo").direct, Some(true));
+    assert_eq!(at("node_modules/hoisted").direct, Some(true));
+    assert_eq!(at("node_modules/alias").name, "real");
+    assert_eq!(at("node_modules/alias").direct, Some(true));
+    assert_eq!(at("node_modules/@scope/dev").direct, Some(true));
+    assert_eq!(at("node_modules/transitive").direct, Some(false));
+    assert_eq!(
+        at("node_modules/parent/node_modules/hoisted").direct,
+        Some(false)
+    );
+    assert!(
+        !packages
+            .iter()
+            .any(|package| package.name == "app" || package.name == "local")
+    );
+}
+
+#[test]
+fn npm_workspace_patterns_and_unresolved_dependencies_preserve_uncertainty() {
+    let lock = br#"{
+      "lockfileVersion": 2,
+      "packages": {
+        "": {"workspaces":{"packages":["packages/*","!packages/excluded"]}},
+        "packages/app": {"dependencies":{"shared":"1","missing":"1"}},
+        "packages/excluded": {"dependencies":{"excluded-dep":"1"}},
+        "node_modules/shared": {"version":"1.0.0"},
+        "node_modules/excluded-dep": {"version":"1.0.0"},
+        "node_modules/other/node_modules/missing": {"version":"1.0.0"}
+      }
+    }"#;
+    let packages = parse_lock("package-lock.json", lock).unwrap();
+    let direct = |name: &str| {
+        packages
+            .iter()
+            .find(|package| package.name == name)
+            .unwrap()
+            .direct
+    };
+    assert_eq!(direct("shared"), Some(true));
+    assert_eq!(direct("excluded-dep"), Some(false));
+    assert_eq!(direct("missing"), None);
+
+    let unsupported =
+        br#"{"lockfileVersion":3,"packages":{"":{"workspaces":["packages/!(excluded)"]}}}"#;
+    assert!(parse_lock("package-lock.json", unsupported).is_err());
+
+    let unknown_scope = br#"{"lockfileVersion":3,"packages":{"":{},"packages/app":{"dependencies":{"foo":"1"}},"node_modules/foo":{"version":"1.0.0"}}}"#;
+    assert_eq!(
+        parse_lock("package-lock.json", unknown_scope).unwrap()[0].direct,
+        None
+    );
+}
+
+#[test]
+fn npm_workspace_directness_replaces_cached_inventory_for_research() {
+    use vulnbell::inventory::{LockedPackage, discover};
+    use vulnbell::store::Store;
+
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = directory.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let lock = br#"{"lockfileVersion":3,"packages":{"":{"workspaces":["packages/*"]},"packages/app":{"dependencies":{"foo":"1.0.0"}},"node_modules/foo":{"version":"1.0.0"}}}"#;
+    fs::write(workspace.join("package-lock.json"), lock).unwrap();
+    let project = uuid::Uuid::new_v4().to_string();
+    let store = Store::open(&project).unwrap();
+    let previous = LockedPackage {
+        ecosystem: "npm".into(),
+        name: "foo".into(),
+        version: "1.0.0".into(),
+        direct: Some(false),
+        resolution: Some("node_modules/foo".into()),
+        artifact_integrity: None,
+        line: None,
+    };
+    store
+        .connection
+        .execute(
+            "INSERT INTO inventory_cache VALUES (?1, ?2)",
+            rusqlite::params![
+                format!("parser-v6:package-lock.json:{}", vulnbell::digest(lock)),
+                serde_json::to_string(&vec![previous]).unwrap()
+            ],
+        )
+        .unwrap();
+    let inventory = discover(
+        &[workspace.to_string_lossy().into_owned()],
+        &directory.path().join("vulnbell.yaml"),
+        &store,
+        10,
+    );
+    assert_eq!(inventory.instances.len(), 1);
+    assert_eq!(inventory.instances[0].provenance.direct, Some(true));
+    assert!(vulnbell::profile::Research::default().tracks(&inventory.instances[0]));
+    let store_dir = store.directory.clone();
+    drop(store);
+    fs::remove_dir_all(store_dir).unwrap();
+}
+
+#[test]
 fn private_cargo_registry_never_inherits_public_identity() {
     let lock = br#"version = 4
 [[package]]

@@ -4,6 +4,7 @@
 
 - Monitor declared products and dependency inventories using public advisories and selected upstream trackers.
 - Discover dependencies and map official sources with explicit coverage gaps for unsupported or deferred inputs.
+- Identify direct npm dependencies across workspace importers and installed paths.
 - Review tracker items against exact monitored versions, record evidence and resume incomplete work.
 - Resolve linked GitHub discussions as context when an issue lookup returns 404.
 - Record Git revisions and changed-worktree fingerprints with review evidence.

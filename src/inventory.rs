@@ -2,7 +2,7 @@ use crate::model::{Coverage, CoverageState, Instance, Origin, Provenance};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
 };
 
@@ -70,6 +70,7 @@ struct NpmPackage {
     integrity: Option<String>,
     #[serde(default)]
     link: bool,
+    workspaces: Option<NpmWorkspaces>,
     #[serde(default)]
     dependencies: BTreeMap<String, String>,
     #[serde(default, rename = "devDependencies")]
@@ -78,6 +79,131 @@ struct NpmPackage {
     optional_dependencies: BTreeMap<String, String>,
     #[serde(default, rename = "peerDependencies")]
     peer_dependencies: BTreeMap<String, String>,
+}
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum NpmWorkspaces {
+    Patterns(Vec<String>),
+    Packages { packages: Vec<String> },
+}
+
+fn npm_installed_path(path: &str) -> bool {
+    path.starts_with("node_modules/") || path.contains("/node_modules/")
+}
+
+fn npm_workspace_patterns(root: &NpmPackage) -> Result<Vec<(bool, globset::GlobMatcher)>> {
+    let patterns = match root.workspaces.as_ref() {
+        Some(
+            NpmWorkspaces::Patterns(patterns) | NpmWorkspaces::Packages { packages: patterns },
+        ) => patterns,
+        None => return Ok(Vec::new()),
+    };
+    if patterns.len() > 1000 {
+        bail!("npm workspace pattern limit exceeded");
+    }
+    let mut included: Vec<(String, globset::GlobMatcher)> = Vec::new();
+    let mut excluded: Vec<globset::GlobMatcher> = Vec::new();
+    for raw in patterns {
+        if raw.len() > 4096 {
+            bail!("npm workspace pattern exceeds size limit");
+        }
+        let negations = raw.bytes().take_while(|byte| *byte == b'!').count();
+        let normalized = raw[negations..].replace('\\', "/");
+        let pattern = normalized
+            .trim_start_matches("./")
+            .trim_start_matches('/')
+            .trim_end_matches('/');
+        if pattern.is_empty()
+            || raw.contains("!(")
+            || ["!(", "@(", "+(", "?(", "*("]
+                .iter()
+                .any(|part| pattern.contains(part))
+        {
+            bail!("unsupported npm workspace pattern");
+        }
+        let matcher = globset::GlobBuilder::new(pattern)
+            .literal_separator(true)
+            .build()
+            .context("invalid npm workspace pattern")?
+            .compile_matcher();
+        if negations % 2 == 0 {
+            excluded.retain(|previous| !previous.is_match(pattern));
+            included.push((pattern.to_owned(), matcher));
+        } else {
+            excluded.push(matcher);
+        }
+    }
+    included.retain(|(pattern, _)| !excluded.iter().any(|negative| negative.is_match(pattern)));
+    Ok(included
+        .into_iter()
+        .map(|(_, matcher)| (true, matcher))
+        .chain(excluded.into_iter().map(|matcher| (false, matcher)))
+        .collect())
+}
+
+fn npm_direct_paths(
+    packages: &BTreeMap<String, NpmPackage>,
+) -> Result<Option<(HashSet<String>, HashSet<String>)>> {
+    let Some(root) = packages.get("") else {
+        return Ok(None);
+    };
+    let patterns = npm_workspace_patterns(root)?;
+    let mut direct = HashSet::new();
+    let mut unresolved = HashSet::new();
+    for (path, importer) in packages {
+        if !path.is_empty() {
+            if npm_installed_path(path) {
+                continue;
+            }
+            if root.workspaces.is_none() {
+                unresolved.extend(
+                    importer
+                        .dependencies
+                        .keys()
+                        .chain(importer.dev_dependencies.keys())
+                        .chain(importer.optional_dependencies.keys())
+                        .chain(importer.peer_dependencies.keys())
+                        .cloned(),
+                );
+                continue;
+            }
+            let mut matched = false;
+            for (include, pattern) in &patterns {
+                if pattern.is_match(path) {
+                    matched = *include;
+                }
+            }
+            if !matched {
+                continue;
+            }
+        }
+        for name in importer
+            .dependencies
+            .keys()
+            .chain(importer.dev_dependencies.keys())
+            .chain(importer.optional_dependencies.keys())
+            .chain(importer.peer_dependencies.keys())
+        {
+            let mut directory = path.as_str();
+            loop {
+                let candidate = if directory.is_empty() {
+                    format!("node_modules/{name}")
+                } else {
+                    format!("{directory}/node_modules/{name}")
+                };
+                if packages.contains_key(&candidate) {
+                    direct.insert(candidate);
+                    break;
+                }
+                if directory.is_empty() {
+                    unresolved.insert(name.clone());
+                    break;
+                }
+                directory = directory.rsplit_once('/').map_or("", |(parent, _)| parent);
+            }
+        }
+    }
+    Ok(Some((direct, unresolved)))
 }
 #[derive(Deserialize)]
 struct PnpmLock {
@@ -318,18 +444,9 @@ pub fn parse_lock(filename: &str, bytes: &[u8]) -> Result<Vec<LockedPackage>> {
                 }
                 visit(lock.dependencies, &mut packages, 0, "")?;
             } else if matches!(lock.version, 2 | 3) {
-                let direct_names: Option<std::collections::HashSet<String>> =
-                    lock.packages.get("").map(|root| {
-                        root.dependencies
-                            .keys()
-                            .chain(root.dev_dependencies.keys())
-                            .chain(root.optional_dependencies.keys())
-                            .chain(root.peer_dependencies.keys())
-                            .cloned()
-                            .collect()
-                    });
+                let direct_paths = npm_direct_paths(&lock.packages)?;
                 for (path, package) in lock.packages {
-                    if path.is_empty() || package.link {
+                    if !npm_installed_path(&path) || package.link {
                         continue;
                     }
                     let name = match package.name {
@@ -344,10 +461,17 @@ pub fn parse_lock(filename: &str, bytes: &[u8]) -> Result<Vec<LockedPackage>> {
                     if version.starts_with("file:") || version.starts_with("git") {
                         bail!("nonregistry npm package: identity unresolved");
                     }
-                    let direct = direct_names.as_ref().map(|names| {
-                        names
-                            .iter()
-                            .any(|declared_name| path == format!("node_modules/{declared_name}"))
+                    let direct = direct_paths.as_ref().and_then(|(paths, unresolved)| {
+                        if paths.contains(&path) {
+                            Some(true)
+                        } else if path
+                            .rsplit_once("node_modules/")
+                            .is_some_and(|(_, name)| unresolved.contains(name))
+                        {
+                            None
+                        } else {
+                            Some(false)
+                        }
                     });
                     let mut target = locked("npm", name, version);
                     target.direct = direct;
@@ -642,7 +766,7 @@ pub fn discover(
                 }
                 use rusqlite::OptionalExtension;
                 let hash = crate::digest(&bytes);
-                let key = format!("parser-v6:{name}:{hash}");
+                let key = format!("parser-v7:{name}:{hash}");
                 let cached: Option<String> = store
                     .connection
                     .query_row(

@@ -2141,6 +2141,7 @@ dependencies = [
  "chrono-tz",
  "clap",
  "fs2",
+ "globset",
  "hex",
  "hmac",
  "httpdate",
