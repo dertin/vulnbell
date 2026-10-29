@@ -138,7 +138,7 @@ fn git_status(workspace: &Path, repository: &Path, commit: &str) -> Result<Vec<u
         bail!("invalid Git commit");
     }
     let index = crate::read_limited(&git_path(workspace, "index")?, 64 * 1024 * 1024)?;
-    let objects = git_path(workspace, "objects")?.canonicalize()?;
+    let objects = git_path(workspace, "objects")?;
     let shadow = tempfile::tempdir()?;
     fs::create_dir(shadow.path().join("refs"))?;
     fs::create_dir(shadow.path().join("objects"))?;
@@ -187,7 +187,10 @@ fn git_status(workspace: &Path, repository: &Path, commit: &str) -> Result<Vec<u
         ])
         .output()?;
     if !paths.status.success() {
-        bail!("Git working-tree paths are unavailable");
+        bail!(
+            "Git working-tree paths are unavailable: {}",
+            String::from_utf8_lossy(&paths.stderr).trim()
+        );
     }
     let mut excluded = Vec::new();
     for path in paths
@@ -216,7 +219,10 @@ fn git_status(workspace: &Path, repository: &Path, commit: &str) -> Result<Vec<u
         .args(&excluded)
         .output()?;
     if !output.status.success() {
-        bail!("Git working-tree status is unavailable");
+        bail!(
+            "Git working-tree status is unavailable: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
     Ok(output.stdout)
 }
@@ -458,4 +464,44 @@ pub fn ensure_current(revisions: &[WorkspaceRevision]) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_reads_a_fresh_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            let output = Command::new("git")
+                .current_dir(dir.path())
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                ])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        run(&["init"]);
+        fs::write(dir.path().join("sample.txt"), "test").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "fixture"]);
+        let commit = run(&["rev-parse", "HEAD"]);
+        assert!(
+            git_status(dir.path(), dir.path(), &commit)
+                .unwrap()
+                .is_empty()
+        );
+    }
 }
