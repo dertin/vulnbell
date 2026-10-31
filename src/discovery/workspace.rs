@@ -599,9 +599,65 @@ fn read_slice(root: &str, relative: &str, id: &str, offset: u64) -> Result<FileS
     if !file.metadata()?.is_file() {
         bail!("discovery input must be a regular file");
     }
-    file.seek(SeekFrom::Start(offset))?;
     let mut bytes = Vec::new();
-    file.take(SLICE_BYTES).read_to_end(&mut bytes)?;
+    let requirements_file = Path::new(relative)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|name| {
+            (name.starts_with("requirements") || name.starts_with("constraints"))
+                && (name.ends_with(".txt") || name.ends_with(".in"))
+        });
+    if requirements_file {
+        let mut contents = Vec::new();
+        (&mut file)
+            .take(32 * 1024 * 1024 + 1)
+            .read_to_end(&mut contents)?;
+        if contents.len() > 32 * 1024 * 1024 {
+            bail!("requirements file exceeds discovery size limit");
+        }
+        let sensitive = contents.contains(&b'@')
+            || contents.windows(3).any(|part| part == b"://")
+            || contents.windows(2).any(|part| part == b"${")
+            || (contents.windows(11).any(|part| part == b"-----BEGIN ")
+                && contents.windows(16).any(|part| part == b"PRIVATE KEY-----"))
+            || contents.split(|byte| *byte == b'\n').any(|line| {
+                let line = line
+                    .strip_prefix(b"\xef\xbb\xbf")
+                    .unwrap_or(line)
+                    .trim_ascii_start();
+                [
+                    b"--index-url".as_slice(),
+                    b"--extra-index-url",
+                    b"--find-links",
+                    b"--no-index",
+                    b"--requirement",
+                    b"--constraint",
+                    b"-i",
+                    b"-f",
+                    b"-r",
+                    b"-c",
+                ]
+                .iter()
+                .any(|option| line.starts_with(option))
+            });
+        if sensitive {
+            bail!(
+                "requirements file contains source, include or credential-sensitive entries; review locally without exporting its contents"
+            );
+        }
+        let start = usize::try_from(offset).context("invalid discovery offset")?;
+        if start > contents.len() {
+            bail!("invalid discovery offset");
+        }
+        let end = start
+            .saturating_add(SLICE_BYTES as usize)
+            .min(contents.len());
+        bytes.extend_from_slice(&contents[start..end]);
+    } else {
+        file.seek(SeekFrom::Start(offset))?;
+        file.take(SLICE_BYTES).read_to_end(&mut bytes)?;
+    }
     if bytes.contains(&0) {
         bail!("binary file excluded from text discovery");
     }

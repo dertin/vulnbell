@@ -473,6 +473,7 @@ pub fn cases_from_claims(
                     .iter()
                     .any(|claim| claim.applicability == Applicability::NotAffected);
         let observed_identity = instance.origin == crate::model::Origin::AgentObserved
+            || instance.is_python_requirement()
             || instance
                 .identity_evidence
                 .iter()

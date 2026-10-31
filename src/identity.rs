@@ -80,6 +80,12 @@ pub fn resolve(instance: &mut Instance, http: &mut Http<'_>) -> Vec<Coverage> {
     let mut coverage = Vec::new();
     let result = resolve_inner(instance, http);
     match result {
+        Ok(()) if instance.is_python_requirement() => coverage.push(Coverage::new(
+            "identity",
+            &instance.id,
+            if instance.resolved_version.is_some() { CoverageState::Partial } else { CoverageState::Unresolved },
+            "Python requirement is a candidate; installed version, source and environment marker remain unverified",
+        )),
         Ok(()) => coverage.push(Coverage::new(
             "identity",
             &instance.id,
@@ -154,6 +160,9 @@ fn resolve_inner(instance: &mut Instance, http: &mut Http<'_>) -> Result<()> {
         let purl: packageurl::PackageUrl<'_> = instance.reference.parse()?;
         instance.purl = Some(purl.to_string());
         if instance.origin == crate::model::Origin::Locked {
+            return Ok(());
+        }
+        if instance.is_python_requirement() {
             return Ok(());
         }
         let dynamic = instance.requested_version.as_deref() == Some("latest");

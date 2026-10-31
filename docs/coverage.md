@@ -3,7 +3,7 @@
 | Area | Support |
 |---|---|
 | Manual inventory | Products, binaries, PURL/CPE, exact versions, and explicitly requested `latest` |
-| Native workspace parsers | Cargo.lock through v4; npm v1–v3; Composer; pnpm 6/9; Yarn classic v1 |
+| Native workspace parsers | Cargo.lock through v4; npm v1–v3; Composer; pnpm 6/9; Yarn classic v1; Python `requirements.txt` declarations |
 | General discovery | Enabled by default; paginated workspace extraction and source mapping through the agent, including formats without a native parser |
 | SBOM | CycloneDX JSON 1.4–1.6 and SPDX JSON 2.2/2.3 |
 | Advisories | OSV, GHSA, published GitHub repository advisories, RustSec, CVE Records, NVD, and CISA KEV |
@@ -22,6 +22,8 @@
 - RSS/Atom have no native feed connector. The agent can map and review public release pages through general discovery.
 - Discovery resumes across pages and runs. Inaccessible/private sources, binary files and insufficient parsing context cannot be labelled complete.
 - Local or Git dependencies are not silently treated as public registry packages. Private registries, backports, and binary equivalence need more evidence.
+- Python requirements pins are declarations, not an installed dependency graph. Unpinned ranges, environment markers, includes, constraints, URL/VCS/local entries and index options need further review. They do not establish the installed artifact, source, directness, or target environment. Files with index, include or constraint directives do not infer public package identities. Unsupported entries are counted without exposing their contents. General discovery does not export a requirements file with URLs, `@`, environment expansions, index, include or constraint options; review it locally.
+- Some Python version and advisory ranges cannot be ordered by the native advisory matcher; those matches remain unknown rather than being excluded.
 - npm v1 lockfiles do not identify direct root dependencies: hoisted packages have unknown depth and are excluded from default tracker research. Advisory scanning still covers supported packages; select specific dependencies with `research.follow` when needed.
 - A hidden npm workspace matched by a wildcard has unknown depth when the lockfile alone cannot establish npm's workspace selection.
 - Git workspace identity is unavailable when tracked non-private files have `assume-unchanged` or `skip-worktree` flags, including sparse checkouts. Clear those flags or review a full checkout to bind decisions to the current files.
