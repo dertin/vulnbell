@@ -276,8 +276,7 @@ pub fn feeds(
         let scope: Vec<&Instance> = instances
             .iter()
             .filter(|instance| {
-                !instance.has_unverified_local_identity()
-                    && instance.reference == component.reference
+                instance.reference == component.reference
                     && instance.requested_version == component.version
             })
             .collect();

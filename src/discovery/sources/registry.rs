@@ -13,8 +13,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 const NOT_ACQUIRED: &str =
     "not acquired by native registry mapping; an agent may map it from the repository pages";
 pub(super) const NATIVE_RATIONALE: &str = "Native registry mapping";
-/// Identifies the POM mapping rules recorded with each source observation.
-pub(super) const MAVEN_MAPPER: &str = "Maven effective POM revision 6";
 /// Maven inheritance depth followed for `scm`, `issueManagement` and `url`.
 const MAX_PARENT_POMS: usize = 5;
 /// Bounds nested and self-referencing Maven property definitions.
@@ -484,12 +482,7 @@ fn observation(
         version: None,
         cpe_product: None,
         rationale: format!(
-            "{NATIVE_RATIONALE}{} from {record}{}; publisher-declared metadata, not an independent ownership proof.",
-            if maven {
-                format!(" ({MAVEN_MAPPER})")
-            } else {
-                String::new()
-            },
+            "{NATIVE_RATIONALE} from {record}{}; publisher-declared metadata, not an independent ownership proof.",
             if evidence.len() > 1 {
                 format!(" and {} parent POM(s)", evidence.len() - 1)
             } else {

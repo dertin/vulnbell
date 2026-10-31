@@ -842,7 +842,7 @@ pub fn discover(
                 }
                 use rusqlite::OptionalExtension;
                 let hash = crate::digest(&bytes);
-                let key = format!("parser-v8:{name}:{hash}");
+                let key = format!("{name}:{hash}");
                 let cached: Option<String> = store
                     .connection
                     .query_row(

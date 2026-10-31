@@ -107,7 +107,6 @@ pub struct InstanceImpact {
 pub struct ImpactResult {
     pub schema_version: u32,
     pub case_id: String,
-    #[serde(default)]
     pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     pub facts_sha256: String,
     pub verdict: ImpactVerdict,

@@ -16,9 +16,6 @@ use std::{
 const ENTRY_PAGE: usize = 256;
 const SLICE_BYTES: u64 = 64 * 1024;
 const DIRECTORIES_PER_PLAN: usize = 64;
-/// Bump when exclusion or classification rules change: walked directories are listed again so
-/// existing entries are reclassified, while unchanged reviewed files keep their review.
-const CLASSIFICATION_RULES: &str = "4";
 const GITIGNORE_BYTES: u64 = 1024 * 1024;
 const DEPENDENCY_OUTPUT: [&str; 13] = [
     "node_modules",
@@ -353,14 +350,6 @@ pub(super) fn prepare(
             params![scope, root],
         )?;
     }
-    let rules = format!("discovery_rules:{scope}");
-    if store.meta(&rules)?.as_deref() != Some(CLASSIFICATION_RULES) {
-        store.connection.execute(
-            "UPDATE discovery_walk SET state='pending',cursor='' WHERE scope=?1 AND state='done'",
-            [scope],
-        )?;
-        store.set_meta(&rules, CLASSIFICATION_RULES)?;
-    }
     let mut query = store
         .connection
         .prepare("SELECT root,path,stamp FROM discovery_walk WHERE scope=?1 AND state IN ('done','unavailable')")?;
@@ -488,10 +477,6 @@ fn adopt_reviews(store: &Store, scope: &str, root: &str) -> Result<()> {
     transaction.execute(
         "UPDATE discovery_walk SET scope=?1 WHERE scope=?2 AND root=?3",
         params![scope, previous, root],
-    )?;
-    transaction.execute(
-        "DELETE FROM meta WHERE key=?1",
-        [format!("discovery_rules:{scope}")],
     )?;
     transaction.execute(
         "INSERT OR IGNORE INTO discovery_sources SELECT ?1,instance_id,fingerprint,checked_at,body FROM discovery_sources WHERE scope=?2",

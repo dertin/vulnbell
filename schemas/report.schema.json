@@ -525,7 +525,6 @@
           "$ref": "#/$defs/ImpactVerdict"
         },
         "workspace_revisions": {
-          "default": [],
           "items": {
             "$ref": "#/$defs/WorkspaceRevision"
           },
@@ -535,6 +534,7 @@
       "required": [
         "schema_version",
         "case_id",
+        "workspace_revisions",
         "facts_sha256",
         "verdict",
         "confidence",

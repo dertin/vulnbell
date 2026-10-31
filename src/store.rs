@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const DATABASE_SCHEMA: u32 = 2;
+const DATABASE_SCHEMA: u32 = 3;
 /// Default wait for another command on the same project (override: VULNBELL_LOCK_WAIT_SECONDS).
 const LOCK_WAIT_SECONDS: u64 = 120;
 

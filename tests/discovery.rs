@@ -136,7 +136,7 @@ fn requirements_with_credentials_are_not_exported_even_beyond_the_first_chunk() 
 
 #[test]
 fn composer_private_packages_stay_local_even_when_all_trackers_are_selected() {
-    let (directory, path, mut profile, mut store) = project();
+    let (directory, path, mut profile, store) = project();
     profile.research.tracker_scope = vulnbell::profile::TrackerScope::All;
     fs::write(&path, serde_saphyr::to_string(&profile).unwrap()).unwrap();
     fs::write(
@@ -174,39 +174,16 @@ fn composer_private_packages_stay_local_even_when_all_trackers_are_selected() {
     assert!(!exported.contains("private-vendor"));
     assert!(!exported.contains("synthetic-secret"));
 
-    let mut legacy = snapshot.clone();
-    legacy.id = uuid::Uuid::new_v4().to_string();
-    let legacy_package = legacy
-        .instances
-        .iter_mut()
-        .find(|item| item.id == package.id)
-        .unwrap();
-    legacy_package.reference = "pkg:composer/private-vendor/private-package".into();
-    legacy_package.purl = Some(legacy_package.reference.clone());
-    legacy_package.upstream = Some("https://github.com/private-vendor/private-package".into());
-    legacy_package.provenance.direct = Some(true);
-    assert!(legacy_package.has_unverified_local_identity());
-    assert!(!profile.research.tracks(legacy_package));
-    let mut checked = legacy_package.clone();
+    let mut checked = package.clone();
+    checked.purl = Some("pkg:composer/private-vendor/private-package".into());
+    checked.upstream = Some("https://github.com/private-vendor/private-package".into());
+    checked.provenance.direct = Some(true);
+    assert!(!profile.research.tracks(&checked));
     let mut http = vulnbell::network::Http::new(&store, false);
     vulnbell::identity::resolve(&mut checked, &mut http);
     assert_eq!(http.requests, 0);
     assert!(checked.purl.is_none());
     assert!(checked.upstream.is_none());
-    let mut old_manifest_observation = legacy_package.clone();
-    old_manifest_observation.id = "old-manifest-observation".into();
-    old_manifest_observation.origin = vulnbell::model::Origin::AgentObserved;
-    old_manifest_observation.provenance.path = Some("composer.json".into());
-    assert!(old_manifest_observation.has_unverified_local_identity());
-    legacy.instances.push(old_manifest_observation);
-    store.save_snapshot(&legacy).unwrap();
-    let page = discovery::plan(&profile, &path, &store, 20).unwrap();
-    assert!(page.components.is_empty());
-    assert!(
-        !serde_json::to_string(&page)
-            .unwrap()
-            .contains("private-vendor")
-    );
     let research = vulnbell::research::plan_page(&store, "", 20).unwrap();
     assert!(
         !serde_json::to_string(&research)
@@ -627,7 +604,7 @@ fn excluding_a_directory_leaves_siblings_whose_names_differ_only_by_wildcard_cha
 }
 
 #[test]
-fn new_classification_rules_reclassify_walked_entries_and_keep_other_reviews() {
+fn ignored_root_files_do_not_hide_nested_inputs() {
     let (directory, path, profile, mut store) = project();
     let workspace = directory.path().join("workspace");
     std::process::Command::new("git")
@@ -635,7 +612,7 @@ fn new_classification_rules_reclassify_walked_entries_and_keep_other_reviews() {
         .current_dir(&workspace)
         .status()
         .unwrap();
-    fs::write(workspace.join(".gitignore"), "# none\n").unwrap();
+    fs::write(workspace.join(".gitignore"), "/requirements.txt\n").unwrap();
     fs::create_dir(workspace.join("app")).unwrap();
     fs::write(workspace.join("app/requirements.txt"), "requests==2.31.0\n").unwrap();
     fs::write(workspace.join("requirements.txt"), "requests==2.31.0\n").unwrap();
@@ -647,18 +624,6 @@ fn new_classification_rules_reclassify_walked_entries_and_keep_other_reviews() {
         }
         discovery::import(&profile, &path, &mut store, review(&page, vec![package()])).unwrap();
     }
-    fs::write(workspace.join(".gitignore"), "/requirements.txt\n").unwrap();
-    let scope = discovery::scope(&profile, &path).unwrap();
-    store
-        .set_meta(&format!("discovery_rules:{scope}"), "1")
-        .unwrap();
-    store
-        .connection
-        .execute(
-            "UPDATE discovery_files SET state='unavailable',reason='binary file excluded from text discovery' WHERE path='logo.png'",
-            [],
-        )
-        .unwrap();
     let page = discovery::plan(&profile, &path, &store, 1).unwrap();
     let gaps = discovery::gaps(&profile, &path, &store, "", 100).unwrap();
     assert!(

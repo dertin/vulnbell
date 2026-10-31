@@ -83,13 +83,6 @@ impl Instance {
     pub fn has_unverified_local_identity(&self) -> bool {
         self.reference.starts_with("composer-lock:")
             || self.reference.starts_with("python-requirement:")
-            || (matches!(self.origin, Origin::Locked | Origin::AgentObserved)
-                && self.provenance.path.as_deref().is_some_and(|path| {
-                    std::path::Path::new(path).file_name().is_some_and(|name| {
-                        (self.origin == Origin::Locked && name == "composer.lock")
-                            || (self.origin == Origin::AgentObserved && name == "composer.json")
-                    })
-                }))
     }
 
     pub fn is_python_requirement(&self) -> bool {
@@ -280,7 +273,6 @@ pub struct Case {
     pub project_id: String,
     pub snapshot_id: String,
     /// Git workspaces that bound the facts and review for this case.
-    #[serde(default)]
     pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     pub instances: Vec<Instance>,
     pub claims: Vec<Claim>,
@@ -310,7 +302,6 @@ pub struct Snapshot {
     pub started_at: String,
     pub finished_at: String,
     /// Workspace state at the start and end of the scan.
-    #[serde(default)]
     pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     pub instances: Vec<Instance>,
     pub coverage: Vec<Coverage>,

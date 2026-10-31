@@ -536,7 +536,6 @@
       "$ref": "#/$defs/Verification"
     },
     "workspace_revisions": {
-      "default": [],
       "description": "Git workspaces that bound the facts and review for this case.",
       "items": {
         "$ref": "#/$defs/WorkspaceRevision"
@@ -549,6 +548,7 @@
     "case_id",
     "project_id",
     "snapshot_id",
+    "workspace_revisions",
     "instances",
     "claims",
     "upstream_events",

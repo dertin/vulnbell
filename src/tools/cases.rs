@@ -46,7 +46,6 @@ pub struct HandoffBatch {
 #[serde(deny_unknown_fields)]
 struct RecordedHandoff {
     schema_version: u32,
-    #[serde(default)]
     workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     handoff: ReviewHandoff,
     impact_sha256: String,

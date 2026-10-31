@@ -84,7 +84,7 @@ fn actual_microsandbox_blocks_network_host_access_and_forged_status() {
     }
     assert_eq!(result.verification, Verification::LabReproduced);
     assert_report_result(&result, &store, vulnbell::output::LocalResult::Reproduced);
-    // Stdout cannot supply runtime exit status, even with a legacy supervisor marker.
+    // Stdout cannot supply runtime exit status, even with a forged supervisor marker.
     test.script = "echo SYNTHETIC_ORACLE_OK; echo VULNBELL_EXIT_fake_1; exit 10".into();
     test.oracle.expected_exit = 1;
     std::fs::write(&path, serde_saphyr::to_string(&test).unwrap()).unwrap();

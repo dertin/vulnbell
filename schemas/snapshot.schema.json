@@ -87,7 +87,6 @@
           "$ref": "#/$defs/Verification"
         },
         "workspace_revisions": {
-          "default": [],
           "description": "Git workspaces that bound the facts and review for this case.",
           "items": {
             "$ref": "#/$defs/WorkspaceRevision"
@@ -100,6 +99,7 @@
         "case_id",
         "project_id",
         "snapshot_id",
+        "workspace_revisions",
         "instances",
         "claims",
         "upstream_events",
@@ -612,7 +612,6 @@
       "type": "string"
     },
     "workspace_revisions": {
-      "default": [],
       "description": "Workspace state at the start and end of the scan.",
       "items": {
         "$ref": "#/$defs/WorkspaceRevision"
@@ -627,6 +626,7 @@
     "profile_sha256",
     "started_at",
     "finished_at",
+    "workspace_revisions",
     "instances",
     "coverage",
     "cases",

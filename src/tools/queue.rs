@@ -22,10 +22,8 @@ pub enum WorkState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkEvent {
     pub facts_sha256: String,
-    #[serde(default)]
     pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     /// Fingerprint of case evidence and outcome when the interval was recorded.
-    #[serde(default)]
     pub context_sha256: String,
     pub state: WorkState,
     pub recorded_at: String,

@@ -901,7 +901,7 @@ fn unconfirmed_versions_need_a_review_disposition_without_requiring_a_test() {
     assert!(needed.contains(&("SIG-advisory".into(), false)));
     assert_eq!(open, ["SIG-issue"]);
 
-    let legacy = store
+    let incomplete_blocker = store
         .record_evidence(
             &serde_json::to_vec(&json!({
                 "schema_version": 1,
@@ -917,7 +917,7 @@ fn unconfirmed_versions_need_a_review_disposition_without_requiring_a_test() {
         )
         .unwrap();
     let mut issue = store.case("SIG-issue").unwrap();
-    issue.evidence.push(legacy);
+    issue.evidence.push(incomplete_blocker);
     store.save_case(&issue).unwrap();
     snapshot.cases[0] = issue;
     let (_, open) = pending(&snapshot, &store);

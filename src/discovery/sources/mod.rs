@@ -20,15 +20,6 @@ fn repository_unavailable(observation: &IdentityObservation) -> bool {
     })
 }
 
-/// Native Maven mappings from an earlier POM resolution revision are mapped again.
-fn outdated_maven_mapping(instance: &Instance, observation: &IdentityObservation) -> bool {
-    instance.reference.starts_with("pkg:maven/")
-        && observation
-            .rationale
-            .starts_with(registry::NATIVE_RATIONALE)
-        && !observation.rationale.contains(registry::MAVEN_MAPPER)
-}
-
 /// A lockfile or SBOM hash changes with unrelated packages; the instance id already carries the
 /// locked name, version and path, so only declared and observed provenance invalidates a mapping.
 pub(super) fn fingerprint(instance: &Instance) -> String {
@@ -101,7 +92,6 @@ pub(super) fn targets(
                 (chrono::Utc::now() - chrono::Duration::days(INCOMPLETE_RETRY_DAYS)).to_rfc3339();
             let refresh = (latest && checked_at < snapshot.started_at)
                 || (repository_unavailable(&observation) && checked_at < retry_after)
-                || outdated_maven_mapping(instance, &observation)
                 || (mapper == Mapper::Agent
                     && repository_unavailable(&observation)
                     && observation

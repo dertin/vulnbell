@@ -3,7 +3,7 @@ use vulnbell::store::Store;
 
 #[test]
 fn incompatible_state_is_rejected_without_conversion_or_data_changes() {
-    for version in [0_u32, 1_u32] {
+    for version in [0_u32, 1_u32, 2_u32] {
         let project = uuid::Uuid::new_v4().to_string();
         let directory = vulnbell::store::data_root().join(&project);
         fs::create_dir_all(&directory).unwrap();
@@ -25,6 +25,36 @@ fn incompatible_state_is_rejected_without_conversion_or_data_changes() {
 }
 
 #[test]
+fn persisted_review_state_requires_current_context_fields() {
+    let snapshot = serde_json::json!({
+        "schema_version": 1, "id": "snapshot", "project_id": "project", "profile_sha256": "hash",
+        "started_at": "start", "finished_at": "end", "instances": [], "coverage": [],
+        "cases": [], "partial": false, "alert_status": "none"
+    });
+    let error = serde_json::from_value::<vulnbell::model::Snapshot>(snapshot).unwrap_err();
+    assert!(error.to_string().contains("workspace_revisions"));
+
+    let impact = serde_json::json!({
+        "schema_version": 1, "case_id": "case", "facts_sha256": "hash",
+        "verdict": "needs_evidence", "confidence": "low", "answers": [],
+        "instances": [], "assessed_at": "now"
+    });
+    let error = serde_json::from_value::<vulnbell::impact::ImpactResult>(impact).unwrap_err();
+    assert!(error.to_string().contains("workspace_revisions"));
+
+    let mut event = serde_json::json!({
+        "facts_sha256": "hash", "state": "reviewed", "recorded_at": "now",
+        "started_at": "now", "elapsed_seconds": 0, "next_step": null
+    });
+    let error =
+        serde_json::from_value::<vulnbell::tools::queue::WorkEvent>(event.clone()).unwrap_err();
+    assert!(error.to_string().contains("workspace_revisions"));
+    event["workspace_revisions"] = serde_json::json!([]);
+    let error = serde_json::from_value::<vulnbell::tools::queue::WorkEvent>(event).unwrap_err();
+    assert!(error.to_string().contains("context_sha256"));
+}
+
+#[test]
 fn current_database_is_initialized_once_and_reopens_without_rebuilding_tables() {
     let project = uuid::Uuid::new_v4().to_string();
     let store = Store::open(&project).unwrap();
@@ -32,7 +62,7 @@ fn current_database_is_initialized_once_and_reopens_without_rebuilding_tables() 
         .connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
     store.set_meta("sentinel", "retained").unwrap();
     store
         .connection
