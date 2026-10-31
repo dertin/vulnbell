@@ -262,6 +262,23 @@ pub(super) enum ToolCommands {
         /// Restrict this batch to one upstream from the research plan.
         #[arg(long)]
         upstream: Option<String>,
+        /// Return only the first 1..1000 items; summary retains the total still needing review.
+        #[arg(long)]
+        review_limit: Option<usize>,
+    },
+    /// Atomically save one reviewed item from a current hits packet.
+    Decide {
+        #[arg(long)]
+        project: PathBuf,
+        /// Review packet written by tools hits.
+        #[arg(long)]
+        packet: PathBuf,
+        /// Decisions JSON containing exactly one item.
+        #[arg(long)]
+        from: PathBuf,
+        /// Per-monitor decisions file to update or create.
+        #[arg(long)]
+        decisions: PathBuf,
     },
     /// Build the research batch from the screened items, the deterministic rules and the
     /// decisions file.

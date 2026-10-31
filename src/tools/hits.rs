@@ -464,6 +464,8 @@ pub struct ReviewPacket {
     pub missing: Vec<MissingFetch>,
     pub errors: Vec<TargetError>,
     pub review: Vec<ReviewItem>,
+    /// Remaining review items omitted by the requested packet limit.
+    pub review_remaining: usize,
     /// Bounded sample of items the deterministic screen did not select, for audit.
     pub unselected_sample: Vec<UnselectedItem>,
     pub ordering_model: &'static str,
@@ -591,6 +593,7 @@ pub fn packet_with_recheck(
     decisions: Option<&ResearchDecisions>,
     recheck: bool,
 ) -> ReviewPacket {
+    let decisions = decisions.filter(|decisions| decisions.project_id == prepared.project_id);
     let resolutions = &prepared.resolutions;
     let mut summary = PacketSummary {
         targets: prepared.targets.len(),
@@ -721,6 +724,7 @@ pub fn packet_with_recheck(
         missing,
         errors,
         review,
+        review_remaining: 0,
         unselected_sample,
         ordering_model: "deterministic-v1; ordering only, not a severity or applicability verdict",
     }

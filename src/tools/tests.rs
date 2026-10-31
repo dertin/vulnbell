@@ -82,7 +82,7 @@ fn multi_component_review_requires_an_explicit_scope() {
         );
         let screen = screen::screen(&issue, "").unwrap();
         super::hits::Prepared {
-            project_id: "project".into(),
+            project_id: "0de0a8e7-f1a4-4bdc-a198-422b90bbbd84".into(),
             snapshot_id: "snapshot".into(),
             workspace_revisions: Vec::new(),
             targets: vec![super::hits::PreparedTarget {
@@ -102,6 +102,7 @@ fn multi_component_review_requires_an_explicit_scope() {
     };
     let mut decisions = ResearchDecisions {
         schema_version: 1,
+        project_id: "0de0a8e7-f1a4-4bdc-a198-422b90bbbd84".into(),
         decisions: vec![ItemDecision {
             workspace_revisions: Vec::new(),
             upstream: upstream.into(),
@@ -586,7 +587,7 @@ fn truncated_identifiers_require_review_for_releases_and_dependency_updates() {
     let screen = screen::screen(&release, "").unwrap();
     let disposition = disposition(&release, &screen, &context);
     let prepared = super::hits::Prepared {
-        project_id: "project".into(),
+        project_id: "0de0a8e7-f1a4-4bdc-a198-422b90bbbd84".into(),
         snapshot_id: "snapshot".into(),
         workspace_revisions: Vec::new(),
         targets: vec![super::hits::PreparedTarget {
@@ -704,6 +705,7 @@ fn decisions_are_validated_and_stale_ones_are_reported() {
     };
     let decisions = ResearchDecisions {
         schema_version: 1,
+        project_id: "0de0a8e7-f1a4-4bdc-a198-422b90bbbd84".into(),
         decisions: vec![decision.clone()],
     };
     decisions.validate().unwrap();
@@ -735,6 +737,7 @@ fn decisions_are_validated_and_stale_ones_are_reported() {
     without_fact.source_facts = SourceFacts::default();
     let invalid = ResearchDecisions {
         schema_version: 1,
+        project_id: "0de0a8e7-f1a4-4bdc-a198-422b90bbbd84".into(),
         decisions: vec![without_fact],
     };
     assert!(invalid.validate().is_err());
@@ -745,7 +748,7 @@ fn decisions_with_the_same_key_are_scoped_to_the_upstream() {
     let github = "https://github.com/example/project";
     let gitlab = "https://gitlab.com/example/project";
     let make_prepared = || super::hits::Prepared {
-        project_id: "project".into(),
+        project_id: "0de0a8e7-f1a4-4bdc-a198-422b90bbbd84".into(),
         snapshot_id: "snapshot".into(),
         workspace_revisions: Vec::new(),
         targets: [github, gitlab]
@@ -775,6 +778,7 @@ fn decisions_with_the_same_key_are_scoped_to_the_upstream() {
     };
     let mut decisions = ResearchDecisions {
         schema_version: 1,
+        project_id: "0de0a8e7-f1a4-4bdc-a198-422b90bbbd84".into(),
         decisions: vec![ItemDecision {
             workspace_revisions: Vec::new(),
             upstream: github.into(),
@@ -907,6 +911,7 @@ fn decision_workspace_metadata_must_match_the_review_packet() {
     };
     let decisions = ResearchDecisions {
         schema_version: 1,
+        project_id: "0de0a8e7-f1a4-4bdc-a198-422b90bbbd84".into(),
         decisions: vec![decision],
     };
     let mut next_observation = revision.clone();
@@ -926,4 +931,23 @@ fn decision_workspace_metadata_must_match_the_review_packet() {
         decisions.lookup(&reviewed, &source, &[]),
         DecisionLookup::Stale(_)
     ));
+    let mut not_git = decisions.decisions[0].workspace_revisions[0].clone();
+    not_git.state = RepositoryState::NotGit;
+    not_git.repository = None;
+    not_git.branch = None;
+    not_git.commit = None;
+    not_git.dirty = None;
+    not_git.worktree_status_sha256 = None;
+    let mut without_revision = decisions.clone();
+    without_revision.decisions[0].workspace_revisions.clear();
+    assert!(matches!(
+        without_revision.lookup(&reviewed, &source, &[not_git]),
+        DecisionLookup::Stale(_)
+    ));
+    let mut serialized = serde_json::to_value(&decisions.decisions[0]).unwrap();
+    serialized
+        .as_object_mut()
+        .unwrap()
+        .remove("workspace_revisions");
+    assert!(serde_json::from_value::<ItemDecision>(serialized).is_err());
 }

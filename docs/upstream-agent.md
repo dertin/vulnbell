@@ -10,12 +10,15 @@ For the daily run, the agent fetches tracker responses with `gh` and `curl` into
 
 - `tools hits` reads the responses for every research target and lists any missing file with the exact request to make. It screens items on title, labels, body and closed issues, and skips items already imported with the same update time. It resolves cited advisory IDs through the GitHub advisory database, OSV and cve.org, and matches them against the inventory.
 - `tools hits` settles structural items by rule: fix PRs whose closed issues carry the claim, repository advisories outside monitored versions, and identifier-only dependency updates or releases whose cited advisories are already covered. Other items go into a review packet.
+- `tools decide` validates and atomically saves one reviewed item into the monitor's decisions file. It checks the packet, project, snapshot and codebase context without advancing the source checkpoint. Read one item at a time and resume with the saved decisions after an interruption.
 - `tools draft` builds the research batch from those rules and the agent's decisions file (`schema decisions`). Copy each review item's `context_sha256` into its decision: a changed target context or item update requires a new assessment.
 - `tools impact` and `tools triage` apply impact answers and verdicts for many cases from one file. `tools pending` lists what still blocks the report: open verifications, missing verdicts, open research windows and unfinished discovery.
 
 The [workspace layout](../skills/vulnbell/references/workspace.md) gives the folder structure and command sequence.
 
 The JSON import contract (`schema research`) checks the project, snapshot, upstream, instance IDs, and time window. It hashes observations, keeps history, skips unchanged records, and reopens meaningful changes. `complete` means **the agent reports** that it reviewed the full available window. The CLI cannot verify unseen website content. The Skill requires page coverage, event coverage, and evidence links. Private or inaccessible content remains a gap.
+
+Scheduled public research uses an isolated agent that returns a small source review with a continuation when more work remains. Its output is imported after the agent returns; work held only inside an interrupted agent invocation is not persisted.
 
 Code and bugs may be hosted on different sites. The agent must verify official links between them rather than infer identity from a name. Launchpad uses bugs and merge proposals. Its resource documentation defines available filters; `modified_since` is not supported on every operation.
 

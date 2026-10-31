@@ -36,6 +36,17 @@ fn store_for(path: &std::path::Path) -> Result<(Profile, Store)> {
     let store = Store::open(&profile.project_id.to_string())?;
     Ok((profile, store))
 }
+fn distinct_output(output: &std::path::Path, input: &std::path::Path) -> Result<()> {
+    if output == input
+        || output
+            .canonicalize()
+            .ok()
+            .is_some_and(|path| input.canonicalize().ok().as_ref() == Some(&path))
+    {
+        bail!("output must differ from the profile and decisions file");
+    }
+    Ok(())
+}
 fn report(
     project: &std::path::Path,
     json: bool,
@@ -593,25 +604,57 @@ fn run_tool(command: ToolCommands) -> Result<i32> {
             offline,
             recheck,
             upstream,
+            review_limit,
         } => {
-            let (_, store) = store_for(&project)?;
+            if review_limit.is_some_and(|limit| !(1..=1000).contains(&limit)) {
+                bail!("review limit must be 1..1000");
+            }
+            distinct_output(&output, &project)?;
+            if let Some(path) = &decisions {
+                distinct_output(&output, path)?;
+            }
+            let (profile, store) = store_for(&project)?;
             let decisions = decisions
                 .as_deref()
                 .map(draft::ResearchDecisions::load)
                 .transpose()?;
+            if decisions
+                .as_ref()
+                .is_some_and(|saved| saved.project_id != profile.project_id.to_string())
+            {
+                bail!("decisions file belongs to another monitor");
+            }
             let prepared =
                 hits::prepare_for_upstream(&store, &raw, offline, recheck, upstream.as_deref())?;
-            let packet = hits::packet_with_recheck(&prepared, decisions.as_ref(), recheck);
+            let mut packet = hits::packet_with_recheck(&prepared, decisions.as_ref(), recheck);
+            if let Some(limit) = review_limit {
+                packet.review.truncate(limit);
+                packet.review_remaining =
+                    packet.summary.to_review.saturating_sub(packet.review.len());
+            }
             vulnbell::atomic_write(&output, &serde_json::to_vec_pretty(&packet)?)?;
             emit(&serde_json::json!({
                 "schema_version": 1,
                 "output": output,
                 "summary": packet.summary,
+                "review_returned": packet.review.len(),
+                "review_remaining": packet.review_remaining,
                 "missing": packet.missing.len(),
                 "errors": packet.errors.len(),
             }))?;
             let incomplete = !packet.missing.is_empty() || !packet.errors.is_empty();
             Ok(if incomplete { 2 } else { 0 })
+        }
+        ToolCommands::Decide {
+            project,
+            packet,
+            from,
+            decisions,
+        } => {
+            let (_, store) = store_for(&project)?;
+            draft::save_decision(&store, &packet, &from, &decisions)?;
+            emit(&serde_json::json!({"schema_version": 1, "saved": decisions}))?;
+            Ok(0)
         }
         ToolCommands::Draft {
             project,
@@ -624,8 +667,13 @@ fn run_tool(command: ToolCommands) -> Result<i32> {
             recheck,
             upstream,
         } => {
-            let (_, mut store) = store_for(&project)?;
+            distinct_output(&output, &project)?;
+            distinct_output(&output, &decisions)?;
+            let (profile, mut store) = store_for(&project)?;
             let decisions = draft::ResearchDecisions::load(&decisions)?;
+            if decisions.project_id != profile.project_id.to_string() {
+                bail!("decisions file belongs to another monitor");
+            }
             let prepared =
                 hits::prepare_for_upstream(&store, &raw, offline, recheck, upstream.as_deref())?;
             let (batch, summary) = draft::draft(prepared, &decisions, partial)?;

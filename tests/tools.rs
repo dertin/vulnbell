@@ -142,9 +142,17 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
     );
 
     let decisions_path = directory.path().join("research.json");
-    fs::write(&decisions_path, r#"{"schema_version": 1, "decisions": []}"#).unwrap();
+    fs::write(
+        &decisions_path,
+        serde_json::to_vec(
+            &serde_json::json!({"schema_version": 1, "project_id": project, "decisions": []}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     let empty = draft::ResearchDecisions::load(&decisions_path).unwrap();
     assert!(draft::draft(hits::prepare(&store, &raw, true).unwrap(), &empty, false).is_err());
+    fs::remove_file(&decisions_path).unwrap();
 
     write(
         &raw,
@@ -153,11 +161,13 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
     );
     let decisions = serde_json::json!({
         "schema_version": 1,
+        "project_id": project,
         "decisions": [{
             "upstream": "https://github.com/example/project",
             "key": "example/project#1",
             "updated_at": updated,
             "context_sha256": plan.targets[0].context_sha256,
+            "workspace_revisions": [],
             "assessment": "review",
             "rationale": "Synthetic report of token reuse; check the audience validation in the monitored version."
         }, {
@@ -165,11 +175,163 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
             "key": "example/project#3",
             "updated_at": updated,
             "context_sha256": plan.targets[0].context_sha256,
+            "workspace_revisions": [],
             "assessment": "ignore",
             "rationale": "The synthetic dependency is not in the monitored inventory."
         }]
     });
-    fs::write(&decisions_path, serde_json::to_vec(&decisions).unwrap()).unwrap();
+    let packet_path = directory.path().join("hits.json");
+    let limited_path = directory.path().join("limited-hits.json");
+    assert_cmd::cargo::cargo_bin_cmd!("vulnbell")
+        .args(["tools", "hits", "--project"])
+        .arg(&path)
+        .arg("--raw")
+        .arg(&raw)
+        .arg("--output")
+        .arg(&limited_path)
+        .args(["--offline", "--review-limit", "1"])
+        .assert()
+        .success();
+    let limited: serde_json::Value =
+        serde_json::from_slice(&fs::read(&limited_path).unwrap()).unwrap();
+    assert_eq!(limited["review"].as_array().unwrap().len(), 1);
+    assert_eq!(limited["review_remaining"], 1);
+    assert_eq!(limited["summary"]["to_review"], 2);
+    let packet = hits::packet(&hits::prepare(&store, &raw, true).unwrap(), None);
+    fs::write(&packet_path, serde_json::to_vec(&packet).unwrap()).unwrap();
+    let input_path = directory.path().join("decision.json");
+    for (index, decision) in decisions["decisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+    {
+        fs::write(
+            &input_path,
+            serde_json::to_vec(&serde_json::json!({"schema_version": 1, "project_id": project, "decisions": [decision]}))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_cmd::cargo::cargo_bin_cmd!("vulnbell")
+            .args(["tools", "decide", "--project"])
+            .arg(&path)
+            .arg("--packet")
+            .arg(&packet_path)
+            .arg("--from")
+            .arg(&input_path)
+            .arg("--decisions")
+            .arg(&decisions_path)
+            .assert()
+            .success();
+        let saved = draft::ResearchDecisions::load(&decisions_path).unwrap();
+        let resumed = hits::packet(&hits::prepare(&store, &raw, true).unwrap(), Some(&saved));
+        assert_eq!(resumed.review.len(), 1 - index);
+    }
+    let saved_before = fs::read(&decisions_path).unwrap();
+    for command in ["hits", "draft"] {
+        assert_cmd::cargo::cargo_bin_cmd!("vulnbell")
+            .args(["tools", command, "--project"])
+            .arg(&path)
+            .arg("--raw")
+            .arg(&raw)
+            .arg("--decisions")
+            .arg(&decisions_path)
+            .arg("--output")
+            .arg(&decisions_path)
+            .arg("--offline")
+            .assert()
+            .failure();
+        assert_eq!(fs::read(&decisions_path).unwrap(), saved_before);
+    }
+    let mut invalid = decisions["decisions"][0].clone();
+    invalid["context_sha256"] = serde_json::json!("0".repeat(64));
+    fs::write(
+        &input_path,
+        serde_json::to_vec(&serde_json::json!({"schema_version": 1, "project_id": project, "decisions": [invalid]}))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_cmd::cargo::cargo_bin_cmd!("vulnbell")
+        .args(["tools", "decide", "--project"])
+        .arg(&path)
+        .arg("--packet")
+        .arg(&packet_path)
+        .arg("--from")
+        .arg(&input_path)
+        .arg("--decisions")
+        .arg(&decisions_path)
+        .assert()
+        .failure();
+    assert_eq!(fs::read(&decisions_path).unwrap(), saved_before);
+    let foreign_path = directory.path().join("other-monitor.json");
+    let foreign = serde_json::json!({"schema_version": 1, "project_id": uuid::Uuid::new_v4(), "decisions": []});
+    fs::write(&foreign_path, serde_json::to_vec(&foreign).unwrap()).unwrap();
+    fs::write(
+        &input_path,
+        serde_json::to_vec(&serde_json::json!({"schema_version": 1, "project_id": project, "decisions": [decisions["decisions"][0]]})).unwrap(),
+    ).unwrap();
+    assert_cmd::cargo::cargo_bin_cmd!("vulnbell")
+        .args(["tools", "decide", "--project"])
+        .arg(&path)
+        .arg("--packet")
+        .arg(&packet_path)
+        .arg("--from")
+        .arg(&input_path)
+        .arg("--decisions")
+        .arg(&decisions_path)
+        .assert()
+        .success();
+    assert_eq!(fs::read(&decisions_path).unwrap(), saved_before);
+    assert_cmd::cargo::cargo_bin_cmd!("vulnbell")
+        .args(["tools", "decide", "--project"])
+        .arg(&path)
+        .arg("--packet")
+        .arg(&packet_path)
+        .arg("--from")
+        .arg(&input_path)
+        .arg("--decisions")
+        .arg(&foreign_path)
+        .assert()
+        .failure();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&fs::read(&foreign_path).unwrap()).unwrap(),
+        foreign
+    );
+    let failed_output = directory.path().join("foreign-packet.json");
+    assert_cmd::cargo::cargo_bin_cmd!("vulnbell")
+        .args(["tools", "hits", "--project"])
+        .arg(&path)
+        .arg("--raw")
+        .arg(&raw)
+        .arg("--decisions")
+        .arg(&foreign_path)
+        .arg("--output")
+        .arg(&failed_output)
+        .arg("--offline")
+        .assert()
+        .failure();
+    assert!(!failed_output.exists());
+    let mut stale_packet: serde_json::Value =
+        serde_json::from_slice(&fs::read(&packet_path).unwrap()).unwrap();
+    stale_packet["snapshot_id"] = serde_json::json!(uuid::Uuid::new_v4());
+    let stale_packet_path = directory.path().join("stale-packet.json");
+    fs::write(
+        &stale_packet_path,
+        serde_json::to_vec(&stale_packet).unwrap(),
+    )
+    .unwrap();
+    assert_cmd::cargo::cargo_bin_cmd!("vulnbell")
+        .args(["tools", "decide", "--project"])
+        .arg(&path)
+        .arg("--packet")
+        .arg(&stale_packet_path)
+        .arg("--from")
+        .arg(&input_path)
+        .arg("--decisions")
+        .arg(&decisions_path)
+        .assert()
+        .failure();
+    assert_eq!(fs::read(&decisions_path).unwrap(), saved_before);
     let decisions = draft::ResearchDecisions::load(&decisions_path).unwrap();
     let (batch, summary) = draft::draft(
         hits::prepare(&store, &raw, true).unwrap(),
@@ -312,6 +474,21 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
     assert!(reopened.items[0].previous_progress_stale);
     assert!(reopened.items[0].progress.is_none());
     store.save_case(&original).unwrap();
+
+    queue::record(&store, &case_id, queue::WorkState::InProgress, None).unwrap();
+    let mut changed_revision = original.clone();
+    changed_revision.workspace_revisions =
+        vec![vulnbell::workspace_revision::capture_path(directory.path())];
+    store.save_case(&changed_revision).unwrap();
+    let reopened = queue::list(&store, 20, 0, true).unwrap();
+    assert!(reopened.items[0].previous_progress_stale);
+    assert!(reopened.items[0].progress.is_none());
+    assert!(queue::record(&store, &case_id, queue::WorkState::Reviewed, Some("Done")).is_err());
+    queue::record(&store, &case_id, queue::WorkState::InProgress, None).unwrap();
+    queue::record(&store, &case_id, queue::WorkState::Reviewed, Some("Done")).unwrap();
+    store.save_case(&original).unwrap();
+    let reopened = queue::list(&store, 20, 0, true).unwrap();
+    assert!(reopened.items[0].previous_progress_stale);
 
     let mut advisory_case = original.clone();
     advisory_case.claims.push(vulnbell::model::Claim {

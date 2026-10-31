@@ -83,6 +83,7 @@
         "key",
         "updated_at",
         "context_sha256",
+        "workspace_revisions",
         "assessment",
         "rationale"
       ],
@@ -212,6 +213,10 @@
       },
       "type": "array"
     },
+    "project_id": {
+      "description": "Monitor that owns these decisions.",
+      "type": "string"
+    },
     "schema_version": {
       "format": "uint32",
       "minimum": 0,
@@ -220,6 +225,7 @@
   },
   "required": [
     "schema_version",
+    "project_id",
     "decisions"
   ],
   "title": "ResearchDecisions",

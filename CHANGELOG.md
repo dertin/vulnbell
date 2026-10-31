@@ -2,6 +2,7 @@
 
 ## 0.1.3 - Unreleased
 
+- Save upstream decisions individually and resume reviews using monitor-bound progress and concise working notes.
 - Render scheduled reports locally, track upstream coverage separately, and export PDF reports with evidence appendices.
 - Inventory Python requirements locally without inferring public identities; retain version and environment uncertainty as coverage limitations.
 - Exclude dependency and build output directories consistently from native and agent discovery.

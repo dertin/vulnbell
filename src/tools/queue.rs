@@ -234,7 +234,12 @@ pub fn record(
     let now = Utc::now();
     let started_at = if state == WorkState::InProgress {
         if events.last().is_some_and(|e| {
-            e.state == WorkState::InProgress && e.facts_sha256 == case.facts_sha256
+            e.state == WorkState::InProgress
+                && e.facts_sha256 == case.facts_sha256
+                && crate::workspace_revision::same_revisions(
+                    &e.workspace_revisions,
+                    &case.workspace_revisions,
+                )
         }) {
             bail!("review is already in progress for these facts");
         }
@@ -250,7 +255,13 @@ pub fn record(
         let previous = events
             .last()
             .context("start this case before recording progress")?;
-        if previous.state != WorkState::InProgress || previous.facts_sha256 != case.facts_sha256 {
+        if previous.state != WorkState::InProgress
+            || previous.facts_sha256 != case.facts_sha256
+            || !crate::workspace_revision::same_revisions(
+                &previous.workspace_revisions,
+                &case.workspace_revisions,
+            )
+        {
             bail!("no current started review for these case facts");
         }
         previous.started_at.clone()
@@ -284,13 +295,24 @@ fn item(
     let context = context_hash(case)?;
     let is_current = |e: &&WorkEvent| {
         e.facts_sha256 == case.facts_sha256
+            && crate::workspace_revision::same_revisions(
+                &e.workspace_revisions,
+                &case.workspace_revisions,
+            )
             && (e.state == WorkState::InProgress || e.context_sha256 == context)
     };
     let progress = last.filter(is_current).cloned();
     let stale = last.is_some() && progress.is_none();
     let recorded_elapsed_seconds = events
         .iter()
-        .filter(|e| e.facts_sha256 == case.facts_sha256 && e.state != WorkState::InProgress)
+        .filter(|e| {
+            e.facts_sha256 == case.facts_sha256
+                && e.state != WorkState::InProgress
+                && crate::workspace_revision::same_revisions(
+                    &e.workspace_revisions,
+                    &case.workspace_revisions,
+                )
+        })
         .fold(0_u64, |total, e| total.saturating_add(e.elapsed_seconds));
     let mut priority_reasons = Vec::new();
     if case.claims.iter().any(|c| c.known_exploited) {

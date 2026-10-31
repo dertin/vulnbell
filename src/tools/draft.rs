@@ -12,6 +12,7 @@ use crate::{
         Assessment, NotApplicableReason, ResearchBatch, ResearchEvent, ResearchTarget,
         ReviewCoverage, SourceReview, validate_source_facts,
     },
+    store::Store,
 };
 use anyhow::{Context, Result, bail};
 use schemars::JsonSchema;
@@ -31,6 +32,8 @@ const FACT_BYTES: usize = 500;
 #[serde(deny_unknown_fields)]
 pub struct ResearchDecisions {
     pub schema_version: u32,
+    /// Monitor that owns these decisions.
+    pub project_id: String,
     pub decisions: Vec<ItemDecision>,
 }
 
@@ -46,7 +49,6 @@ pub struct ItemDecision {
     /// Context fingerprint returned by tools hits for the exact reviewed target.
     pub context_sha256: String,
     /// Workspace revisions reported by `tools hits` for this reading.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     pub assessment: Assessment,
     /// Required with `not_applicable`; forbidden otherwise.
@@ -93,6 +95,7 @@ impl ResearchDecisions {
         if self.schema_version != 1 {
             bail!("decisions schema_version must be 1");
         }
+        uuid::Uuid::parse_str(&self.project_id).context("decisions project_id must be a UUID")?;
         let mut keys = HashSet::new();
         for decision in &self.decisions {
             let key = decision.key.as_str();
@@ -154,12 +157,10 @@ impl ResearchDecisions {
             Some(decision)
                 if super::same_instant(&decision.updated_at, &item.updated_at)
                     && decision.context_sha256 == target.context_sha256
-                    && (decision.workspace_revisions.is_empty()
-                        && crate::workspace_revision::fingerprint(revisions).is_none()
-                        || crate::workspace_revision::same_revisions(
-                            &decision.workspace_revisions,
-                            revisions,
-                        )) =>
+                    && crate::workspace_revision::same_revisions(
+                        &decision.workspace_revisions,
+                        revisions,
+                    ) =>
             {
                 DecisionLookup::Current(decision)
             }
@@ -167,6 +168,113 @@ impl ResearchDecisions {
             None => DecisionLookup::Missing,
         }
     }
+}
+
+#[derive(Deserialize)]
+struct DecisionPacket {
+    schema_version: u32,
+    project_id: String,
+    snapshot_id: String,
+    workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
+    review: Vec<DecisionPacketItem>,
+}
+
+#[derive(Deserialize)]
+struct DecisionPacketItem {
+    upstream: String,
+    key: String,
+    updated_at: String,
+    context_sha256: String,
+}
+
+/// Save one decision without advancing the upstream checkpoint.
+pub fn save_decision(store: &Store, packet: &Path, from: &Path, output: &Path) -> Result<()> {
+    let _lock = store.lock()?;
+    store.ensure_workspace_current()?;
+    for input in [packet, from] {
+        if input == output
+            || input
+                .canonicalize()
+                .ok()
+                .is_some_and(|path| output.canonicalize().ok().as_ref() == Some(&path))
+        {
+            bail!("decisions output must differ from the input and packet");
+        }
+    }
+    let packet: DecisionPacket =
+        serde_json::from_slice(&crate::read_limited(packet, 64 * 1024 * 1024)?)
+            .context("invalid hits packet")?;
+    let mut input = ResearchDecisions::load(from)?;
+    if input.decisions.len() != 1 {
+        bail!("submit exactly one decision");
+    }
+    let decision = input.decisions.remove(0);
+    let plan = crate::research::full_plan(store)?;
+    if packet.schema_version != 1
+        || packet.project_id != plan.project_id
+        || input.project_id != plan.project_id
+        || packet.snapshot_id != plan.snapshot_id
+        || !crate::workspace_revision::same_revisions(
+            &packet.workspace_revisions,
+            &plan.workspace_revisions,
+        )
+        || !crate::workspace_revision::same_revisions(
+            &decision.workspace_revisions,
+            &plan.workspace_revisions,
+        )
+    {
+        bail!("hits packet or decision belongs to another project, snapshot or codebase revision");
+    }
+    let target = plan
+        .targets
+        .iter()
+        .find(|target| target.upstream == decision.upstream)
+        .context("decision upstream is outside the current research plan")?;
+    if decision.context_sha256 != target.context_sha256
+        || !packet.review.iter().any(|item| {
+            item.upstream == decision.upstream
+                && item.key == decision.key
+                && item.context_sha256 == decision.context_sha256
+                && super::same_instant(&item.updated_at, &decision.updated_at)
+        })
+    {
+        bail!("decision does not match an item in the current hits packet");
+    }
+    if decision.needs_scope(target)
+        || decision
+            .instance_ids
+            .iter()
+            .any(|id| !target.instance_ids.contains(id))
+    {
+        bail!("decision instance scope is incomplete or outside the current target");
+    }
+    let mut saved = match output.symlink_metadata() {
+        Ok(_) => ResearchDecisions::load(output)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => ResearchDecisions {
+            schema_version: 1,
+            project_id: plan.project_id.clone(),
+            decisions: Vec::new(),
+        },
+        Err(error) => return Err(error.into()),
+    };
+    if saved.project_id != plan.project_id {
+        bail!("decisions file belongs to another monitor");
+    }
+    if let Some(existing) = saved
+        .decisions
+        .iter_mut()
+        .find(|existing| existing.upstream == decision.upstream && existing.key == decision.key)
+    {
+        *existing = decision;
+    } else {
+        saved.decisions.push(decision);
+    }
+    saved.validate()?;
+    let bytes = serde_json::to_vec_pretty(&saved)?;
+    if bytes.len() > 32 * 1024 * 1024 {
+        bail!("decisions exceed the 32 MiB limit");
+    }
+    crate::atomic_write(output, &bytes)
 }
 
 #[derive(Debug, Serialize)]
@@ -186,6 +294,9 @@ pub fn draft(
     decisions: &ResearchDecisions,
     partial: bool,
 ) -> Result<(ResearchBatch, DraftSummary)> {
+    if decisions.project_id != prepared.project_id {
+        bail!("decisions file belongs to another monitor");
+    }
     let mut sources = Vec::new();
     let mut events = Vec::new();
     let mut undecided = Vec::new();
