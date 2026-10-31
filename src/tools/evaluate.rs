@@ -28,6 +28,9 @@ pub struct LabelledItem {
     pub rationale: String,
     #[serde(default)]
     pub linked_body: String,
+    /// Linked items whose keys appear in the item's closing references.
+    #[serde(default)]
+    pub linked_items: Vec<Item>,
 }
 
 #[derive(Serialize)]
@@ -39,6 +42,7 @@ pub struct Evaluation {
     pub selected: usize,
     pub true_positive: usize,
     pub false_positive: usize,
+    pub false_positive_keys: Vec<String>,
     pub false_negative_keys: Vec<String>,
     pub high_priority: usize,
     pub high_priority_selected: usize,
@@ -83,8 +87,29 @@ pub fn evaluate(corpus: Corpus, top: usize) -> Result<Evaluation> {
         relevant += usize::from(labelled.relevant);
         high_priority += usize::from(labelled.high_priority);
         let item = labelled.item;
-        let linked = labelled.linked_body.clone();
-        match screen::screen(&item, &linked) {
+        let mut linked = screen::LinkedSignals::default();
+        linked.add_text(&labelled.linked_body);
+        let mut linked_keys = HashSet::new();
+        if labelled.linked_items.len() > 100 {
+            bail!("each item accepts at most 100 linked items");
+        }
+        for candidate in &labelled.linked_items {
+            if !item.closes.contains(&candidate.key)
+                || !linked_keys.insert(&candidate.key)
+                || !matches!(
+                    candidate.kind,
+                    super::ItemKind::Issue
+                        | super::ItemKind::PullRequest
+                        | super::ItemKind::Discussion
+                )
+            {
+                bail!(
+                    "linked items must have unique keys referenced by the item and a supported kind"
+                );
+            }
+            linked.merge(&screen::LinkedSignals::from_item(candidate));
+        }
+        match screen::screen_with_signals(&item, &linked) {
             Some(screen) => {
                 let entry = Entry {
                     item,
@@ -112,6 +137,11 @@ pub fn evaluate(corpus: Corpus, top: usize) -> Result<Evaluation> {
     }
     selected.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
     let true_positive = selected.iter().filter(|item| item.2).count();
+    let false_positive_keys = selected
+        .iter()
+        .filter(|item| !item.2)
+        .map(|item| item.1.clone())
+        .collect();
     let selected_count = selected.len();
     let top_count = top.min(selected_count);
     let top_relevant = selected
@@ -133,6 +163,7 @@ pub fn evaluate(corpus: Corpus, top: usize) -> Result<Evaluation> {
         selected: selected_count,
         true_positive,
         false_positive: selected_count - true_positive,
+        false_positive_keys,
         false_negative_keys,
         high_priority,
         high_priority_selected,

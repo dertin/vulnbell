@@ -200,6 +200,7 @@ fn evaluation_exposes_false_negatives_and_top_k_without_changing_decisions() {
             high_priority: key == "a" || key == "c",
             rationale: "independent synthetic label".into(),
             linked_body: String::new(),
+            linked_items: Vec::new(),
         }
     };
     let corpus = super::evaluate::Corpus {
@@ -214,6 +215,7 @@ fn evaluation_exposes_false_negatives_and_top_k_without_changing_decisions() {
     let result = serde_json::to_value(super::evaluate::evaluate(corpus, 1).unwrap()).unwrap();
     assert_eq!(result["selected"], 2);
     assert_eq!(result["precision"], 0.5);
+    assert_eq!(result["false_positive_keys"][0], "b");
     assert_eq!(result["recall"], 0.5);
     assert_eq!(result["precision_at_top"], 1.0);
     assert_eq!(result["false_negative_keys"][0], "c");
@@ -233,9 +235,81 @@ fn evaluation_rejects_high_priority_items_labelled_irrelevant() {
             high_priority: true,
             rationale: "Contradictory synthetic label".into(),
             linked_body: String::new(),
+            linked_items: Vec::new(),
         }],
     };
     assert!(super::evaluate::evaluate(corpus, 1).is_err());
+}
+
+#[test]
+fn evaluation_screens_linked_item_metadata_like_research() {
+    let mut linked = item(ItemKind::Issue, "Response handling", "No details provided.");
+    linked.key = "example/project#2".into();
+    linked.labels = vec!["security".into()];
+    let mut change = item(ItemKind::PullRequest, "Adjust response handling", "");
+    change.closes = vec![linked.key.clone()];
+    let entry = super::evaluate::LabelledItem {
+        item: change,
+        relevant: true,
+        high_priority: false,
+        rationale: "A linked tracker item has a security label.".into(),
+        linked_body: String::new(),
+        linked_items: vec![linked],
+    };
+    let result = super::evaluate::evaluate(
+        super::evaluate::Corpus {
+            schema_version: 1,
+            items: vec![entry],
+        },
+        1,
+    )
+    .unwrap();
+    assert_eq!(result.selected, 1);
+    assert!(result.false_negative_keys.is_empty());
+}
+
+#[test]
+fn evaluation_rejects_unrelated_linked_items() {
+    let entry = super::evaluate::LabelledItem {
+        item: item(ItemKind::PullRequest, "Adjust response handling", ""),
+        relevant: true,
+        high_priority: false,
+        rationale: "Only referenced items are valid context.".into(),
+        linked_body: String::new(),
+        linked_items: vec![item(ItemKind::Issue, "Security issue", "")],
+    };
+    assert!(
+        super::evaluate::evaluate(
+            super::evaluate::Corpus {
+                schema_version: 1,
+                items: vec![entry]
+            },
+            1
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn screen_selects_claimed_phishing_and_embedded_credentials() {
+    for body in [
+        "An email verification flow may enable phishing.",
+        "An application contains a hard-coded access token.",
+        "A hardcoded password was included in an example.",
+    ] {
+        assert!(screen::screen(&item(ItemKind::Issue, "Request handling", body), "").is_some());
+    }
+    assert!(
+        screen::screen(
+            &item(
+                ItemKind::Issue,
+                "Request handling",
+                "A hard-coded timeout is too short."
+            ),
+            ""
+        )
+        .is_none()
+    );
 }
 
 #[test]

@@ -11,7 +11,7 @@ mod tests;
 
 static STRONG: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)\b(CVE-\d{4}-\d+|GHSA(?:-[0-9a-z]{4}){3}|RUSTSEC-\d{4}-\d+|vulnerab\w*|security (?:issue|fix|flaw|bug|vulnerabilit\w*|advisory|report|impact|implications?|concern|risk)|attacker\w*|exploit\w*|bypass\w*|privilege escalation|unauthori[sz]ed access|denial[- ]of[- ]service|remote code execution|account takeover|session fixation|open redirect)",
+        r"(?i)\b(CVE-\d{4}-\d+|GHSA(?:-[0-9a-z]{4}){3}|RUSTSEC-\d{4}-\d+|vulnerab\w*|security (?:issue|fix|flaw|bug|vulnerabilit\w*|advisory|report|impact|implications?|concern|risk)|attacker\w*|exploit\w*|bypass\w*|privilege escalation|unauthori[sz]ed access|denial[- ]of[- ]service|remote code execution|account takeover|session fixation|open redirect|phish\w*|hard[- ]?coded\s+(?:(?:personal|access|api|private|secret|auth(?:entication)?)\s+){0,3}(?:token|password|credential|api[- ]?key)s?)",
     )
     .expect("static strong-signal pattern")
 });
@@ -106,7 +106,7 @@ pub(super) struct LinkedSignals {
 }
 
 impl LinkedSignals {
-    fn add_text(&mut self, text: &str) {
+    pub(super) fn add_text(&mut self, text: &str) {
         self.strong |= STRONG.is_match(text);
         self.bug |= BODY_BUG.is_match(text);
         self.context |= BODY_CONTEXT.is_match(text);

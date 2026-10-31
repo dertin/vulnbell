@@ -17,10 +17,15 @@ Optionally mark independently reviewed relevant items `high_priority: true` for 
 early review. The output includes their selected and missed counts, missed keys, and recall overall
 and at top K. The label does not establish project impact or an advisory severity.
 
-The output reports selected count, precision, recall, false-negative keys, precision and recall at
-the requested top K, and the select-all precision baseline. A zero denominator is null. Ranking
+The output reports selected count, precision, recall, false-positive and false-negative keys,
+precision and recall at the requested top K, and the select-all precision baseline. A zero denominator is null. Ranking
 uses the same rules as the review packet but does not simulate advisory resolution or the
 exact-affected tier. It does not measure correctness of imported decisions or exposure. A higher
 score on one corpus does not establish general safety. The model only orders selected items and
 does not dismiss findings. The current screen excludes items without its signals; inspect the
 packet's bounded `unselected_sample`, and retain this coverage limitation.
+
+For a change that closes tracker items, `linked_items` can include the normalized linked issues,
+pull requests or discussions named by its `closes` keys. Their titles, labels and bodies are screened
+as in the research packet. `linked_body` supplies additional text when structured linked items are
+unavailable. These inputs are local evidence; do not treat unrelated items as linked context.
