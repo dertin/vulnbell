@@ -64,6 +64,8 @@ The Skill uses the Agent Skills format. Its default location is `$HOME/.agents/s
 
 The local agent reviews public upstream evidence and available project codebases. A codebase is a local source tree selected for monitoring; the VulnBell workspace is where monitor artifacts are kept. Profile and JSON fields use `workspaces` for codebase paths. The CLI keeps the inventory, evidence, impact answers, sandbox attestations, and reports as auditable local data.
 
+> **State compatibility:** VulnBell releases support the current state contracts only. Workspaces, profiles, databases, snapshots, evidence, and other state created by an earlier release may be incompatible. Incompatible state is rejected with a clear error and left untouched; VulnBell does not silently delete, overwrite, migrate, or convert it. If a project database is incompatible, create a new monitor with a new project ID. VulnBell does not maintain legacy readers, schema fallbacks, or other code solely to support state from earlier releases.
+
 ## Ask your agent to set up monitoring
 
 > Use VulnBell to monitor Keycloak 26.8.1, WordPress latest, and the project at `/home/alex/projects/acme-api`. Inspect that workspace to inventory its dependencies and determine whether reported issues affect its source or configuration. Create and validate the profile, investigate new advisories and upstream activity, configure a daily run at 08:00 in my time zone with a three-hour execution window, and save a concise Markdown report.
