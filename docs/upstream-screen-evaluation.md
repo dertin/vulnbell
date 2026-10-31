@@ -13,6 +13,10 @@ claiming production recall. Use a separate, independently reviewed and represent
 actual decisions. Every input item needs a unique key, a relevance label and a rationale citing its
 basis. Do not include private data in shared corpora.
 
+Optionally mark independently reviewed relevant items `high_priority: true` for signals that deserve
+early review. The output includes their selected and missed counts, missed keys, and recall overall
+and at top K. The label does not establish project impact or an advisory severity.
+
 The output reports selected count, precision, recall, false-negative keys, precision and recall at
 the requested top K, and the select-all precision baseline. A zero denominator is null. Ranking
 uses the same rules as the review packet but does not simulate advisory resolution or the

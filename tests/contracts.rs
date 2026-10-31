@@ -790,6 +790,18 @@ fn all_published_json_schemas_match_their_rust_contracts() {
                 .unwrap(),
         ),
         (
+            "citations",
+            serde_json::to_value(schemars::schema_for!(
+                vulnbell::tools::citations::CitationBatch
+            ))
+            .unwrap(),
+        ),
+        (
+            "challenge",
+            serde_json::to_value(schemars::schema_for!(vulnbell::tools::challenge::Challenge))
+                .unwrap(),
+        ),
+        (
             "items",
             serde_json::to_value(schemars::schema_for!(Vec<vulnbell::tools::Item>)).unwrap(),
         ),

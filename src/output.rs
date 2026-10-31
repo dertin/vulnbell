@@ -536,23 +536,7 @@ fn recorded_verdict(
     store: &Store,
     language: Language,
 ) -> Option<String> {
-    let evidence = case
-        .evidence
-        .iter()
-        .rev()
-        .find(|evidence| evidence.source == "agent_verdict")?;
-    if !store.evidence_exists(evidence).ok()? {
-        return None;
-    }
-    let bytes = crate::read_limited(
-        &store.directory.join("evidence").join(&evidence.sha256),
-        64 * 1024,
-    )
-    .ok()?;
-    let verdict: crate::model::Verdict = serde_json::from_slice(&bytes).ok()?;
-    if verdict.facts_sha256 != case.facts_sha256 {
-        return None;
-    }
+    let verdict = crate::engine::current_verdict(case, store)?;
     Some(format!(
         "{}: {}",
         text::decision(language, verdict.decision),

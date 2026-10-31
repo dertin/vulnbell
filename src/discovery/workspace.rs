@@ -302,7 +302,7 @@ pub(crate) fn private_name(value: &str) -> bool {
             .any(|suffix| name.ends_with(suffix))
 }
 
-fn checked_path(root: &str, relative: &str) -> Result<PathBuf> {
+pub(crate) fn checked_path(root: &str, relative: &str) -> Result<PathBuf> {
     let root = Path::new(root);
     if root.is_symlink() || root.canonicalize()? != root {
         bail!("workspace root changed or redirects");

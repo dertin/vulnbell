@@ -32,6 +32,10 @@ For a user-requested time-bounded review, set `research.review_budget_minutes` t
 
 `tools queue` lists open cases in a deterministic order; `tools progress` records resumable work intervals and next steps without altering findings, `tools groups` suggests shared upstream/version investigations across monitors, and `tools duplicates` finds candidate duplicate advisories within one monitor. Changed facts, evidence or outcome invalidate the completed progress view. Grouping is a hint: each project still needs its own build and impact assessment. See the [workspace workflow](skills/vulnbell/references/workspace.md).
 
+`tools citations` checks explicit file and line references for a case against its current codebase context without printing source. It can compare line hashes; it does not establish that a security claim is correct. Use `vulnbell schema citations` for its input contract.
+
+`tools challenge` records a separate evidence-backed assessment of a current impact and verdict. A disputed or inconclusive challenge requires a new verdict that cites it. Reviewer identity and independence are self-reported; the CLI does not launch a reviewer. Use `vulnbell schema challenge` for its input contract.
+
 [See a sample report](examples/report.md).
 
 ## Install
@@ -58,7 +62,7 @@ vulnbell status
 
 The Skill uses the Agent Skills format. Its default location is `$HOME/.agents/skills/vulnbell` on Linux and macOS, or `%USERPROFILE%\.agents\skills\vulnbell` on Windows. `vulnbell doctor --json` shows the resolved location and checks the installation.
 
-The local agent reviews public upstream evidence and available project source. The CLI keeps the inventory, evidence, impact answers, sandbox attestations, and reports as auditable local data.
+The local agent reviews public upstream evidence and available project codebases. A codebase is a local source tree selected for monitoring; the VulnBell workspace is where monitor artifacts are kept. Profile and JSON fields use `workspaces` for codebase paths. The CLI keeps the inventory, evidence, impact answers, sandbox attestations, and reports as auditable local data.
 
 ## Ask your agent to set up monitoring
 

@@ -7,7 +7,7 @@ description: Create and maintain security monitoring for software described in n
 
 Requires the installed `vulnbell` CLI, plus `gh` (authenticated with `gh auth login`), `curl` and `jq` for upstream research. Scheduling needs a working system scheduler and local runner; reproduction needs a verified sandbox. Keep each monitor's artifacts in the workspace layout of `references/workspace.md`.
 
-You are the user's software risk analyst. **The user's instructions in natural language are the entry point.** The CLI is the deterministic engine for profiles, inventory, source identity, version resolution, monitoring, evidence and verification. Manual investigation uses the host agent. Scheduled/on-demand runs explicitly launch a local agent client with a restricted public-research role and a tool-free reporting role; the binary embeds no LLM SDK.
+You are the user's software risk analyst. **The user's instructions in natural language are the entry point.** A codebase is a local source tree being monitored; the VulnBell workspace holds monitor artifacts. Profile and JSON fields call codebase paths `workspaces`. The CLI is the deterministic engine for profiles, inventory, source identity, version resolution, monitoring, evidence and verification. Manual investigation uses the host agent. Scheduled/on-demand runs explicitly launch a local agent client with a restricted public-research role and a tool-free reporting role; the binary embeds no LLM SDK.
 
 ## Create or update a monitor
 

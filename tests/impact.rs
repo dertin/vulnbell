@@ -112,6 +112,73 @@ fn impact_plan_is_fixed_for_every_instance() {
         plan.targets[0].questions[0].id,
         ImpactQuestionId::ArtifactDeployed
     );
+    assert!(
+        plan.targets[0].questions[0]
+            .evidence_needed
+            .contains("lockfile")
+    );
+    drop(store);
+    std::fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+}
+
+#[test]
+fn artifact_identity_and_lab_evidence_do_not_prove_deployment() {
+    let (project, mut store, mut case, context) = fixture();
+    let mut references = Vec::new();
+    for kind in [
+        EvidenceKind::Identity,
+        EvidenceKind::Attestation,
+        EvidenceKind::NonApplicability,
+    ] {
+        let evidence = store
+            .record_evidence(format!("synthetic {kind:?}").as_bytes(), "test", None, kind)
+            .unwrap();
+        references.push(EvidenceReference {
+            id: evidence.id.clone(),
+            sha256: evidence.sha256.clone(),
+        });
+        case.evidence.push(evidence);
+    }
+    store.save_case(&case).unwrap();
+    for reference in &references {
+        let submission = ImpactSubmission {
+            schema_version: 1,
+            case_id: case.case_id.clone(),
+            facts_sha256: case.facts_sha256.clone(),
+            answers: vec![answer(
+                &case.instances[0].id,
+                ImpactQuestionId::ArtifactDeployed,
+                ImpactAnswerValue::Yes,
+                reference,
+            )],
+        };
+        assert!(vulnbell::impact::assess(&mut store, &case.case_id, submission).is_err());
+    }
+    let submission = ImpactSubmission {
+        schema_version: 1,
+        case_id: case.case_id.clone(),
+        facts_sha256: case.facts_sha256.clone(),
+        answers: vec![answer(
+            &case.instances[0].id,
+            ImpactQuestionId::ArtifactDeployed,
+            ImpactAnswerValue::Yes,
+            &context,
+        )],
+    };
+    let mut result = vulnbell::impact::assess(&mut store, &case.case_id, submission).unwrap();
+    result.answers[0].evidence = vec![references[0].clone()];
+    let invalid = store
+        .record_evidence(
+            &serde_json::to_vec(&result).unwrap(),
+            "impact_assessment",
+            None,
+            EvidenceKind::Context,
+        )
+        .unwrap();
+    let mut saved = store.case(&case.case_id).unwrap();
+    saved.evidence.push(invalid);
+    store.save_case(&saved).unwrap();
+    assert!(vulnbell::impact::latest(&saved, &store).is_none());
     drop(store);
     std::fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
 }

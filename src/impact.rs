@@ -194,8 +194,8 @@ pub fn latest(case: &Case, store: &Store) -> Option<ImpactResult> {
     case.evidence
         .iter()
         .rev()
-        .filter(|evidence| evidence.source == "impact_assessment")
-        .find_map(|evidence| read_result(case, store, evidence).ok())
+        .find(|evidence| evidence.source == "impact_assessment")
+        .and_then(|evidence| read_result(case, store, evidence).ok())
 }
 
 fn questions() -> Vec<ImpactQuestion> {
@@ -203,7 +203,7 @@ fn questions() -> Vec<ImpactQuestion> {
         ImpactQuestion {
             id: ImpactQuestionId::ArtifactDeployed,
             prompt: "Is this exact version present in a deployed or shipped artifact?".into(),
-            evidence_needed: "Lockfile, SBOM, image inventory, deployment record, or a bounded workspace check.".into(),
+            evidence_needed: "Evidence identifying the exact shipped artifact or deployment, such as an artifact inventory or deployment record. A lockfile or isolated sandbox test alone does not establish shipment or deployment.".into(),
         },
         ImpactQuestion {
             id: ImpactQuestionId::AffectedFeatureUsed,
@@ -263,6 +263,7 @@ fn validate_submission(
         .map(|instance| instance.id.as_str())
         .collect();
     let mut answered = HashSet::new();
+    let mut checked_evidence = HashSet::new();
     for answer in &submission.answers {
         if !instance_ids.contains(answer.instance_id.as_str()) {
             bail!("impact answer references an unknown instance");
@@ -287,11 +288,13 @@ fn validate_submission(
                 .iter()
                 .find(|item| item.id == reference.id && item.sha256 == reference.sha256)
                 .context("impact answer references unknown evidence")?;
-            if !store.evidence_exists(evidence)? {
+            if checked_evidence.insert((&evidence.id, &evidence.sha256))
+                && !store.evidence_exists(evidence)?
+            {
                 bail!("impact answer evidence integrity failed");
             }
             if answer.answer != ImpactAnswerValue::Unknown
-                && !supports_question(answer.question, evidence.kind)
+                && !supports_question(answer.question, answer.answer, evidence.kind)
             {
                 bail!("evidence type does not support this project-impact question");
             }
@@ -300,14 +303,18 @@ fn validate_submission(
     Ok(())
 }
 
-fn supports_question(question: ImpactQuestionId, kind: EvidenceKind) -> bool {
+fn supports_question(
+    question: ImpactQuestionId,
+    answer: ImpactAnswerValue,
+    kind: EvidenceKind,
+) -> bool {
     match question {
+        ImpactQuestionId::ArtifactDeployed if answer == ImpactAnswerValue::Yes => {
+            kind == EvidenceKind::Context
+        }
         ImpactQuestionId::ArtifactDeployed => matches!(
             kind,
-            EvidenceKind::Identity
-                | EvidenceKind::Context
-                | EvidenceKind::Attestation
-                | EvidenceKind::NonApplicability
+            EvidenceKind::Context | EvidenceKind::Attestation | EvidenceKind::NonApplicability
         ),
         ImpactQuestionId::AffectedFeatureUsed
         | ImpactQuestionId::UntrustedInputReachesFeature
@@ -549,5 +556,16 @@ fn read_result(case: &Case, store: &Store, evidence: &Evidence) -> Result<Impact
     {
         bail!("stale or mismatched impact assessment");
     }
+    validate_submission(
+        case,
+        store,
+        &case.case_id,
+        &ImpactSubmission {
+            schema_version: result.schema_version,
+            case_id: result.case_id.clone(),
+            facts_sha256: result.facts_sha256.clone(),
+            answers: result.answers.clone(),
+        },
+    )?;
     Ok(result)
 }

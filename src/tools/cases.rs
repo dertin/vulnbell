@@ -157,6 +157,8 @@ fn handoff_case(
 }
 
 pub fn current_handoff(case: &Case, store: &Store) -> Option<ReviewHandoff> {
+    impact::latest(case, store)?;
+    crate::engine::current_verdict(case, store)?;
     let evidence = case
         .evidence
         .iter()
@@ -540,6 +542,8 @@ pub struct PendingReport {
     pub verification_pending: Vec<PendingVerification>,
     /// Open cases without an agent verdict for their current facts.
     pub verdict_missing: Vec<String>,
+    /// Subset of verdict_missing whose separate review needs reassessment.
+    pub challenge_open: Vec<String>,
     pub research_open: Vec<ResearchOpen>,
     /// General discovery work left to the agent; null when nothing remains.
     pub discovery_open: Option<DiscoveryOpen>,
@@ -644,6 +648,15 @@ pub fn pending(store: &Store) -> Result<PendingReport> {
             .workspace_revisions
             .iter()
             .any(|revision| !revision.matches);
+    let challenge_open = report
+        .finding_checks
+        .iter()
+        .filter(|check| {
+            matches!(check.decision, Decision::Actionable | Decision::Review)
+                && !check.open_challenges.is_empty()
+        })
+        .map(|check| check.case_id.clone())
+        .collect();
     Ok(PendingReport {
         schema_version: 1,
         deliverable: report.verification_pending.is_empty()
@@ -654,6 +667,7 @@ pub fn pending(store: &Store) -> Result<PendingReport> {
             && discovery_open.is_none(),
         verification_pending: report.verification_pending,
         verdict_missing,
+        challenge_open,
         research_open,
         discovery_open,
         tracker_scope_unresolved,
@@ -662,18 +676,5 @@ pub fn pending(store: &Store) -> Result<PendingReport> {
 }
 
 fn has_current_verdict(case: &Case, store: &Store) -> bool {
-    case.evidence
-        .iter()
-        .rev()
-        .filter(|evidence| evidence.source == "agent_verdict")
-        .filter_map(|evidence| {
-            crate::read_limited(
-                &store.directory.join("evidence").join(&evidence.sha256),
-                64 * 1024,
-            )
-            .ok()
-        })
-        .filter_map(|bytes| serde_json::from_slice::<Verdict>(&bytes).ok())
-        .next()
-        .is_some_and(|verdict| verdict.facts_sha256 == case.facts_sha256)
+    crate::engine::current_verdict(case, store).is_some()
 }

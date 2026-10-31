@@ -416,6 +416,14 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
             assert!(report.verification_pending.is_empty());
         }
     }
+    let reviewed_note = store
+        .record_evidence(
+            b"reviewed fixture",
+            "reviewed_note",
+            None,
+            EvidenceKind::Context,
+        )
+        .unwrap();
     let verdict = Verdict {
         schema_version: 1,
         case_id: case.case_id.clone(),
@@ -425,7 +433,10 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
         verification: Verification::Inconclusive,
         decision: Decision::Review,
         rationale: "Review the current version.".into(),
-        evidence: Vec::new(),
+        evidence: vec![vulnbell::model::EvidenceReference {
+            id: reviewed_note.id.clone(),
+            sha256: reviewed_note.sha256.clone(),
+        }],
     };
     let recorded = store
         .record_evidence(
@@ -437,6 +448,8 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
         .unwrap();
     let mut current = case.clone();
     current.decision = Decision::Review;
+    current.verification = Verification::Inconclusive;
+    current.evidence.push(reviewed_note);
     current.evidence.push(recorded);
     snapshot.cases = vec![current.clone()];
     let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();

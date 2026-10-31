@@ -197,6 +197,7 @@ fn evaluation_exposes_false_negatives_and_top_k_without_changing_decisions() {
         super::evaluate::LabelledItem {
             item: value,
             relevant,
+            high_priority: key == "a" || key == "c",
             rationale: "independent synthetic label".into(),
             linked_body: String::new(),
         }
@@ -216,6 +217,25 @@ fn evaluation_exposes_false_negatives_and_top_k_without_changing_decisions() {
     assert_eq!(result["recall"], 0.5);
     assert_eq!(result["precision_at_top"], 1.0);
     assert_eq!(result["false_negative_keys"][0], "c");
+    assert_eq!(result["high_priority"], 2);
+    assert_eq!(result["high_priority_recall"], 0.5);
+    assert_eq!(result["high_priority_missed_keys"][0], "c");
+    assert_eq!(result["high_priority_recall_at_top"], 0.5);
+}
+
+#[test]
+fn evaluation_rejects_high_priority_items_labelled_irrelevant() {
+    let corpus = super::evaluate::Corpus {
+        schema_version: 1,
+        items: vec![super::evaluate::LabelledItem {
+            item: item(ItemKind::Issue, "Example", ""),
+            relevant: false,
+            high_priority: true,
+            rationale: "Contradictory synthetic label".into(),
+            linked_body: String::new(),
+        }],
+    };
+    assert!(super::evaluate::evaluate(corpus, 1).is_err());
 }
 
 #[test]

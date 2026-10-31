@@ -232,6 +232,13 @@
           },
           "type": "array"
         },
+        "open_challenges": {
+          "description": "Challenges awaiting a new verdict; reviewer independence is not verified.",
+          "items": {
+            "$ref": "#/$defs/OpenChallenge"
+          },
+          "type": "array"
+        },
         "references": {
           "items": {
             "$ref": "#/$defs/FindingReference"
@@ -259,7 +266,8 @@
         "decision",
         "references",
         "local_checks",
-        "review_handoff_stale"
+        "review_handoff_stale",
+        "open_challenges"
       ],
       "type": "object"
     },
@@ -737,6 +745,36 @@
         "origin"
       ],
       "type": "object"
+    },
+    "OpenChallenge": {
+      "properties": {
+        "evidence": {
+          "$ref": "#/$defs/EvidenceReference"
+        },
+        "rationale": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "$ref": "#/$defs/OpenReason"
+        }
+      },
+      "required": [
+        "evidence",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "OpenReason": {
+      "enum": [
+        "disputed",
+        "inconclusive",
+        "assessment_changed",
+        "evidence_unavailable"
+      ],
+      "type": "string"
     },
     "Origin": {
       "enum": [

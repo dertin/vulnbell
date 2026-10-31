@@ -34,7 +34,7 @@ pub(super) enum Commands {
     },
     /// Print a versioned JSON Schema generated from the Rust contract.
     Schema {
-        #[arg(value_parser=["profile","verdict","case","test","attestation","impact","report","research","discovery","runner","snapshot","schedule","status","decisions","impact-batch","verdict-batch","scope-batch","handoff-batch","items"])]
+        #[arg(value_parser=["profile","verdict","case","test","attestation","impact","report","research","discovery","runner","snapshot","schedule","status","decisions","impact-batch","verdict-batch","scope-batch","handoff-batch","citations","challenge","items"])]
         contract: String,
         #[arg(long)]
         json: bool,
@@ -206,6 +206,23 @@ pub(super) enum Commands {
 }
 #[derive(Subcommand)]
 pub(super) enum ToolCommands {
+    /// Record a separate evidence-backed challenge of a current case assessment.
+    Challenge {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        from: PathBuf,
+    },
+    /// Check explicit codebase file and line references without emitting source content.
+    Citations {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        case: String,
+        /// JSON file with codebase indexes and relative file/line references.
+        #[arg(long)]
+        from: PathBuf,
+    },
     /// Evaluate screening and ordering against independently labelled local items.
     Evaluate {
         #[arg(long)]
@@ -327,7 +344,7 @@ pub(super) enum ToolCommands {
         #[arg(long, required = true, num_args = 1)]
         project: Vec<PathBuf>,
     },
-    /// Suggest repeated cases with the same advisory, package and resolved version.
+    /// Suggest cases sharing an advisory identifier or alias, package and resolved version.
     Duplicates {
         #[arg(long)]
         project: PathBuf,

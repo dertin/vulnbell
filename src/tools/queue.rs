@@ -85,7 +85,7 @@ pub struct DuplicateAdvisory {
     pub cases: Vec<String>,
 }
 
-/// Find case-level duplicates by exact advisory, package reference and resolved version.
+/// Find candidate duplicates by advisory identifier or alias, package and resolved version.
 pub fn duplicate_advisories(store: &Store) -> Result<Vec<DuplicateAdvisory>> {
     let mut groups: BTreeMap<(String, String, String), BTreeSet<String>> = BTreeMap::new();
     for case in store.cases()? {
@@ -93,28 +93,34 @@ pub fn duplicate_advisories(store: &Store) -> Result<Vec<DuplicateAdvisory>> {
             continue;
         }
         for claim in &case.claims {
-            if claim.id.trim().is_empty() {
-                continue;
-            }
             let Some(instance) = case.instances.iter().find(|i| i.id == claim.instance_id) else {
                 continue;
             };
             let Some(version) = &instance.resolved_version else {
                 continue;
             };
-            groups
-                .entry((
-                    claim.id.clone(),
-                    instance.reference.clone(),
-                    version.clone(),
-                ))
-                .or_default()
-                .insert(case.case_id.clone());
+            for id in std::iter::once(&claim.id).chain(&claim.aliases) {
+                let id = id.trim();
+                if !id.is_empty() {
+                    groups
+                        .entry((
+                            id.to_ascii_uppercase(),
+                            instance.reference.clone(),
+                            version.clone(),
+                        ))
+                        .or_default()
+                        .insert(case.case_id.clone());
+                }
+            }
         }
     }
+    let mut seen = BTreeSet::new();
     Ok(groups
         .into_iter()
         .filter(|(_, cases)| cases.len() > 1)
+        .filter(|((_, component, version), cases)| {
+            seen.insert((component.clone(), version.clone(), cases.clone()))
+        })
         .map(
             |((advisory_id, component, version), cases)| DuplicateAdvisory {
                 advisory_id,

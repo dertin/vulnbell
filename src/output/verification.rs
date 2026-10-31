@@ -31,6 +31,8 @@ pub struct FindingCheck {
     pub review_handoff: Option<crate::tools::cases::ReviewHandoff>,
     /// A prior disposition is no longer current or its evidence cannot be validated.
     pub review_handoff_stale: bool,
+    /// Challenges awaiting a new verdict; reviewer independence is not verified.
+    pub open_challenges: Vec<crate::tools::challenge::OpenChallenge>,
 }
 #[derive(Serialize, JsonSchema, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -279,6 +281,7 @@ pub(super) fn finding_check(case: &Case, store: &Store, language: Language) -> F
         impact,
         review_handoff,
         review_handoff_stale,
+        open_challenges: crate::tools::challenge::open(case, store),
     }
 }
 

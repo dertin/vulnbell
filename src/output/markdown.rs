@@ -214,11 +214,69 @@ pub fn morning_markdown(report: &MorningReport) -> String {
         };
         text.push_str(&format!("{message}: **{missing_verdict}**.\n\n"));
     }
+    let challenged: Vec<_> = report
+        .finding_checks
+        .iter()
+        .filter(|check| matches!(check.decision, Decision::Actionable | Decision::Review))
+        .flat_map(|check| {
+            check
+                .open_challenges
+                .iter()
+                .map(move |challenge| (&check.case_id, challenge))
+        })
+        .collect();
+    if !challenged.is_empty() {
+        text.push_str(if language == Language::Es {
+            "## Segundas revisiones pendientes\n\n| Caso | Motivo | Acción |\n|---|---|---|\n"
+        } else {
+            "## Open second reviews\n\n| Case | Reason | Action |\n|---|---|---|\n"
+        });
+        for (case_id, challenge) in challenged {
+            use crate::tools::challenge::OpenReason;
+            let reason = match (&challenge.reason, language) {
+                (OpenReason::Disputed, Language::Es) => "Conclusión cuestionada",
+                (OpenReason::Inconclusive, Language::Es) => "Revisión inconclusa",
+                (OpenReason::AssessmentChanged, Language::Es) => "Cambió el impacto o veredicto",
+                (OpenReason::EvidenceUnavailable, Language::Es) => {
+                    "Evidencia no disponible o inválida"
+                }
+                (OpenReason::Disputed, _) => "Conclusion disputed",
+                (OpenReason::Inconclusive, _) => "Review inconclusive",
+                (OpenReason::AssessmentChanged, _) => "Impact or verdict changed",
+                (OpenReason::EvidenceUnavailable, _) => "Evidence unavailable or invalid",
+            };
+            let detail = challenge
+                .rationale
+                .as_deref()
+                .map(inline)
+                .unwrap_or_default();
+            let action = match (&challenge.reason, language) {
+                (OpenReason::EvidenceUnavailable, Language::Es) => {
+                    "Restaurar la evidencia antes de reevaluar"
+                }
+                (OpenReason::EvidenceUnavailable, _) => "Restore the evidence before reassessment",
+                (_, Language::Es) => "Reevaluar y citar la revisión en un nuevo veredicto",
+                (_, _) => "Reassess and cite the review in a new verdict",
+            };
+            text.push_str(&format!(
+                "| `{}` | {}{} | {} |\n",
+                inline(case_id),
+                reason,
+                if detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {detail}")
+                },
+                action
+            ));
+        }
+        text.push('\n');
+    }
     if report.workspace_scope_changed {
         text.push_str(if language == Language::Es {
-            "> **Workspaces modificados:** ejecute un nuevo scan antes de continuar.\n\n"
+            "> **Codebases modificadas:** ejecute un nuevo scan antes de continuar.\n\n"
         } else {
-            "> **Workspace configuration changed:** run a new scan before continuing.\n\n"
+            "> **Codebase configuration changed:** run a new scan before continuing.\n\n"
         });
     }
     text.push_str(&workspace_revisions_markdown(
@@ -873,10 +931,10 @@ pub(super) fn workspace_revisions_markdown(
         return String::new();
     }
     let mut out = if es {
-        "## Workspaces revisados\n\n| Workspace | Rama | Commit | Estado |\n|---|---|---|---|\n"
+        "## Codebases revisadas\n\n| Codebase | Rama | Commit | Estado |\n|---|---|---|---|\n"
             .to_owned()
     } else {
-        "## Reviewed workspaces\n\n| Workspace | Branch | Commit | State |\n|---|---|---|---|\n"
+        "## Reviewed codebases\n\n| Codebase | Branch | Commit | State |\n|---|---|---|---|\n"
             .to_owned()
     };
     for item in revisions {

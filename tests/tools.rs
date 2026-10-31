@@ -26,6 +26,9 @@ fn evaluate_cli_reports_known_synthetic_false_negative() {
     assert_eq!(result["true_positive"], 3);
     assert_eq!(result["false_negative_keys"][0], "synthetic/6");
     assert_eq!(result["precision_at_top"], 1.0);
+    assert_eq!(result["high_priority"], 2);
+    assert_eq!(result["high_priority_missed_keys"][0], "synthetic/6");
+    assert_eq!(result["high_priority_recall"], 0.5);
 }
 
 fn write(directory: &Path, relative: &str, contents: &str) {
@@ -335,6 +338,14 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
     let groups = queue::duplicate_advisories(&store).unwrap();
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].cases.len(), 2);
+    advisory_case.claims[0].aliases = vec!["CVE-2026-12345".into()];
+    store.save_case(&advisory_case).unwrap();
+    duplicate.claims[0].id = "CVE-2026-12345".into();
+    duplicate.claims[0].aliases = vec!["GHSA-test-duplicate".into()];
+    store.save_case(&duplicate).unwrap();
+    let groups = queue::duplicate_advisories(&store).unwrap();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].cases.len(), 2);
     duplicate.instances[0].resolved_version = Some("2.0.0".into());
     store.save_case(&duplicate).unwrap();
     assert!(queue::duplicate_advisories(&store).unwrap().is_empty());
@@ -450,6 +461,123 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
     assert!(cases::apply_handoff(&mut store, &handoff, &batches)[0].applied);
     let current = store.case(&case_id).unwrap();
     assert!(cases::current_handoff(&current, &store).is_some());
+    let note = current
+        .evidence
+        .iter()
+        .find(|entry| entry.source == "local_impact_evidence")
+        .unwrap();
+    let note_path = store.directory.join("evidence").join(&note.sha256);
+    let note_bytes = fs::read(&note_path).unwrap();
+    fs::write(&note_path, b"altered evidence").unwrap();
+    assert!(vulnbell::engine::current_verdict(&current, &store).is_none());
+    assert!(cases::current_handoff(&current, &store).is_none());
+    assert!(
+        cases::pending(&store)
+            .unwrap()
+            .verdict_missing
+            .contains(&case_id)
+    );
+    fs::write(&note_path, note_bytes).unwrap();
+    let latest = |source: &str| {
+        current
+            .evidence
+            .iter()
+            .rev()
+            .find(|item| item.source == source)
+            .unwrap()
+            .sha256
+            .clone()
+    };
+    let challenge_input = |conclusion: &str| {
+        serde_json::from_value::<vulnbell::tools::challenge::Challenge>(serde_json::json!({
+            "schema_version": 1, "case_id": case_id, "facts_sha256": current.facts_sha256,
+            "impact_sha256": latest("impact_assessment"), "verdict_sha256": latest("agent_verdict"),
+            "reviewer": "second reviewer", "relationship": "independent", "conclusion": conclusion,
+            "rationale": "A fixture condition needs a second look.",
+            "evidence": [{"id": note.id, "sha256": note.sha256}]
+        }))
+        .unwrap()
+    };
+    let challenge_path = batches.join("challenge.json");
+    fs::write(
+        &challenge_path,
+        serde_json::to_vec(&challenge_input("supported")).unwrap(),
+    )
+    .unwrap();
+    let output = assert_cmd::cargo::cargo_bin_cmd!("vulnbell")
+        .args(["tools", "challenge", "--project"])
+        .arg(&path)
+        .arg("--from")
+        .arg(&challenge_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let supported: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(supported["requires_new_verdict"], false);
+    assert_eq!(supported["independence_verified"], false);
+    let mut changed_impact = store.case(&case_id).unwrap();
+    let replacement = store
+        .record_evidence(
+            b"new impact",
+            "impact_assessment",
+            None,
+            vulnbell::model::EvidenceKind::Context,
+        )
+        .unwrap();
+    changed_impact.evidence.push(replacement);
+    assert!(vulnbell::engine::current_verdict(&changed_impact, &store).is_none());
+    let disputed =
+        vulnbell::tools::challenge::record(&mut store, challenge_input("disputed")).unwrap();
+    assert!(disputed.requires_new_verdict);
+    let challenged = store.case(&case_id).unwrap();
+    assert!(vulnbell::engine::current_verdict(&challenged, &store).is_none());
+    assert!(
+        cases::pending(&store)
+            .unwrap()
+            .challenge_open
+            .contains(&case_id)
+    );
+    let mut challenged_snapshot = store.latest().unwrap();
+    challenged_snapshot.cases = store.cases().unwrap();
+    let challenged_report =
+        vulnbell::output::morning_report(&challenged_snapshot, &store, "cyber").unwrap();
+    assert!(vulnbell::output::morning_markdown(&challenged_report).contains("Conclusion disputed"));
+    assert!(
+        cases::pending(&store)
+            .unwrap()
+            .verdict_missing
+            .contains(&case_id)
+    );
+    assert!(!cases::apply_verdicts(&mut store, &verdicts, &batches)[0].applied);
+    let mut changed_facts = challenged.clone();
+    changed_facts.facts_sha256 = "changed-case-facts".into();
+    store.save_case(&changed_facts).unwrap();
+    assert!(cases::apply_verdicts(&mut store, &verdicts, &batches)[0].applied);
+    store.save_case(&challenged).unwrap();
+    let mut resolved: cases::VerdictBatch =
+        serde_json::from_value(serde_json::to_value(&verdicts).unwrap()).unwrap();
+    resolved.verdicts[0]
+        .evidence
+        .push(disputed.evidence.clone());
+    resolved.verdicts[0].rationale =
+        "Rechecked the challenged condition; the fixture remains uncertain.".into();
+    let resolution = cases::apply_verdicts(&mut store, &resolved, &batches);
+    assert!(resolution[0].applied, "{:?}", resolution[0].error);
+    let review_path = store
+        .directory
+        .join("evidence")
+        .join(&disputed.evidence.sha256);
+    let review_bytes = fs::read(&review_path).unwrap();
+    fs::write(&review_path, b"altered challenge").unwrap();
+    assert!(vulnbell::engine::current_verdict(&store.case(&case_id).unwrap(), &store).is_none());
+    fs::write(&review_path, review_bytes).unwrap();
+    assert!(cases::apply_handoff(&mut store, &handoff, &batches)[0].applied);
+    let current = store.case(&case_id).unwrap();
+    assert!(cases::current_handoff(&current, &store).is_some());
     let original = current
         .evidence
         .iter()
@@ -499,6 +627,20 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
         "A revised explanation for the same open hypothesis.".into();
     assert!(cases::apply_verdicts(&mut store, &changed_verdict, &batches)[0].applied);
     let changed = store.case(&case_id).unwrap();
+    let latest_verdict = changed
+        .evidence
+        .iter()
+        .rev()
+        .find(|entry| entry.source == "agent_verdict")
+        .unwrap();
+    let verdict_path = store
+        .directory
+        .join("evidence")
+        .join(&latest_verdict.sha256);
+    let verdict_bytes = fs::read(&verdict_path).unwrap();
+    fs::write(&verdict_path, b"altered verdict").unwrap();
+    assert!(vulnbell::engine::current_verdict(&changed, &store).is_none());
+    fs::write(&verdict_path, verdict_bytes).unwrap();
     assert!(cases::current_handoff(&changed, &store).is_none());
     snapshot.cases = store.cases().unwrap();
     let stale_report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();

@@ -19,9 +19,9 @@ Cutoff: <date/time/zone> · Coverage: <full/partial>
 
 Coverage gaps: <count> incomplete source or inventory checks; these are not security findings.
 
-## Reviewed workspaces
+## Reviewed codebases
 
-List each workspace's recorded Git branch and full commit. Show detached HEAD, uncommitted changes, unavailable Git state, and any change since the scan. A commit does not identify uncommitted edits, ignored files or submodule contents. Describe these limits without claiming the current checkout was reviewed when it differs.
+List each monitored codebase's recorded Git branch and full commit. Show detached HEAD, uncommitted changes, unavailable Git state, and any change since the scan. A commit does not identify uncommitted edits, ignored files or submodule contents. Describe these limits without claiming the current checkout was reviewed when it differs.
 
 ## Inventory
 

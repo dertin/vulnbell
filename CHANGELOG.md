@@ -4,6 +4,9 @@
 
 - Inventory Python requirements declarations, retaining version and environment uncertainty as coverage limitations.
 - Strengthen evidence checks for consequential impact assessments.
+- Distinguish monitored codebases from VulnBell workspaces and require project context for confirmed shipment or deployment.
+- Check source citations without exposing code, group advisory aliases as duplicate candidates, and measure screening recall for labelled high-priority signals.
+- Record evidence-bound second assessments and reopen disputed or inconclusive verdicts.
 
 ## 0.1.2 - 2026-10-29
 

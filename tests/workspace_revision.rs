@@ -109,6 +109,48 @@ fn changed_checkout_blocks_recording_and_keeps_the_scanned_revision_in_reports()
         case.workspace_revisions[0].commit.as_deref(),
         Some(first_commit.as_str())
     );
+    let citations = dir.path().join("citations.json");
+    fs::write(
+        &citations,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "citations": [{"codebase": 0, "path": "tracked.txt", "line": 1,
+                "line_sha256": vulnbell::digest(b"first")}]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let output = assert_cmd::cargo::cargo_bin_cmd!("vulnbell")
+        .args(["tools", "citations", "--project"])
+        .arg(&path)
+        .args(["--case", &case.case_id, "--from"])
+        .arg(&citations)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let checked: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(checked["citations"][0]["status"], "matched");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("first\n"));
+    let invalid: vulnbell::tools::citations::CitationBatch =
+        serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "citations": [
+                {"codebase": 0, "path": "tracked.txt", "line": 1, "line_sha256": "0".repeat(64)},
+                {"codebase": 0, "path": "tracked.txt", "line": 2},
+                {"codebase": 0, "path": "../vulnbell.yaml", "line": 1},
+                {"codebase": 0, "path": ".env", "line": 1}
+            ]
+        }))
+        .unwrap();
+    let checked = serde_json::to_value(
+        vulnbell::tools::citations::check(&store, &case.case_id, invalid).unwrap(),
+    )
+    .unwrap();
+    assert!(!checked["complete"].as_bool().unwrap());
+    assert_eq!(checked["citations"][0]["status"], "mismatch");
+    for entry in &checked["citations"].as_array().unwrap()[1..] {
+        assert_eq!(entry["status"], "unavailable");
+    }
     let saved: String = store
         .connection
         .query_row("SELECT body FROM research_events LIMIT 1", [], |row| {
@@ -121,10 +163,18 @@ fn changed_checkout_blocks_recording_and_keeps_the_scanned_revision_in_reports()
     );
     git(&workspace, &["checkout", "-b", "other"]);
     assert!(store.ensure_workspace_current().is_err());
+    let stale: vulnbell::tools::citations::CitationBatch =
+        serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "citations": [{"codebase": 0, "path": "tracked.txt", "line": 1}]
+        }))
+        .unwrap();
+    assert!(vulnbell::tools::citations::check(&store, &case.case_id, stale).is_err());
     assert!(vulnbell::research::import(&mut store, batch).is_err());
     let report = vulnbell::output::morning_report(&first, &store, "cyber").unwrap();
     assert!(!report.workspace_revisions[0].matches);
     let markdown = vulnbell::output::morning_markdown(&report);
+    assert!(markdown.contains("## Codebases revisadas"));
     assert!(
         markdown.contains("main") && markdown.contains("other") && markdown.contains(&first_commit)
     );

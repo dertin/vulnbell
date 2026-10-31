@@ -568,6 +568,61 @@ fn search_queries(instance: &Instance, profile: &Profile) -> Vec<String> {
             .unwrap_or("version unknown")
     )]
 }
+pub fn current_verdict(case: &Case, store: &Store) -> Option<Verdict> {
+    if crate::tools::challenge::blocks_verdict(case, store) {
+        return None;
+    }
+    let evidence = case
+        .evidence
+        .iter()
+        .rev()
+        .find(|item| item.source == "agent_verdict")?;
+    if !store.evidence_exists(evidence).ok()? {
+        return None;
+    }
+    let bytes = crate::read_limited(
+        &store.directory.join("evidence").join(&evidence.sha256),
+        64 * 1024,
+    )
+    .ok()?;
+    let verdict: Verdict = serde_json::from_slice(&bytes).ok()?;
+    if verdict.schema_version != 1
+        || verdict.case_id != case.case_id
+        || verdict.facts_sha256 != case.facts_sha256
+        || !crate::workspace_revision::same_revisions(
+            &verdict.workspace_revisions,
+            &case.workspace_revisions,
+        )
+        || verdict.decision != case.decision
+        || verdict.applicability != case.applicability
+        || verdict.verification != case.verification
+        || verdict.rationale.trim().is_empty()
+        || verdict.evidence.is_empty()
+    {
+        return None;
+    }
+    for reference in &verdict.evidence {
+        let cited = case
+            .evidence
+            .iter()
+            .find(|item| item.id == reference.id && item.sha256 == reference.sha256)?;
+        if !store.evidence_exists(cited).ok()? {
+            return None;
+        }
+        if cited.source == "review_challenge"
+            && crate::tools::challenge::read_challenge(case, store, cited).is_none()
+        {
+            return None;
+        }
+        if cited.kind == EvidenceKind::Attestation
+            && crate::sandbox::read_attestation(case, store, cited).is_err()
+        {
+            return None;
+        }
+    }
+    Some(verdict)
+}
+
 pub fn triage(store: &mut Store, id: &str, mut verdict: Verdict) -> Result<Case> {
     let _lock = store.lock()?;
     store.ensure_workspace_current()?;
@@ -582,6 +637,16 @@ pub fn triage(store: &mut Store, id: &str, mut verdict: Verdict) -> Result<Case>
     if verdict.evidence.is_empty() || verdict.rationale.trim().is_empty() {
         bail!("verdict requires rationale and registered evidence");
     }
+    if crate::tools::challenge::unresolved_challenges(&case, store)
+        .iter()
+        .any(|challenge| {
+            !verdict.evidence.iter().any(|reference| {
+                reference.id == challenge.id && reference.sha256 == challenge.sha256
+            })
+        })
+    {
+        bail!("new verdict must address and cite the unresolved challenge");
+    }
     let mut has_attestation = false;
     let mut positive_nonapplicability = false;
     for reference in &verdict.evidence {
@@ -592,6 +657,11 @@ pub fn triage(store: &mut Store, id: &str, mut verdict: Verdict) -> Result<Case>
             .context("unknown evidence or forged attestation")?;
         if !store.evidence_exists(evidence)? {
             bail!("evidence integrity failed");
+        }
+        if evidence.source == "review_challenge"
+            && crate::tools::challenge::read_challenge(&case, store, evidence).is_none()
+        {
+            bail!("challenge evidence integrity failed");
         }
         if evidence.kind == EvidenceKind::Attestation {
             let attestation = crate::sandbox::read_attestation(&case, store, evidence)?;
@@ -638,16 +708,16 @@ pub fn triage(store: &mut Store, id: &str, mut verdict: Verdict) -> Result<Case>
     if verdict.verification == Verification::Disproven && !positive_nonapplicability {
         bail!("disproven requires positive non-applicability evidence");
     }
+    let verdict_bytes = serde_json::to_vec(&verdict)?;
+    if verdict_bytes.len() > 64 * 1024 {
+        bail!("verdict exceeds the 64 KiB evidence limit");
+    }
     case.applicability = verdict.applicability;
     case.verification = verdict.verification;
     case.decision = verdict.decision;
     case.updated_at = crate::now();
-    let verdict_evidence = store.record_evidence(
-        &serde_json::to_vec(&verdict)?,
-        "agent_verdict",
-        None,
-        EvidenceKind::Context,
-    )?;
+    let verdict_evidence =
+        store.record_evidence(&verdict_bytes, "agent_verdict", None, EvidenceKind::Context)?;
     case.evidence.push(verdict_evidence);
     store.save_case(&case)?;
     store.set_meta("last_agent_review", &case.updated_at)?;

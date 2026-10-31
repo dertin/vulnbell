@@ -8,7 +8,7 @@ use vulnbell::{
     model::Verdict,
     profile::{self, Profile},
     store::Store,
-    tools::{cases, draft, hits, queue, workspace},
+    tools::{cases, challenge, citations, draft, hits, queue, workspace},
 };
 
 fn emit(value: &impl serde::Serialize) -> Result<()> {
@@ -134,6 +134,12 @@ fn run() -> Result<i32> {
                 }
                 "handoff-batch" => serde_json::to_value(schemars::schema_for!(
                     vulnbell::tools::cases::HandoffBatch
+                ))?,
+                "citations" => serde_json::to_value(schemars::schema_for!(
+                    vulnbell::tools::citations::CitationBatch
+                ))?,
+                "challenge" => serde_json::to_value(schemars::schema_for!(
+                    vulnbell::tools::challenge::Challenge
                 ))?,
                 "items" => serde_json::to_value(schemars::schema_for!(Vec<vulnbell::tools::Item>))?,
                 _ => bail!("unknown schema"),
@@ -497,6 +503,26 @@ fn run() -> Result<i32> {
 }
 fn run_tool(command: ToolCommands) -> Result<i32> {
     match command {
+        ToolCommands::Challenge { project, from } => {
+            let (_, mut store) = store_for(&project)?;
+            let bytes = vulnbell::read_limited(&from, 128 * 1024)?;
+            let submission: challenge::Challenge = serde_json::from_slice(&bytes)?;
+            emit(&challenge::record(&mut store, submission)?)?;
+            Ok(0)
+        }
+        ToolCommands::Citations {
+            project,
+            case,
+            from,
+        } => {
+            let (_, store) = store_for(&project)?;
+            let bytes = vulnbell::read_limited(&from, 1024 * 1024)?;
+            let input: citations::CitationBatch = serde_json::from_slice(&bytes)?;
+            let report = citations::check(&store, &case, input)?;
+            let complete = report.complete;
+            emit(&report)?;
+            Ok(if complete { 0 } else { 2 })
+        }
         ToolCommands::Evaluate { from, top } => {
             let bytes = vulnbell::read_limited(&from, 16 * 1024 * 1024)?;
             let corpus: vulnbell::tools::evaluate::Corpus = serde_json::from_slice(&bytes)?;
