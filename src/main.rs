@@ -2,7 +2,10 @@ mod cli;
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use cli::{Cli, Commands, RunnerCommands, Sandbox, Skills, ToolCommands, WorkspaceCommands};
+use cli::{
+    AssessmentCommands, CaseTools, Cli, Commands, ResearchTools, RunnerCommands, Sandbox, Skills,
+    ToolCommands, WorkspaceCommands,
+};
 use std::{fs, io::Write};
 use vulnbell::{
     model::Verdict,
@@ -415,12 +418,12 @@ fn run() -> Result<i32> {
                 emit(&case)?;
             }
         }
-        Commands::Verify {
+        Commands::Assessment(AssessmentCommands::Verify {
             id,
             project,
             test,
             authorize,
-        } => {
+        }) => {
             let (profile, mut store) = store_for(&project)?;
             emit(&vulnbell::sandbox::verify(
                 &mut store,
@@ -430,7 +433,7 @@ fn run() -> Result<i32> {
                 &profile.sandbox,
             )?)?;
         }
-        Commands::Impact { id, project, from } => {
+        Commands::Assessment(AssessmentCommands::Impact { id, project, from }) => {
             let (_, mut store) = store_for(&project)?;
             if let Some(path) = from {
                 let submission: vulnbell::impact::ImpactSubmission =
@@ -441,20 +444,20 @@ fn run() -> Result<i32> {
                 emit(&vulnbell::impact::plan(&case, &store))?;
             }
         }
-        Commands::Triage { id, project, from } => {
+        Commands::Assessment(AssessmentCommands::Triage { id, project, from }) => {
             let (_, mut store) = store_for(&project)?;
             let verdict: Verdict =
                 serde_json::from_slice(&vulnbell::read_limited(&from, 1024 * 1024)?)?;
             emit(&vulnbell::engine::triage(&mut store, &id, verdict)?)?;
         }
-        Commands::Report {
+        Commands::Assessment(AssessmentCommands::Report {
             project,
             json,
             audience,
             pdf,
             from_markdown,
             pdf_browser,
-        } => report(&project, json, &audience, pdf, from_markdown, pdf_browser)?,
+        }) => report(&project, json, &audience, pdf, from_markdown, pdf_browser)?,
         Commands::Run { project, now } => {
             let profile = profile::load(&project)?;
             emit(&vulnbell::scheduler::run(&profile, &project, now)?)?;
@@ -596,7 +599,7 @@ fn run_tool(command: ToolCommands) -> Result<i32> {
             emit(&vulnbell::tools::evaluate::evaluate(corpus, top)?)?;
             Ok(0)
         }
-        ToolCommands::Hits {
+        ToolCommands::Research(ResearchTools::Hits {
             project,
             raw,
             decisions,
@@ -605,7 +608,7 @@ fn run_tool(command: ToolCommands) -> Result<i32> {
             recheck,
             upstream,
             review_limit,
-        } => {
+        }) => {
             if review_limit.is_some_and(|limit| !(1..=1000).contains(&limit)) {
                 bail!("review limit must be 1..1000");
             }
@@ -645,18 +648,18 @@ fn run_tool(command: ToolCommands) -> Result<i32> {
             let incomplete = !packet.missing.is_empty() || !packet.errors.is_empty();
             Ok(if incomplete { 2 } else { 0 })
         }
-        ToolCommands::Decide {
+        ToolCommands::Research(ResearchTools::Decide {
             project,
             packet,
             from,
             decisions,
-        } => {
+        }) => {
             let (_, store) = store_for(&project)?;
             draft::save_decision(&store, &packet, &from, &decisions)?;
             emit(&serde_json::json!({"schema_version": 1, "saved": decisions}))?;
             Ok(0)
         }
-        ToolCommands::Draft {
+        ToolCommands::Research(ResearchTools::Draft {
             project,
             raw,
             decisions,
@@ -666,7 +669,7 @@ fn run_tool(command: ToolCommands) -> Result<i32> {
             offline,
             recheck,
             upstream,
-        } => {
+        }) => {
             distinct_output(&output, &project)?;
             distinct_output(&output, &decisions)?;
             let (profile, mut store) = store_for(&project)?;
@@ -691,52 +694,52 @@ fn run_tool(command: ToolCommands) -> Result<i32> {
             }))?;
             Ok(0)
         }
-        ToolCommands::Impact { project, from } => {
+        ToolCommands::Cases(CaseTools::Impact { project, from }) => {
             let (_, mut store) = store_for(&project)?;
             let batch = cases::load_impact(&from)?;
             let outcomes = cases::apply_impact(&mut store, &batch, batch_base(&from));
             emit_outcomes(&outcomes)
         }
-        ToolCommands::Triage { project, from } => {
+        ToolCommands::Cases(CaseTools::Triage { project, from }) => {
             let (_, mut store) = store_for(&project)?;
             let batch = cases::load_verdicts(&from)?;
             let outcomes = cases::apply_verdicts(&mut store, &batch, batch_base(&from));
             emit_outcomes(&outcomes)
         }
-        ToolCommands::Scope { project, from } => {
+        ToolCommands::Cases(CaseTools::Scope { project, from }) => {
             let (_, mut store) = store_for(&project)?;
             let batch = cases::load_scope(&from)?;
             let outcomes = cases::apply_scope(&mut store, &batch, batch_base(&from));
             emit_outcomes(&outcomes)
         }
-        ToolCommands::Handoff { project, from } => {
+        ToolCommands::Cases(CaseTools::Handoff { project, from }) => {
             let (_, mut store) = store_for(&project)?;
             let batch = cases::load_handoff(&from)?;
             let outcomes = cases::apply_handoff(&mut store, &batch, batch_base(&from));
             emit_outcomes(&outcomes)
         }
-        ToolCommands::Pending { project, json: _ } => {
+        ToolCommands::Cases(CaseTools::Pending { project, json: _ }) => {
             let (_, store) = store_for(&project)?;
             let report = cases::pending(&store)?;
             emit(&report)?;
             Ok(if report.deliverable { 0 } else { 2 })
         }
-        ToolCommands::Queue {
+        ToolCommands::Cases(CaseTools::Queue {
             project,
             limit,
             offset,
             unworked,
-        } => {
+        }) => {
             let (_, store) = store_for(&project)?;
             emit(&queue::list(&store, limit, offset, unworked)?)?;
             Ok(0)
         }
-        ToolCommands::Progress {
+        ToolCommands::Cases(CaseTools::Progress {
             project,
             case,
             state,
             next_step,
-        } => {
+        }) => {
             let (_, store) = store_for(&project)?;
             if state == "history" {
                 if next_step.is_some() {

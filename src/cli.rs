@@ -89,51 +89,8 @@ pub(super) enum Commands {
         #[arg(long)]
         instance: Option<String>,
     },
-    /// Execute an explicitly authorized test in Microsandbox; no fallback to host execution.
-    Verify {
-        id: String,
-        #[arg(long)]
-        project: PathBuf,
-        #[arg(long = "case")]
-        test: PathBuf,
-        #[arg(long)]
-        authorize: bool,
-    },
-    /// Answer a fixed, evidence-bound questionnaire about project impact.
-    Impact {
-        id: String,
-        #[arg(long)]
-        project: PathBuf,
-        /// JSON answers matching schema impact. Without this option, prints the questions.
-        #[arg(long)]
-        from: Option<PathBuf>,
-    },
-    /// Apply a verdict against registered evidence and current case facts.
-    Triage {
-        id: String,
-        #[arg(long)]
-        project: PathBuf,
-        #[arg(long)]
-        from: PathBuf,
-    },
-    /// Export the current inventory, cases and source coverage.
-    Report {
-        #[arg(long)]
-        project: PathBuf,
-        #[arg(long)]
-        json: bool,
-        #[arg(long,default_value="manager",value_parser=["manager","cyber","audit"])]
-        audience: String,
-        /// Write a self-contained PDF using a local Chromium-based browser.
-        #[arg(long, conflicts_with = "json")]
-        pdf: Option<PathBuf>,
-        /// Use an edited Markdown report as the PDF's main text.
-        #[arg(long, requires = "pdf")]
-        from_markdown: Option<PathBuf>,
-        /// Chromium-based browser executable; otherwise search common names in PATH.
-        #[arg(long, requires = "pdf")]
-        pdf_browser: Option<PathBuf>,
-    },
+    #[command(flatten)]
+    Assessment(AssessmentCommands),
     /// Configure and verify local unattended agent adapters.
     Runners {
         #[command(subcommand)]
@@ -214,6 +171,54 @@ pub(super) enum Commands {
     },
 }
 #[derive(Subcommand)]
+pub(super) enum AssessmentCommands {
+    /// Execute an explicitly authorized test in Microsandbox; no fallback to host execution.
+    Verify {
+        id: String,
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long = "case")]
+        test: PathBuf,
+        #[arg(long)]
+        authorize: bool,
+    },
+    /// Answer a fixed, evidence-bound questionnaire about project impact.
+    Impact {
+        id: String,
+        #[arg(long)]
+        project: PathBuf,
+        /// JSON answers matching schema impact. Without this option, prints the questions.
+        #[arg(long)]
+        from: Option<PathBuf>,
+    },
+    /// Apply a verdict against registered evidence and current case facts.
+    Triage {
+        id: String,
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        from: PathBuf,
+    },
+    /// Export the current inventory, cases and source coverage.
+    Report {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        json: bool,
+        #[arg(long,default_value="manager",value_parser=["manager","cyber","audit"])]
+        audience: String,
+        /// Write a self-contained PDF using a local Chromium-based browser.
+        #[arg(long, conflicts_with = "json")]
+        pdf: Option<PathBuf>,
+        /// Use an edited Markdown report as the PDF's main text.
+        #[arg(long, requires = "pdf")]
+        from_markdown: Option<PathBuf>,
+        /// Chromium-based browser executable; otherwise search common names in PATH.
+        #[arg(long, requires = "pdf")]
+        pdf_browser: Option<PathBuf>,
+    },
+}
+#[derive(Subcommand)]
 pub(super) enum ToolCommands {
     /// Record a separate evidence-backed challenge of a current case assessment.
     Challenge {
@@ -240,6 +245,90 @@ pub(super) enum ToolCommands {
         #[arg(long, default_value_t = 10)]
         top: usize,
     },
+    #[command(flatten)]
+    Research(ResearchTools),
+    #[command(flatten)]
+    Cases(CaseTools),
+    /// Find candidate shared upstream cases across monitors without copying project decisions.
+    Groups {
+        #[arg(long, required = true, num_args = 1)]
+        project: Vec<PathBuf>,
+    },
+    /// Suggest cases sharing an advisory identifier or alias, package and resolved version.
+    Duplicates {
+        #[arg(long)]
+        project: PathBuf,
+    },
+    /// Create the monitor's folders in a VulnBell workspace.
+    Workspace {
+        #[command(subcommand)]
+        command: WorkspaceCommands,
+    },
+}
+#[derive(Subcommand)]
+pub(super) enum CaseTools {
+    /// Apply an impact batch; note paths are relative to the batch file.
+    Impact {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        from: PathBuf,
+    },
+    /// Narrow over-broad research cases using reviewed evidence; impact remains open.
+    Scope {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        from: PathBuf,
+    },
+    /// Record an evidence-backed review handoff without asserting a sandbox result.
+    Handoff {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        from: PathBuf,
+    },
+    /// Apply a verdict batch; note paths are relative to the batch file.
+    Triage {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        from: PathBuf,
+    },
+    /// List what still blocks the daily report. Exit 2 means it is not deliverable yet.
+    Pending {
+        #[arg(long)]
+        project: PathBuf,
+        /// Output is always JSON; accepted for consistency with other commands.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List open cases in a deterministic priority order, with persisted review progress.
+    Queue {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+        /// Hide cases already reviewed for their current facts; they remain open.
+        #[arg(long)]
+        unworked: bool,
+    },
+    /// Record a review work interval; this never changes the case verdict or pending status.
+    Progress {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        case: String,
+        #[arg(long, value_parser = ["start", "reviewed", "human_review", "history"])]
+        state: String,
+        #[arg(long)]
+        next_step: Option<String>,
+    },
+}
+#[derive(Subcommand)]
+pub(super) enum ResearchTools {
     /// Screen the responses in a run's raw directory; list missing fetches and items to decide.
     /// Exit 2 means responses are missing or unreadable.
     Hits {
@@ -305,80 +394,6 @@ pub(super) enum ToolCommands {
         /// Restrict this batch to one upstream from the research plan.
         #[arg(long)]
         upstream: Option<String>,
-    },
-    /// Apply an impact batch; note paths are relative to the batch file.
-    Impact {
-        #[arg(long)]
-        project: PathBuf,
-        #[arg(long)]
-        from: PathBuf,
-    },
-    /// Narrow over-broad research cases using reviewed evidence; impact remains open.
-    Scope {
-        #[arg(long)]
-        project: PathBuf,
-        #[arg(long)]
-        from: PathBuf,
-    },
-    /// Record an evidence-backed review handoff without asserting a sandbox result.
-    Handoff {
-        #[arg(long)]
-        project: PathBuf,
-        #[arg(long)]
-        from: PathBuf,
-    },
-    /// Apply a verdict batch; note paths are relative to the batch file.
-    Triage {
-        #[arg(long)]
-        project: PathBuf,
-        #[arg(long)]
-        from: PathBuf,
-    },
-    /// List what still blocks the daily report. Exit 2 means it is not deliverable yet.
-    Pending {
-        #[arg(long)]
-        project: PathBuf,
-        /// Output is always JSON; accepted for consistency with other commands.
-        #[arg(long)]
-        json: bool,
-    },
-    /// List open cases in a deterministic priority order, with persisted review progress.
-    Queue {
-        #[arg(long)]
-        project: PathBuf,
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-        #[arg(long, default_value_t = 0)]
-        offset: usize,
-        /// Hide cases already reviewed for their current facts; they remain open.
-        #[arg(long)]
-        unworked: bool,
-    },
-    /// Record a review work interval; this never changes the case verdict or pending status.
-    Progress {
-        #[arg(long)]
-        project: PathBuf,
-        #[arg(long)]
-        case: String,
-        #[arg(long, value_parser = ["start", "reviewed", "human_review", "history"])]
-        state: String,
-        #[arg(long)]
-        next_step: Option<String>,
-    },
-    /// Find candidate shared upstream cases across monitors without copying project decisions.
-    Groups {
-        #[arg(long, required = true, num_args = 1)]
-        project: Vec<PathBuf>,
-    },
-    /// Suggest cases sharing an advisory identifier or alias, package and resolved version.
-    Duplicates {
-        #[arg(long)]
-        project: PathBuf,
-    },
-    /// Create the monitor's folders in a VulnBell workspace.
-    Workspace {
-        #[command(subcommand)]
-        command: WorkspaceCommands,
     },
 }
 #[derive(Subcommand)]

@@ -267,6 +267,28 @@ fn cli_scaffold_is_valid_and_scan_rejects_empty_scope() {
     remove_project(initialized["project_id"].as_str().unwrap());
 }
 
+#[cfg(unix)]
+#[test]
+fn cli_runs_with_one_mebibyte_stack() {
+    let directory = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new("sh")
+        .args([
+            "-c",
+            "ulimit -s 1024; exec \"$1\" init --output \"$2\"",
+            "sh",
+        ])
+        .arg(assert_cmd::cargo::cargo_bin!("vulnbell"))
+        .arg(directory.path().join("vulnbell.yaml"))
+        .env("VULNBELL_DATA_DIR", directory.path().join("data"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn status_lists_registered_projects_and_persisted_schedule_outcomes() {
     let directory = tempfile::tempdir().unwrap();
