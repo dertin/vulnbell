@@ -24,8 +24,9 @@ pub fn doctor() -> Result<serde_json::Value> {
     }
     command.args(["--user", "show-environment"]);
     let scheduler = run_bounded(&mut command, 5, 65536).is_ok_and(|result| result.success);
+    let github = crate::network::github_credentials();
     Ok(
-        serde_json::json!({"schema_version":1,"cli_version":env!("CARGO_PKG_VERSION"),"data_directory":crate::store::data_root(),"skills":skill_status,"sandbox":crate::sandbox::availability(),"scheduler":{"systemd_user":scheduler,"unattended_agent_review":false},"runners":{"configured":runners,"adapters":crate::runners::adapter_catalog()},"credentials":{"github":std::env::var_os("GITHUB_TOKEN").is_some(),"nvd":std::env::var_os("NVD_API_KEY").is_some()},"connectivity":"not_checked: scan reports per-source network evidence"}),
+        serde_json::json!({"schema_version":1,"cli_version":env!("CARGO_PKG_VERSION"),"data_directory":crate::store::data_root(),"skills":skill_status,"sandbox":crate::sandbox::availability(),"scheduler":{"systemd_user":scheduler,"unattended_agent_review":false},"runners":{"configured":runners,"adapters":crate::runners::adapter_catalog()},"credentials":{"github":github.is_some(),"github_source":github.as_ref().map(|value| value.source),"nvd":std::env::var_os("NVD_API_KEY").is_some()},"connectivity":"not_checked: scan reports per-source network evidence"}),
     )
 }
 fn systemd_command(args: &[&str]) -> Result<ProcessResult> {

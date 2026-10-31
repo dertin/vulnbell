@@ -105,7 +105,7 @@ done
 - Treat 404 or 410 as an empty disabled unit only when repository metadata or official documentation confirms that unit is disabled. Save the metadata as evidence. Otherwise preserve the failure as a coverage gap. Rate limits, 5xx and authentication failures leave the file absent; record reset/retry information and resume from the continuation, or use `tools draft --partial` only for a real technical blockage.
 - A response that `hits` reports as not JSON usually holds a redirect or an HTML page: `curl -f` does not fail on 3xx. Delete it, do not follow the redirect on your own, and tell the user the tracker moved so the mapping can be fixed.
 - Jira Cloud answers a search on an unknown or hidden project with an empty 200. When a Jira source never returns issues, check `<base>/rest/api/3/project/<KEY>`; a 404 means the tracker is not covered. Report it as a coverage gap and cover the component through its current tracker.
-- Keep the token out of files and logs: `gh` uses its own credential store, and `GITHUB_TOKEN=$(gh auth token)` is set inline only for the `vulnbell` commands that query GitHub advisories.
+- Keep credentials out of files, logs and agent context. Authenticate with `gh auth login`; VulnBell reads the active `gh` credential directly when needed for supported GitHub API requests.
 
 Primary docs:
 - https://docs.github.com/en/search-github/searching-on-github/searching-issues-and-pull-requests

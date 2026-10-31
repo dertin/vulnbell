@@ -64,6 +64,8 @@ vulnbell status
 
 The Skill uses the Agent Skills format. Its default location is `$HOME/.agents/skills/vulnbell` on Linux and macOS, or `%USERPROFILE%\.agents\skills\vulnbell` on Windows. `vulnbell doctor --json` shows the resolved location and checks the installation.
 
+For authenticated GitHub advisory and release requests, sign in with `gh auth login`. VulnBell reads the active GitHub CLI credential into memory when needed; it does not print it or add it to the agent environment. An explicitly configured `GITHUB_TOKEN` takes precedence. `vulnbell doctor --json` reports whether a credential is available and its source; it does not verify network access or token permissions.
+
 The local agent reviews public upstream evidence and available project codebases. A codebase is a local source tree selected for monitoring; the VulnBell workspace is where monitor artifacts are kept. Profile and JSON fields use `workspaces` for codebase paths. The CLI keeps the inventory, evidence, impact answers, sandbox attestations, and reports as auditable local data.
 
 > **State compatibility:** VulnBell releases support the current state contracts only. Workspaces, profiles, databases, snapshots, evidence, and other state created by an earlier release may be incompatible. Incompatible state is rejected with a clear error and left untouched; VulnBell does not silently delete, overwrite, migrate, or convert it. If a project database is incompatible, create a new monitor with a new project ID. VulnBell does not maintain legacy readers, schema fallbacks, or other code solely to support state from earlier releases.
