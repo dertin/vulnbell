@@ -79,6 +79,16 @@ pub struct ReleaseDate {
     pub evidence: Evidence,
 }
 impl Instance {
+    pub fn is_python_requirement(&self) -> bool {
+        self.origin == Origin::Declared
+            && self.reference.starts_with("pkg:pypi/")
+            && self.provenance.path.as_deref().is_some_and(|path| {
+                std::path::Path::new(path)
+                    .file_name()
+                    .is_some_and(|name| name == "requirements.txt")
+            })
+    }
+
     pub fn declared(component: &Component) -> Self {
         let origin = if component.usage == crate::profile::Usage::Deployed {
             Origin::Deployed

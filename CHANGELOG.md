@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3 - Unreleased
+
+- Inventory Python requirements declarations, retaining version and environment uncertainty as coverage limitations.
+- Strengthen evidence checks for consequential impact assessments.
+
 ## 0.1.2 - 2026-10-29
 
 - Monitor declared products and dependency inventories using public advisories and selected upstream trackers.

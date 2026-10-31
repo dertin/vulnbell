@@ -6,6 +6,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod requirements;
+
 #[derive(Default)]
 pub struct Inventory {
     pub instances: Vec<Instance>,
@@ -684,7 +686,7 @@ pub fn discover(
     let base = profile_path.parent().unwrap_or(Path::new("."));
     let mut visited = std::collections::HashSet::new();
     let mut file_count = 0;
-    let mut total_bytes = 0;
+    let mut total_bytes: usize = 0;
     'workspaces: for workspace in workspaces {
         let root = base.join(workspace);
         let root: PathBuf = match root.canonicalize() {
@@ -763,16 +765,58 @@ pub fn discover(
                 continue;
             }
             let name = entry.file_name().to_string_lossy();
+            if name == "requirements.txt" {
+                supported_files += 1;
+                if !visited.insert(entry.path().to_owned()) {
+                    continue;
+                }
+                let relative =
+                    crate::slash_path(entry.path().strip_prefix(&root).unwrap_or(entry.path()));
+                match crate::read_limited(entry.path(), 32 * 1024 * 1024) {
+                    Ok(bytes) if total_bytes.saturating_add(bytes.len()) <= 128 * 1024 * 1024 => {
+                        total_bytes += bytes.len();
+                        let remaining = instance_budget.saturating_sub(inventory.instances.len());
+                        match requirements::parse(
+                            &bytes,
+                            &root.to_string_lossy(),
+                            &relative,
+                            remaining,
+                        ) {
+                            Ok((instances, detail)) => {
+                                inventory.instances.extend(instances);
+                                inventory.coverage.push(Coverage::new(
+                                    "inventory",
+                                    &relative,
+                                    CoverageState::Partial,
+                                    detail,
+                                ));
+                            }
+                            Err(error) => inventory.coverage.push(Coverage::new(
+                                "inventory",
+                                &relative,
+                                CoverageState::Partial,
+                                safe_inventory_error(&error),
+                            )),
+                        }
+                    }
+                    Ok(_) => inventory.coverage.push(Coverage::new(
+                        "inventory",
+                        &relative,
+                        CoverageState::Partial,
+                        "aggregate inventory byte budget exhausted",
+                    )),
+                    Err(_) => inventory.coverage.push(Coverage::new(
+                        "inventory",
+                        &relative,
+                        CoverageState::Unavailable,
+                        "requirements file could not be read",
+                    )),
+                }
+                continue;
+            }
             if !native_inventory_file(&name) {
-                if [
-                    "go.mod",
-                    "go.sum",
-                    "poetry.lock",
-                    "uv.lock",
-                    "Pipfile.lock",
-                    "requirements.txt",
-                ]
-                .contains(&name.as_ref())
+                if ["go.mod", "go.sum", "poetry.lock", "uv.lock", "Pipfile.lock"]
+                    .contains(&name.as_ref())
                 {
                     inventory.coverage.push(Coverage::new(
                         "inventory",

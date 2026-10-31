@@ -101,6 +101,54 @@ fn direct_scope_reports_unknown_depth_without_mapping_every_tracker() {
 }
 
 #[test]
+fn requirements_with_credentials_are_not_exported_even_beyond_the_first_chunk() {
+    let (directory, path, profile, store) = project();
+    let mut content = "# ordinary comment\n".repeat(5000);
+    content.push_str(
+        "--index-url https://user:synthetic-secret@example.invalid/simple\nrequests==2.31.0\n",
+    );
+    fs::write(directory.path().join("workspace/requirements.txt"), content).unwrap();
+    fs::write(
+        directory.path().join("workspace/requirements-dev.txt"),
+        "\u{feff}--index-url synthetic-secret\n",
+    )
+    .unwrap();
+    fs::write(
+        directory.path().join("workspace/constraints.txt"),
+        format!(
+            "{}{}{}\nsynthetic-private-key\n-----END PRIVATE KEY-----\n",
+            "# filler\n".repeat(8000),
+            "-----BEGIN ",
+            "PRIVATE KEY-----"
+        ),
+    )
+    .unwrap();
+    let page = discovery::plan(&profile, &path, &store, 20).unwrap();
+    assert!(page.workspace.is_empty());
+    assert_eq!(page.summary.files_unavailable, 3);
+    assert!(
+        !serde_json::to_string(&page)
+            .unwrap()
+            .contains("synthetic-secret")
+    );
+    cleanup(store, &profile);
+}
+
+#[test]
+fn requirements_with_includes_are_not_exported_as_public_package_evidence() {
+    let (directory, path, profile, store) = project();
+    fs::write(
+        directory.path().join("workspace/requirements.txt"),
+        "requests==2.31.0\n-r child.txt\n",
+    )
+    .unwrap();
+    let page = discovery::plan(&profile, &path, &store, 20).unwrap();
+    assert!(page.workspace.is_empty());
+    assert_eq!(page.summary.files_unavailable, 1);
+    cleanup(store, &profile);
+}
+
+#[test]
 fn manifest_directness_requires_a_rationale_and_is_preserved_in_the_inventory() {
     let (directory, path, profile, mut store) = project();
     fs::write(directory.path().join("workspace/pom.xml"),
@@ -222,7 +270,7 @@ fn default_general_discovery_imports_python_with_provenance_and_invalidates_chan
         .iter()
         .find(|item| item.reference == "pkg:pypi/requests")
         .unwrap();
-    assert_eq!(instance.origin, vulnbell::model::Origin::AgentObserved);
+    assert_eq!(instance.origin, vulnbell::model::Origin::Declared);
     assert_eq!(
         instance.provenance.path.as_deref(),
         Some("requirements.txt")
@@ -243,7 +291,19 @@ fn default_general_discovery_imports_python_with_provenance_and_invalidates_chan
     )
     .unwrap();
     let snapshot = vulnbell::engine::scan(&profile, &path, true).unwrap();
-    assert!(snapshot.instances.is_empty());
+    assert!(
+        snapshot
+            .instances
+            .iter()
+            .any(|item| item.reference == "pkg:pypi/requests"
+                && item.resolved_version.as_deref() == Some("2.32.0"))
+    );
+    assert!(
+        !snapshot
+            .instances
+            .iter()
+            .any(|item| item.resolved_version.as_deref() == Some("2.31.0"))
+    );
     let page = discovery::plan(&profile, &path, &store, 1).unwrap();
     assert!(page.workspace[0].content.contains("2.32.0"));
     cleanup(store, &profile);
@@ -522,7 +582,7 @@ fn new_classification_rules_reclassify_walked_entries_and_keep_other_reviews() {
 }
 
 #[test]
-fn reviewed_manifests_without_native_parser_leave_no_inventory_gap() {
+fn requirements_keep_partial_inventory_coverage_after_agent_review() {
     let (directory, path, profile, mut store) = project();
     fs::write(
         directory.path().join("workspace/requirements.txt"),
@@ -531,7 +591,9 @@ fn reviewed_manifests_without_native_parser_leave_no_inventory_gap() {
     .unwrap();
     let pending = vulnbell::engine::scan(&profile, &path, true).unwrap();
     assert!(pending.coverage.iter().any(|row| {
-        row.source == "inventory" && row.detail == vulnbell::inventory::UNSUPPORTED_MANIFEST
+        row.source == "inventory"
+            && row.state == vulnbell::model::CoverageState::Partial
+            && row.scope == "requirements.txt"
     }));
     assert!(
         !pending
@@ -542,10 +604,9 @@ fn reviewed_manifests_without_native_parser_leave_no_inventory_gap() {
     let page = discovery::plan(&profile, &path, &store, 1).unwrap();
     discovery::import(&profile, &path, &mut store, review(&page, vec![package()])).unwrap();
     let reviewed = vulnbell::engine::scan(&profile, &path, true).unwrap();
-    assert!(
-        !reviewed.coverage.iter().any(|row| row.source == "inventory"
-            && row.detail == vulnbell::inventory::UNSUPPORTED_MANIFEST)
-    );
+    assert!(reviewed.coverage.iter().any(|row| row.source == "inventory"
+        && row.state == vulnbell::model::CoverageState::Partial
+        && row.scope == "requirements.txt"));
     assert!(
         reviewed
             .coverage
