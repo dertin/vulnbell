@@ -205,6 +205,14 @@ fn line(out: &mut String, good: bool, text: &str, color: bool) {
     }
 }
 
+fn info(out: &mut String, text: &str, color: bool) {
+    if color {
+        let _ = writeln!(out, "  \x1b[36mINFO \x1b[0m {text}");
+    } else {
+        let _ = writeln!(out, "  INFO  {text}");
+    }
+}
+
 pub fn doctor_text(report: &DoctorReport, color: bool) -> String {
     let mut out = format!("VulnBell {} — environment check\n\n", report.cli_version);
     out.push_str("Interactive review\n");
@@ -328,7 +336,11 @@ pub fn doctor_text(report: &DoctorReport, color: bool) -> String {
                     runner.executable.display()
                 )
             };
-            line(&mut out, false, &message, color);
+            if available {
+                info(&mut out, &message, color);
+            } else {
+                line(&mut out, false, &message, color);
+            }
         }
     }
     out.push_str("\nNetwork access and credential permissions are not checked. Scans report source coverage.\nOptional checks are only needed for the workflows listed above.\n");

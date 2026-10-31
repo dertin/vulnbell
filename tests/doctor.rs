@@ -17,6 +17,16 @@ fn doctor_distinguishes_text_and_json_and_reports_missing_tools() {
         .unwrap(),
     )
     .unwrap();
+    fs::write(
+        runners.join("present.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "id": "present",
+            "adapter": { "type": "codex", "executable": std::env::current_exe().unwrap() }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     let run = |json: bool| {
         let mut command = assert_cmd::cargo::cargo_bin_cmd!("vulnbell");
         command
@@ -38,6 +48,7 @@ fn doctor_distinguishes_text_and_json_and_reports_missing_tools() {
     assert!(text.contains("Interactive review"));
     assert!(text.contains("GitHub credential unavailable"));
     assert!(text.contains("Runner missing executable is missing"));
+    assert!(text.contains("INFO  Runner present executable found; compatibility not checked"));
     assert!(text.contains("Network access and credential permissions are not checked"));
     assert!(!text.contains('\x1b'));
     let json = run(true);
