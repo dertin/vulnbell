@@ -11,12 +11,64 @@ use text::fill;
 mod details;
 mod discovery;
 mod markdown;
+mod pdf;
 pub(crate) mod text;
 mod verification;
 pub use details::AdvisoryDetail;
 pub use discovery::discovery_markdown;
 use markdown::inline;
 pub use markdown::{morning_markdown, verification_markdown};
+
+/// Summarize the actual delivery gate without hiding unresolved work.
+pub fn delivery_status_markdown(
+    pending: &crate::tools::cases::PendingReport,
+    scan_partial: bool,
+    language: crate::profile::Language,
+) -> String {
+    if pending.deliverable && !scan_partial {
+        return String::new();
+    }
+    let discovery = pending.discovery_open.is_some();
+    match language {
+        crate::profile::Language::Es => format!(
+            "> **Cobertura o revisión incompleta:** verificaciones pendientes: {}; veredictos pendientes: {}; ventanas upstream pendientes: {}; descubrimiento pendiente: {}; alcance de fuentes sin resolver: {}; codebase cambiada o sin identificar: {}; scan parcial: {}. Consulte `vulnbell tools pending` para el detalle.\n\n",
+            pending.verification_pending.len(),
+            pending.verdict_missing.len(),
+            pending.research_open.len(),
+            if discovery { "sí" } else { "no" },
+            if pending.tracker_scope_unresolved {
+                "sí"
+            } else {
+                "no"
+            },
+            if pending.workspace_context_changed {
+                "sí"
+            } else {
+                "no"
+            },
+            if scan_partial { "sí" } else { "no" },
+        ),
+        crate::profile::Language::En => format!(
+            "> **Incomplete coverage or review:** {} pending verifications, {} verdicts and {} upstream windows; discovery pending: {}; tracker scope unresolved: {}; codebase changed or unidentified: {}; partial scan: {}. See `vulnbell tools pending` for details.\n\n",
+            pending.verification_pending.len(),
+            pending.verdict_missing.len(),
+            pending.research_open.len(),
+            if discovery { "yes" } else { "no" },
+            if pending.tracker_scope_unresolved {
+                "yes"
+            } else {
+                "no"
+            },
+            if pending.workspace_context_changed {
+                "yes"
+            } else {
+                "no"
+            },
+            if scan_partial { "yes" } else { "no" },
+        ),
+    }
+}
+pub use pdf::{pdf_markdown, write_pdf};
 pub use text::report_language;
 pub use verification::{FindingCheck, FindingReference, LocalCheck, LocalResult};
 

@@ -124,6 +124,15 @@ pub(super) enum Commands {
         json: bool,
         #[arg(long,default_value="manager",value_parser=["manager","cyber","audit"])]
         audience: String,
+        /// Write a self-contained PDF using a local Chromium-based browser.
+        #[arg(long, conflicts_with = "json")]
+        pdf: Option<PathBuf>,
+        /// Use an edited Markdown report as the PDF's main text.
+        #[arg(long, requires = "pdf")]
+        from_markdown: Option<PathBuf>,
+        /// Chromium-based browser executable; otherwise search common names in PATH.
+        #[arg(long, requires = "pdf")]
+        pdf_browser: Option<PathBuf>,
     },
     /// Configure and verify local unattended agent adapters.
     Runners {

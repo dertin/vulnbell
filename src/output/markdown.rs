@@ -568,11 +568,11 @@ pub fn morning_markdown(report: &MorningReport) -> String {
     }
     if !unassessed.is_empty() {
         text.push_str(if language == Language::Es {
-            "## Señales sin evaluación vigente\n\nLa evidencia anterior puede servir, pero debe contrastarse con los datos actuales. La lista completa está en el reporte JSON y la cola.\n\n"
+            "## Señales sin evaluación vigente\n\nLa evidencia anterior puede servir, pero debe contrastarse con los datos actuales. El reporte JSON y la cola contienen más detalles.\n\n"
         } else {
-            "## Signals without a current assessment\n\nEarlier evidence may help but must be checked against current facts. The JSON report and queue contain the complete list.\n\n"
+            "## Signals without a current assessment\n\nEarlier evidence may help but must be checked against current facts. The JSON report and queue contain further details.\n\n"
         });
-        for item in unassessed.iter().take(8) {
+        for item in &unassessed {
             text.push_str(&format!(
                 "- `{}` — {}: {}",
                 inline(&item.case_id),

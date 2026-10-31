@@ -17,8 +17,16 @@ fn emit(value: &impl serde::Serialize) -> Result<()> {
 /// A reader that closes the pipe early (`| head`) already received what it asked for; the
 /// command's state is persisted before output.
 fn print(text: &str) -> Result<()> {
+    write_stdout(text, true)
+}
+fn write_stdout(text: &str, newline: bool) -> Result<()> {
     let mut stdout = std::io::stdout().lock();
-    match writeln!(stdout, "{text}").and_then(|()| stdout.flush()) {
+    let result = if newline {
+        writeln!(stdout, "{text}")
+    } else {
+        write!(stdout, "{text}")
+    };
+    match result.and_then(|()| stdout.flush()) {
         Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => std::process::exit(0),
         result => Ok(result?),
     }
@@ -369,11 +377,17 @@ fn run() -> Result<i32> {
             project,
             json,
             audience,
+            pdf,
+            from_markdown,
+            pdf_browser,
         } => {
             let (_, store) = store_for(&project)?;
             let mut snapshot = store.latest()?;
             snapshot.cases = store.cases()?;
             if audience == "audit" {
+                if pdf.is_some() {
+                    bail!("PDF export requires the manager or cyber report");
+                }
                 if json {
                     emit(&snapshot)?;
                 } else {
@@ -384,7 +398,42 @@ fn run() -> Result<i32> {
                 if json {
                     emit(&report)?;
                 } else {
-                    print(&vulnbell::output::morning_markdown(&report))?;
+                    let custom = from_markdown.is_some();
+                    let markdown = match from_markdown {
+                        Some(path) => {
+                            String::from_utf8(vulnbell::read_limited(&path, 16 * 1024 * 1024)?)
+                                .context("Markdown must be UTF-8")?
+                        }
+                        None => format!(
+                            "{}{}",
+                            vulnbell::output::delivery_status_markdown(
+                                &vulnbell::tools::cases::pending(&store)?,
+                                snapshot.partial,
+                                report.language,
+                            ),
+                            vulnbell::output::morning_markdown(&report),
+                        ),
+                    };
+                    if let Some(path) = pdf {
+                        let mut input = String::new();
+                        if custom {
+                            input.push_str(match report.language {
+                                profile::Language::Es => "> **Contenido personalizado:** el texto fue proporcionado por el usuario y no fue validado por VulnBell.\n\n",
+                                profile::Language::En => "> **Custom content:** the text was supplied by the user and was not validated by VulnBell.\n\n",
+                            });
+                        }
+                        input.push_str(&markdown);
+                        input.push_str("\n\n");
+                        input.push_str(&vulnbell::output::verification_markdown(&report));
+                        let document = vulnbell::output::pdf_markdown(
+                            &input,
+                            &snapshot.cases,
+                            &store,
+                            report.language,
+                        )?;
+                        vulnbell::output::write_pdf(&document, &path, pdf_browser.as_deref())?;
+                    }
+                    write_stdout(&markdown, false)?;
                 }
             }
         }

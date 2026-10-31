@@ -20,7 +20,7 @@ For Git workspaces, scans and reports record the reviewed branch, full commit an
 
 VulnBell checks published advisories and CVE data, including OSV, GitHub Security Advisories, RustSec, CVE Records, NVD, and CISA KEV. Unlike a CVE-only monitor, the agent also reviews recent upstream issues, pull requests, merge requests, bug reports, fixes, and release information. This can surface credible security signals before a CVE is published. These early signals remain untrusted until the available evidence supports them.
 
-Tracker research defaults to explicitly monitored products and known direct dependencies. All inventoried packages remain eligible for OSV checks, while deeper tracker searches and repository-only advisories are deferred; the report counts transitives and unknown-depth instances and states that coverage limitation. Set `research.follow` to exact inventory references when a particular inner dependency warrants investigation, or `research.tracker_scope: all` for exhaustive tracker research. A lockfile or SBOM may not establish depth: unknown does not mean safe or transitive.
+Tracker research defaults to explicitly monitored products and known direct dependencies. Packages with an eligible public identifier remain candidates for OSV checks, while deeper tracker searches and repository-only advisories are deferred; the report counts transitives and unknown-depth instances and states that coverage limitation. Set `research.follow` to exact inventory references when a particular inner dependency warrants investigation, or `research.tracker_scope: all` for exhaustive tracker research. A lockfile or SBOM may not establish depth: unknown does not mean safe or transitive.
 
 The research plan suggests evidence-backed deferred advisories for selective follow-up without expanding the scope automatically. An unresolved scope with no selected instance prevents a deliverable status. Optional `research.release_windows: true` obtains exact-version publication dates from supported registries or an explicitly declared GitHub product repository; unavailable dates use a documented fallback. Advisory checks remain independent of the time window. Assess screening and ordering using an independently labelled corpus with `vulnbell tools evaluate`; see [the evaluation guide](docs/upstream-screen-evaluation.md).
 
@@ -106,6 +106,14 @@ vulnbell run --project vulnbell.yaml --now
 ```
 
 `status` lists registered projects, profile availability, scan outcomes, scheduler health, skipped runs, agent failures, and the latest report. `impact` prints five fixed questions for each affected artifact. Save reviewed answers using `schema impact`; the CLI calculates update urgency from those answers and their registered evidence. `report` shows the verdict, confidence, answered conditions, rationales, and remaining questions. `run --now` runs a configured monitor and writes a fresh report. Reports show incomplete coverage; `scan` returns exit code 2 when coverage is partial. Reports use the profile's `report.language`: `en` (default) or `es`. Technical terms that the language usually leaves untranslated, and quoted source text, stay as they are.
+
+The CLI renders Markdown locally for interactive and scheduled reports. To export a PDF with recorded verification details and an evidence appendix, install a Chromium-based browser and run:
+
+```sh
+vulnbell report --project vulnbell.yaml --audience cyber --pdf report.pdf > report.md
+```
+
+Use `--pdf-browser <executable>` if the browser is not found automatically. Use `--from-markdown <edited.md>` with `--pdf` to export a customized report; the PDF labels that text as user-supplied. The appendix includes registered review notes, textual sandbox output and evidence metadata, not full external responses or binary artifacts. Review it for confidential details before sharing. PDF input is limited to 16 MiB and output to 64 MiB; existing PDFs are not overwritten.
 
 With a workspace, the agent first reviews source, lockfiles, configuration, and reachable call paths without executing project code. If a dynamic check is still needed, only reviewed files are copied into Microsandbox. Without a workspace, VulnBell assesses the exact artifact and published conditions, may use a minimal isolated reproducer, and keeps project-specific deployment or reachability explicitly unknown.
 

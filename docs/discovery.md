@@ -53,6 +53,6 @@ Mapped URLs become independent research targets with review windows and seen eve
 
 ## Scheduled runs
 
-Scheduled discovery runs before upstream research. Workspace extraction receives one text fragment at a time and has no tools. Public source discovery receives only component references, versions and known public URLs. It has public web research tools and cannot access workspace files. The CLI acquires proposed source documents before importing them. Report generation has no tools.
+Scheduled discovery runs before upstream research. Workspace extraction receives one text fragment at a time and has no tools. Public source discovery receives only component references, versions and known public URLs. It has public web research tools and cannot access workspace files. The CLI acquires proposed source documents before importing them and renders the report locally.
 
 The execution window bounds each run. If discovery cannot finish, its queue persists and the report is partial. A later run resumes pending work. Static applicability assessment and active sandbox tests still follow their separate evidence and authorization workflow.

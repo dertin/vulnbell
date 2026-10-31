@@ -54,7 +54,13 @@ fn scheduled_discovery_separates_local_extraction_public_mapping_and_reporting()
     };
     vulnbell::scheduler::save_config(&profile, &store, &schedule).unwrap();
     let result = vulnbell::scheduler::run(&profile, &path, true).unwrap();
-    assert_eq!(result["state"], "agent_report_partial");
+    assert_eq!(result["state"], "report_partial");
+    let job = store.meta("last_job_directory").unwrap().unwrap();
+    assert!(
+        !std::path::Path::new(&job)
+            .join("report-agent.jsonl")
+            .exists()
+    );
     assert!(
         result["research_error"]
             .as_str()
@@ -78,6 +84,7 @@ fn scheduled_discovery_separates_local_extraction_public_mapping_and_reporting()
         1
     );
     let report = fs::read_to_string(result["report"].as_str().unwrap()).unwrap();
+    assert!(!report.contains("Synthetic VulnBell report"));
     assert!(report.contains("Descubrimiento"));
     assert!(report.contains("sin repositorio (sin investigación upstream): 1"));
     assert!(report.contains("example-tool"));
@@ -143,14 +150,7 @@ fn scheduled_report_keeps_unverified_package_names_out_of_the_agent() {
     };
     vulnbell::scheduler::save_config(&profile, &store, &schedule).unwrap();
     let result = vulnbell::scheduler::run(&profile, &path, true).unwrap();
-    assert_eq!(result["state"], "partial_fallback_report");
-    assert_eq!(result["agent_report_written"], false);
-    assert!(
-        result["report_error"]
-            .as_str()
-            .unwrap()
-            .contains("local package identities")
-    );
+    assert_eq!(result["state"], "report_partial");
     let job = store.meta("last_job_directory").unwrap().unwrap();
     assert!(
         !std::path::Path::new(&job)

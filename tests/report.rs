@@ -2,6 +2,36 @@ use serde_json::json;
 use vulnbell::{model::*, store::Store};
 
 #[test]
+fn delivery_status_distinguishes_partial_coverage_from_complete_reports() {
+    let mut pending = vulnbell::tools::cases::PendingReport {
+        schema_version: 1,
+        deliverable: true,
+        verification_pending: Vec::new(),
+        verdict_missing: Vec::new(),
+        challenge_open: Vec::new(),
+        research_open: Vec::new(),
+        discovery_open: None,
+        tracker_scope_unresolved: false,
+        workspace_context_changed: false,
+    };
+    let render = |pending: &_, partial| {
+        vulnbell::output::delivery_status_markdown(
+            pending,
+            partial,
+            vulnbell::profile::Language::Es,
+        )
+    };
+    assert!(render(&pending, false).is_empty());
+    assert!(render(&pending, true).contains("scan parcial: sí"));
+    pending.deliverable = false;
+    pending.verdict_missing.push("CASE-1".into());
+    pending.tracker_scope_unresolved = true;
+    let warning = render(&pending, false);
+    assert!(warning.contains("veredictos pendientes: 1"));
+    assert!(warning.contains("alcance de fuentes sin resolver: sí"));
+}
+
+#[test]
 fn coverage_groups_keep_the_first_seen_order_and_scope_labels() {
     let project = uuid::Uuid::new_v4().to_string();
     let store = Store::open(&project).unwrap();
@@ -415,6 +445,19 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
             assert!(markdown.contains("1 closed cases"));
             assert!(report.verification_pending.is_empty());
         }
+    }
+    snapshot.cases = (0..12)
+        .map(|index| {
+            let mut pending = case.clone();
+            pending.case_id = format!("SIG-pending-{index}");
+            pending.decision = Decision::Review;
+            pending
+        })
+        .collect();
+    let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    let markdown = vulnbell::output::morning_markdown(&report);
+    for index in 0..12 {
+        assert!(markdown.contains(&format!("SIG-pending-{index}")));
     }
     let reviewed_note = store
         .record_evidence(

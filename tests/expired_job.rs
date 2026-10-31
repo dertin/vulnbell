@@ -67,10 +67,8 @@ fn an_expired_job_never_scans_or_starts_the_missing_agent() {
     assert!(deadline <= after + Duration::minutes(60));
     assert_eq!(forced["review_budget_minutes"], 60);
     assert_eq!(forced["review_budget_exhausted"], false);
-    assert_eq!(forced["state"], "partial_fallback_report");
-    assert_eq!(forced["agent_report_written"], false);
+    assert_eq!(forced["state"], "report_partial");
     assert!(forced["research_error"].is_string());
-    assert!(forced["report_error"].is_string());
     assert!(store.meta("last_agent_failure").unwrap().is_some());
     let report = std::fs::read_to_string(forced["report"].as_str().unwrap()).unwrap();
     assert!(report.contains("**Agent — partial run:**"));
