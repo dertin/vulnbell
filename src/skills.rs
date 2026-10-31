@@ -100,18 +100,7 @@ pub fn install_skill(directory: &Path) -> Result<()> {
     }
     let mut files = BTreeMap::new();
     for (relative, text) in SKILL_FILES {
-        let rendered = if *relative == "SKILL.md" {
-            text.replacen(
-                "\n---\n\n# VulnBell",
-                &format!(
-                    "\nmetadata:\n  version: \"{}\"\n---\n\n# VulnBell",
-                    env!("CARGO_PKG_VERSION")
-                ),
-                1,
-            )
-        } else {
-            (*text).into()
-        };
+        let rendered = render_file(relative, text);
         crate::atomic_write(&directory.join(relative), rendered.as_bytes())?;
         files.insert((*relative).into(), crate::digest(rendered.as_bytes()));
     }
@@ -122,6 +111,21 @@ pub fn install_skill(directory: &Path) -> Result<()> {
     crate::atomic_write(&manifest_path, &serde_json::to_vec_pretty(&manifest)?)
 }
 
+fn render_file(relative: &str, text: &str) -> String {
+    if relative == "SKILL.md" {
+        text.replacen(
+            "\n---\n\n# VulnBell",
+            &format!(
+                "\nmetadata:\n  version: \"{}\"\n---\n\n# VulnBell",
+                env!("CARGO_PKG_VERSION")
+            ),
+            1,
+        )
+    } else {
+        text.to_owned()
+    }
+}
+
 #[derive(Serialize)]
 pub struct SkillStatus {
     pub directory: PathBuf,
@@ -130,15 +134,23 @@ pub struct SkillStatus {
 }
 pub fn status() -> Result<Vec<SkillStatus>> {
     let mut statuses = Vec::new();
-    for directory in skill_directories("auto")? {
+    let mut directories = skill_directories("auto")?;
+    let cursor = crate::user_home()?.join(".cursor/skills/vulnbell");
+    if cursor.exists() {
+        directories.push(cursor);
+    }
+    for directory in directories {
         let manifest = crate::read_limited(&directory.join(".vulnbell-manifest.json"), 65536)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<SkillManifest>(&bytes).ok());
         let aligned = manifest.as_ref().is_some_and(|manifest| {
             manifest.version == env!("CARGO_PKG_VERSION")
-                && manifest.files.iter().all(|(path, hash)| {
-                    crate::read_limited(&directory.join(path), 1024 * 1024)
-                        .is_ok_and(|bytes| crate::digest(&bytes) == *hash)
+                && manifest.files.len() == SKILL_FILES.len()
+                && SKILL_FILES.iter().all(|(path, contents)| {
+                    let expected = crate::digest(render_file(path, contents).as_bytes());
+                    manifest.files.get(*path) == Some(&expected)
+                        && crate::read_limited(&directory.join(path), 1024 * 1024)
+                            .is_ok_and(|bytes| crate::digest(&bytes) == expected)
                 })
         });
         statuses.push(SkillStatus {

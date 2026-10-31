@@ -2,6 +2,8 @@
 
 ## 0.1.3 - 2026-10-31
 
+- Show an interactive environment check with contextual recommendations and a machine-readable option.
+
 - Use the active GitHub CLI credential for supported GitHub API requests without exporting a token.
 
 - Save upstream decisions individually and resume reviews using monitor-bound progress and concise working notes.

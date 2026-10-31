@@ -62,9 +62,9 @@ vulnbell doctor --json
 vulnbell status
 ```
 
-The Skill uses the Agent Skills format. Its default location is `$HOME/.agents/skills/vulnbell` on Linux and macOS, or `%USERPROFILE%\.agents\skills\vulnbell` on Windows. `vulnbell doctor --json` shows the resolved location and checks the installation.
+The Skill uses the Agent Skills format. Its default location is `$HOME/.agents/skills/vulnbell` on Linux and macOS, or `%USERPROFILE%\.agents\skills\vulnbell` on Windows. Run `vulnbell doctor` before a review for setup guidance; use `--json` for structured output. Colors are used only in a terminal and can be disabled with `NO_COLOR`. Optional tools are needed only for the workflows named in the output.
 
-For authenticated GitHub advisory and release requests, sign in with `gh auth login`. VulnBell reads the active GitHub CLI credential into memory when needed; it does not print it or add it to the agent environment. An explicitly configured `GITHUB_TOKEN` takes precedence. `vulnbell doctor --json` reports whether a credential is available and its source; it does not verify network access or token permissions.
+For the `gh`-based GitHub tracker workflow, sign in with `gh auth login`. Advisory scans can also make anonymous requests, subject to lower rate limits. VulnBell reads the active GitHub CLI credential into memory when needed; it does not print it or add it to the agent environment. An explicitly configured `GITHUB_TOKEN` takes precedence. `vulnbell doctor --json` reports whether a credential is available and its source; it does not verify network access or token permissions.
 
 The local agent reviews public upstream evidence and available project codebases. A codebase is a local source tree selected for monitoring; the VulnBell workspace is where monitor artifacts are kept. Profile and JSON fields use `workspaces` for codebase paths. The CLI keeps the inventory, evidence, impact answers, sandbox attestations, and reports as auditable local data.
 

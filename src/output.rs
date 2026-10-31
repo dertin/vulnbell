@@ -12,6 +12,7 @@ mod details;
 mod discovery;
 mod markdown;
 mod pdf;
+pub(crate) use pdf::browser_path;
 pub(crate) mod text;
 mod verification;
 pub use details::AdvisoryDetail;

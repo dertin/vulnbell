@@ -391,7 +391,7 @@ fn safe_html(markdown: &str) -> String {
     )
 }
 
-fn browser_path(explicit: Option<&Path>) -> Result<PathBuf> {
+pub(crate) fn browser_path(explicit: Option<&Path>) -> Result<PathBuf> {
     if let Some(path) = explicit {
         return Ok(path.to_path_buf());
     }

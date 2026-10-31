@@ -6,7 +6,10 @@ use cli::{
     AssessmentCommands, CaseTools, Cli, Commands, ResearchTools, RunnerCommands, Sandbox, Skills,
     ToolCommands, WorkspaceCommands,
 };
-use std::{fs, io::Write};
+use std::{
+    fs,
+    io::{IsTerminal, Write},
+};
 use vulnbell::{
     model::Verdict,
     profile::{self, Profile},
@@ -130,7 +133,17 @@ fn run() -> Result<i32> {
                 &serde_json::json!({"schema_version":1,"version":env!("CARGO_PKG_VERSION"),"installed":directories}),
             )?;
         }
-        Commands::Doctor { .. } => emit(&vulnbell::operations::doctor()?)?,
+        Commands::Doctor { json } => {
+            let report = vulnbell::operations::doctor()?;
+            if json {
+                emit(&report)?;
+            } else {
+                let color = std::io::stdout().is_terminal()
+                    && std::env::var_os("NO_COLOR").is_none()
+                    && std::env::var_os("TERM").is_none_or(|term| term != "dumb");
+                print(&vulnbell::operations::doctor_text(&report, color))?;
+            }
+        }
         Commands::Status { json } => {
             let report = vulnbell::operations::status()?;
             if json {
