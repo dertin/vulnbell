@@ -32,13 +32,13 @@ vulnbell schedule remove --project /absolute/path/vulnbell.yaml
 
 After moving a profile, rerun `schedule install` with the new path; it rewrites the project's units. `remove` disables the timer and deletes only units managed for that project. Run history and reports remain.
 
-On macOS, configure launchd to call the following command. On Windows, configure Task Scheduler to call it. Use an absolute path to both the executable and profile.
+On macOS and Windows, first create the project state with `vulnbell scan --project <profile> --offline`. Save the schedule JSON shown above as `<data directory>/<profile UUID>/schedule.json`. `vulnbell doctor --json` shows the data directory; `vulnbell run` validates the configuration against the profile before running. Then configure launchd or Task Scheduler to call the following command. Use an absolute path to both the executable and profile.
 
 ```sh
 vulnbell run --project /absolute/path/vulnbell.yaml
 ```
 
-Native job installation is included for Linux. VulnBell does not create the launchd or Task Scheduler job. The same project schedule and execution window are enforced when the native scheduler calls `run`.
+Native job installation and automatic schedule configuration are included for Linux. VulnBell does not create the launchd or Task Scheduler job. The same project schedule and execution window are enforced when the native scheduler calls `run`.
 
 Run and inspect the monitor at any time:
 

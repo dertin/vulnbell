@@ -9,7 +9,8 @@ VulnBell publishes its crate to crates.io and prebuilt archives through GitHub A
 3. Run:
 
 ```sh
-./.github/workflows/release.sh 0.1.3
+VERSION="$(cargo pkgid | sed 's/.*#//; s/.*@//')"
+./.github/workflows/release.sh "$VERSION"
 ```
 
 The script verifies the version, runs `cargo publish --dry-run`, creates and pushes a signed tag, publishes the crate, starts the GitHub release workflow, and waits for it to finish.
@@ -27,7 +28,7 @@ Each archive includes the binary, Agent Skill, schemas, examples, and user docum
 Verify an archive with:
 
 ```sh
-gh attestation verify vulnbell-x86_64-unknown-linux-gnu-v0.1.3.tgz \
+gh attestation verify "vulnbell-x86_64-unknown-linux-gnu-v${VERSION}.tgz" \
   -R dertin/vulnbell
 ```
 

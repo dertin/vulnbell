@@ -9,11 +9,11 @@
 | Advisories | OSV, GHSA, published GitHub repository advisories, RustSec, CVE Records, NVD, and CISA KEV |
 | Vendor feeds | CSAF 2.0 and OpenVEX 0.2.0 with exact identity matching; limited signature and complex relationship checks |
 | Public sources | Issues, proposed changes, discussions, docs, changelogs, releases and advisories on mapped public sites, with independent review windows |
-| Reports | Local Markdown/JSON for manager, cyber, and audit audiences |
+| Reports | Local Markdown/JSON for manager, cyber, and audit audiences; PDF export with an evidence appendix |
 | Project status | Registered profiles, scan results, schedule health, skipped runs, agent failures, and latest reports |
 | Project impact | Guided evidence-bound questions, static workspace review, saved rationales, and update urgency |
 | Scheduled agents | Local runner registry with validated Codex and OpenCode adapters |
-| Scheduler | Built-in user-level systemd installation on Linux; launchd and Task Scheduler can invoke `vulnbell run` |
+| Scheduler | Built-in user-level systemd installation on Linux; launchd and Task Scheduler can invoke `vulnbell run` with a manually saved schedule configuration |
 | Sandbox | Microsandbox 0.7.11; real execution tested on Linux x86_64/KVM |
 
 ## Limits
