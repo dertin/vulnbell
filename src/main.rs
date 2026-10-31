@@ -36,6 +36,69 @@ fn store_for(path: &std::path::Path) -> Result<(Profile, Store)> {
     let store = Store::open(&profile.project_id.to_string())?;
     Ok((profile, store))
 }
+fn report(
+    project: &std::path::Path,
+    json: bool,
+    audience: &str,
+    pdf: Option<std::path::PathBuf>,
+    from_markdown: Option<std::path::PathBuf>,
+    pdf_browser: Option<std::path::PathBuf>,
+) -> Result<()> {
+    let (_, store) = store_for(project)?;
+    let mut snapshot = store.latest()?;
+    snapshot.cases = store.cases()?;
+    if audience == "audit" {
+        if pdf.is_some() {
+            bail!("PDF export requires the manager or cyber report");
+        }
+        if json {
+            emit(&snapshot)?;
+        } else {
+            print(&vulnbell::output::markdown(&snapshot))?;
+        }
+    } else {
+        let report = vulnbell::output::morning_report(&snapshot, &store, audience)?;
+        if json {
+            emit(&report)?;
+        } else {
+            let custom = from_markdown.is_some();
+            let markdown = match from_markdown {
+                Some(path) => String::from_utf8(vulnbell::read_limited(&path, 16 * 1024 * 1024)?)
+                    .context("Markdown must be UTF-8")?,
+                None => format!(
+                    "{}{}",
+                    vulnbell::output::delivery_status_markdown(
+                        &vulnbell::tools::cases::pending(&store)?,
+                        snapshot.partial,
+                        report.language,
+                    ),
+                    vulnbell::output::morning_markdown(&report),
+                ),
+            };
+            if let Some(path) = pdf {
+                let mut input = String::new();
+                if custom {
+                    input.push_str(match report.language {
+                        profile::Language::Es => "> **Contenido personalizado:** el texto fue proporcionado por el usuario y no fue validado por VulnBell.\n\n",
+                        profile::Language::En => "> **Custom content:** the text was supplied by the user and was not validated by VulnBell.\n\n",
+                    });
+                }
+                input.push_str(&markdown);
+                input.push_str("\n\n");
+                input.push_str(&vulnbell::output::verification_markdown(&report));
+                let document = vulnbell::output::pdf_markdown(
+                    &input,
+                    &snapshot.cases,
+                    &store,
+                    report.language,
+                )?;
+                vulnbell::output::write_pdf(&document, &path, pdf_browser.as_deref())?;
+            }
+            write_stdout(&markdown, false)?;
+        }
+    }
+    Ok(())
+}
 fn run() -> Result<i32> {
     let cli = Cli::parse();
     match cli.command {
@@ -380,63 +443,7 @@ fn run() -> Result<i32> {
             pdf,
             from_markdown,
             pdf_browser,
-        } => {
-            let (_, store) = store_for(&project)?;
-            let mut snapshot = store.latest()?;
-            snapshot.cases = store.cases()?;
-            if audience == "audit" {
-                if pdf.is_some() {
-                    bail!("PDF export requires the manager or cyber report");
-                }
-                if json {
-                    emit(&snapshot)?;
-                } else {
-                    print(&vulnbell::output::markdown(&snapshot))?;
-                }
-            } else {
-                let report = vulnbell::output::morning_report(&snapshot, &store, &audience)?;
-                if json {
-                    emit(&report)?;
-                } else {
-                    let custom = from_markdown.is_some();
-                    let markdown = match from_markdown {
-                        Some(path) => {
-                            String::from_utf8(vulnbell::read_limited(&path, 16 * 1024 * 1024)?)
-                                .context("Markdown must be UTF-8")?
-                        }
-                        None => format!(
-                            "{}{}",
-                            vulnbell::output::delivery_status_markdown(
-                                &vulnbell::tools::cases::pending(&store)?,
-                                snapshot.partial,
-                                report.language,
-                            ),
-                            vulnbell::output::morning_markdown(&report),
-                        ),
-                    };
-                    if let Some(path) = pdf {
-                        let mut input = String::new();
-                        if custom {
-                            input.push_str(match report.language {
-                                profile::Language::Es => "> **Contenido personalizado:** el texto fue proporcionado por el usuario y no fue validado por VulnBell.\n\n",
-                                profile::Language::En => "> **Custom content:** the text was supplied by the user and was not validated by VulnBell.\n\n",
-                            });
-                        }
-                        input.push_str(&markdown);
-                        input.push_str("\n\n");
-                        input.push_str(&vulnbell::output::verification_markdown(&report));
-                        let document = vulnbell::output::pdf_markdown(
-                            &input,
-                            &snapshot.cases,
-                            &store,
-                            report.language,
-                        )?;
-                        vulnbell::output::write_pdf(&document, &path, pdf_browser.as_deref())?;
-                    }
-                    write_stdout(&markdown, false)?;
-                }
-            }
-        }
+        } => report(&project, json, &audience, pdf, from_markdown, pdf_browser)?,
         Commands::Run { project, now } => {
             let profile = profile::load(&project)?;
             emit(&vulnbell::scheduler::run(&profile, &project, now)?)?;
