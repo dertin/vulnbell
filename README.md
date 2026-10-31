@@ -68,15 +68,19 @@ The local agent reviews public upstream evidence and available project codebases
 
 ## Ask your agent to set up monitoring
 
-> Use VulnBell to monitor Keycloak 26.8.1, WordPress latest, and the project at `/home/alex/projects/acme-api`. Inspect that workspace to inventory its dependencies and determine whether reported issues affect its source or configuration. Create and validate the profile, investigate new advisories and upstream activity, configure a daily run at 08:00 in my time zone with a three-hour execution window, and save a concise Markdown report.
+> Use VulnBell to review WordPress 6.6.2 and my related plugin codebase at `/home/alex/projects/acme-plugin`. Use one monitor for both. Inventory the plugin's dependencies, investigate relevant advisories and upstream activity, and assess whether reported issues affect the plugin or its WordPress environment. Keep unconfirmed deployment and configuration details open, and save a concise Markdown report for Cyber and Engineering.
 
-The agent first checks `vulnbell status --json` for an existing monitor. It then creates or updates the profile, builds the inventory, checks advisories and CVEs, and reviews recent activity from the verified upstream projects. You do not need to write YAML. `latest` follows stable releases; it does not mean that version is deployed in your project.
+This example uses one monitor: its profile contains both the WordPress version and the plugin codebase. The agent first checks `vulnbell status --json` for an existing monitor. It then creates or updates the profile, builds the inventory, checks advisories and CVEs, and reviews recent activity from the verified upstream projects. You do not need to write YAML. A declared version does not by itself confirm what is deployed.
 
 To get a fresh report at any time:
 
 > Use VulnBell to prepare an updated security report for my project's Cyber team.
 
-## Schedule reports
+## Optional: schedule reports (experimental)
+
+Scheduled monitoring is experimental and requires a working system scheduler and local agent runner. After setting up a monitor, you can ask separately:
+
+> Schedule this monitor to run daily at 08:00 in my time zone, with a three-hour execution window, and save its Markdown reports locally.
 
 Scheduling is configured per project. Choose `daily`, `weekdays`, or `weekly`, plus a time zone, start time, allowed execution window, local runner, and report folder. Executable paths and model selection are stored once in the local VulnBell data directory instead of every project schedule. Credentials remain in the selected agent client.
 
@@ -102,6 +106,7 @@ vulnbell impact SIG-... --project vulnbell.yaml
 vulnbell report --project vulnbell.yaml --audience cyber
 vulnbell tools pending --project vulnbell.yaml
 vulnbell runners list --json
+# Optional experimental scheduled workflow:
 vulnbell run --project vulnbell.yaml --now
 ```
 
