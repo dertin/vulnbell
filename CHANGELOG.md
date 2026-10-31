@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.3 - Unreleased
+## 0.1.3 - 2026-10-31
 
 - Save upstream decisions individually and resume reviews using monitor-bound progress and concise working notes.
 - Render scheduled reports locally, track upstream coverage separately, and export PDF reports with evidence appendices.
