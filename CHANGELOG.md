@@ -8,6 +8,7 @@
 - Check source citations without exposing code, group advisory aliases as duplicate candidates, and measure screening recall for labelled high-priority signals.
 - Record evidence-bound second assessments and reopen disputed or inconclusive verdicts.
 - Screen phishing claims, and evaluate linked tracker metadata and false-positive keys.
+- Screen sensitive-data exposure claims and avoid treating ordinary deserialization mentions as security signals.
 
 ## 0.1.2 - 2026-10-29
 

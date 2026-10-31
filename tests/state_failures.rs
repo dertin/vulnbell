@@ -88,6 +88,85 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 }
 
 #[test]
+fn mixed_codebase_inventories_each_ecosystem_with_its_own_provenance() {
+    use vulnbell::model::Origin;
+
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = directory.path().join("workspace");
+    for subdirectory in ["rust", "python", "php", "javascript"] {
+        fs::create_dir_all(workspace.join(subdirectory)).unwrap();
+    }
+    for (path, contents) in [
+        (
+            "rust/Cargo.lock",
+            include_str!("fixtures/workspace/rust/Cargo.lock"),
+        ),
+        ("python/requirements.txt", "requests==2.31.0\n"),
+        (
+            "php/composer.lock",
+            include_str!("fixtures/workspace/php/composer.lock"),
+        ),
+        (
+            "javascript/package-lock.json",
+            include_str!("fixtures/workspace/js/package-lock.json"),
+        ),
+    ] {
+        fs::write(workspace.join(path), contents).unwrap();
+    }
+
+    let project = uuid::Uuid::new_v4().to_string();
+    let store = Store::open(&project).unwrap();
+    let inventory = vulnbell::inventory::discover(
+        &["workspace".into()],
+        &directory.path().join("vulnbell.yaml"),
+        &store,
+        100,
+    );
+    for (reference, path, version, origin) in [
+        (
+            "pkg:cargo/serde",
+            "rust/Cargo.lock",
+            "1.0.228",
+            Origin::Locked,
+        ),
+        (
+            "pkg:pypi/requests",
+            "python/requirements.txt",
+            "2.31.0",
+            Origin::Declared,
+        ),
+        (
+            "pkg:composer/monolog/monolog",
+            "php/composer.lock",
+            "3.9.0",
+            Origin::Locked,
+        ),
+        (
+            "pkg:npm/lodash",
+            "javascript/package-lock.json",
+            "4.17.20",
+            Origin::Locked,
+        ),
+    ] {
+        assert!(
+            inventory.instances.iter().any(|instance| {
+                instance.reference == reference
+                    && instance.provenance.path.as_deref() == Some(path)
+                    && instance.resolved_version.as_deref() == Some(version)
+                    && instance.origin == origin
+            }),
+            "missing {reference} from {path}"
+        );
+    }
+    assert!(inventory.coverage.iter().any(|coverage| {
+        coverage.scope == "python/requirements.txt"
+            && coverage.state == vulnbell::model::CoverageState::Partial
+    }));
+    drop(store);
+    fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+}
+
+#[test]
 fn concurrent_scans_and_future_schema_versions_fail_closed() {
     let project = uuid::Uuid::new_v4().to_string();
     let store = Store::open(&project).unwrap();
