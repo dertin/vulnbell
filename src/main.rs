@@ -495,11 +495,17 @@ fn run() -> Result<i32> {
             limit,
             reopen,
             since,
+            recheck,
             ..
         } => {
             let (_, mut store) = store_for(&project)?;
             if let (Some(upstream), Some(since)) = (reopen, since) {
-                emit(&vulnbell::research::reopen(&mut store, &upstream, &since)?)?;
+                let result = if recheck {
+                    vulnbell::research::reopen_recheck(&mut store, &upstream, &since)?
+                } else {
+                    vulnbell::research::reopen(&mut store, &upstream, &since)?
+                };
+                emit(&result)?;
             } else if let Some(path) = from {
                 let batch: vulnbell::research::ResearchBatch =
                     serde_json::from_slice(&vulnbell::read_limited(&path, 16 * 1024 * 1024)?)?;
@@ -621,11 +627,10 @@ fn run_tool(command: ToolCommands) -> Result<i32> {
                 .as_deref()
                 .map(draft::ResearchDecisions::load)
                 .transpose()?;
-            if decisions
-                .as_ref()
-                .is_some_and(|saved| saved.project_id != profile.project_id.to_string())
-            {
-                bail!("decisions file belongs to another monitor");
+            if decisions.as_ref().is_some_and(|saved| {
+                saved.project_id != profile.project_id.to_string() || saved.recheck != recheck
+            }) {
+                bail!("decisions file belongs to another monitor or review mode");
             }
             let prepared =
                 hits::prepare_for_upstream(&store, &raw, offline, recheck, upstream.as_deref())?;
@@ -671,11 +676,23 @@ fn run_tool(command: ToolCommands) -> Result<i32> {
             upstream,
         }) => {
             distinct_output(&output, &project)?;
-            distinct_output(&output, &decisions)?;
+            if let Some(path) = &decisions {
+                distinct_output(&output, path)?;
+            }
             let (profile, mut store) = store_for(&project)?;
-            let decisions = draft::ResearchDecisions::load(&decisions)?;
-            if decisions.project_id != profile.project_id.to_string() {
-                bail!("decisions file belongs to another monitor");
+            let decisions = match decisions {
+                Some(path) => draft::ResearchDecisions::load(&path)?,
+                None => draft::ResearchDecisions {
+                    schema_version: 1,
+                    project_id: profile.project_id.to_string(),
+                    recheck,
+                    decisions: Vec::new(),
+                },
+            };
+            if decisions.project_id != profile.project_id.to_string()
+                || decisions.recheck != recheck
+            {
+                bail!("decisions file belongs to another monitor or review mode");
             }
             let prepared =
                 hits::prepare_for_upstream(&store, &raw, offline, recheck, upstream.as_deref())?;

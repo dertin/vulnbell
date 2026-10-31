@@ -52,6 +52,13 @@
         "rationale": {
           "type": "string"
         },
+        "reviewed_instance_ids": {
+          "description": "Candidate instances actually examined for this item.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "source_facts": {
           "$ref": "#/$defs/SourceFacts",
           "default": {
@@ -85,7 +92,8 @@
         "context_sha256",
         "workspace_revisions",
         "assessment",
-        "rationale"
+        "rationale",
+        "reviewed_instance_ids"
       ],
       "type": "object"
     },
@@ -217,6 +225,10 @@
       "description": "Monitor that owns these decisions.",
       "type": "string"
     },
+    "recheck": {
+      "description": "Whether these decisions belong to an explicit recheck.",
+      "type": "boolean"
+    },
     "schema_version": {
       "format": "uint32",
       "minimum": 0,
@@ -226,6 +238,7 @@
   "required": [
     "schema_version",
     "project_id",
+    "recheck",
     "decisions"
   ],
   "title": "ResearchDecisions",

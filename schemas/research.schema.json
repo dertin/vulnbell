@@ -232,6 +232,13 @@
         "from": {
           "type": "string"
         },
+        "recheck_context_sha256": {
+          "description": "Context of an explicitly reopened recheck, if applicable.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "until": {
           "type": "string"
         },

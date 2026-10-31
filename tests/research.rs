@@ -49,6 +49,7 @@ fn completed_research_can_close_a_clean_scan_without_hiding_open_windows() {
             project_id: project.clone(),
             snapshot_id: plan.snapshot_id,
             sources: vec![SourceReview {
+                recheck_context_sha256: None,
                 upstream: target.upstream.clone(),
                 from: target.from.clone(),
                 until: target.until.clone(),
@@ -338,6 +339,7 @@ fn pending_explains_partial_review_even_without_a_pagination_cursor() {
         project_id: project.clone(),
         snapshot_id: plan.snapshot_id,
         sources: vec![SourceReview {
+            recheck_context_sha256: None,
             upstream: target.upstream.clone(),
             from: target.from.clone(),
             until: target.until.clone(),
@@ -389,6 +391,7 @@ fn changed_monitored_version_reopens_completed_tracker_window() {
             project_id: project.clone(),
             snapshot_id: plan.snapshot_id,
             sources: vec![SourceReview {
+                recheck_context_sha256: None,
                 upstream: target.upstream.clone(),
                 from: target.from.clone(),
                 until: target.until.clone(),
@@ -451,6 +454,7 @@ fn scoped_event_stays_current_until_a_reviewed_candidate_changes() {
         project_id: project.clone(),
         snapshot_id: plan.snapshot_id.clone(),
         sources: vec![SourceReview {
+            recheck_context_sha256: None,
             upstream: target.upstream.clone(),
             from: target.from.clone(),
             until: target.until.clone(),
@@ -468,6 +472,35 @@ fn scoped_event_stays_current_until_a_reviewed_candidate_changes() {
         .reviewed_instance_ids
         .push("outside".into());
     assert!(vulnbell::research::import(&mut store, outside_scope).is_err());
+    let mut partial_scope = batch.clone();
+    partial_scope.sources[0].coverage = ReviewCoverage::Complete;
+    partial_scope.events[0].reviewed_instance_ids = vec![selected.clone()];
+    let imported = vulnbell::research::import(&mut store, partial_scope).unwrap();
+    assert_eq!(imported["sources"][0]["coverage"], "partial");
+    assert!(
+        vulnbell::research::plan_page(&store, "", 20)
+            .unwrap()
+            .targets[0]
+            .last_complete_review
+            .is_none()
+    );
+    let mut later_page = batch.clone();
+    later_page.sources[0].coverage = ReviewCoverage::Complete;
+    later_page.events.clear();
+    let imported = vulnbell::research::import(&mut store, later_page).unwrap();
+    assert_eq!(imported["sources"][0]["coverage"], "partial");
+    assert!(
+        vulnbell::research::plan_page(&store, "", 20)
+            .unwrap()
+            .targets[0]
+            .last_complete_review
+            .is_none()
+    );
+    let mut duplicate_scope = batch.clone();
+    duplicate_scope.events[0]
+        .reviewed_instance_ids
+        .push(selected.clone());
+    assert!(vulnbell::research::import(&mut store, duplicate_scope).is_err());
     let mut broad = batch.clone();
     broad.events[0].instance_ids = target.instance_ids.clone();
     vulnbell::research::import(&mut store, broad).unwrap();
@@ -552,6 +585,7 @@ fn shared_upstream_event_opens_one_case_and_not_applicable_needs_a_reason() {
         project_id: project.clone(),
         snapshot_id: plan.snapshot_id.clone(),
         sources: vec![SourceReview {
+            recheck_context_sha256: None,
             upstream: target.upstream.clone(),
             from: target.from.clone(),
             until: target.until.clone(),
@@ -683,6 +717,7 @@ fn research_case_reopens_against_the_current_version_after_an_upgrade() {
             project_id: project.clone(),
             snapshot_id: plan.snapshot_id,
             sources: vec![SourceReview {
+                recheck_context_sha256: None,
                 upstream: target.upstream.clone(),
                 from: target.from.clone(),
                 until: target.until.clone(),
@@ -784,6 +819,7 @@ fn agent_reviews_github_gitlab_launchpad_with_dedupe_and_failure_safe_checkpoint
     })
     .collect();
     let review = SourceReview {
+        recheck_context_sha256: None,
         continuation: None,
         upstream: target.upstream.clone(),
         from: target.from.clone(),
@@ -873,6 +909,7 @@ fn agent_reviews_github_gitlab_launchpad_with_dedupe_and_failure_safe_checkpoint
         project_id: project.clone(),
         snapshot_id: plan.snapshot_id.clone(),
         sources: vec![SourceReview {
+            recheck_context_sha256: None,
             from: again.targets[0].from.clone(),
             until: again.targets[0].until.clone(),
             coverage: ReviewCoverage::Complete,
@@ -888,6 +925,7 @@ fn agent_reviews_github_gitlab_launchpad_with_dedupe_and_failure_safe_checkpoint
     let mut changed = events;
     changed[0].excerpt.push_str(" Substantive new detail.");
     let review = SourceReview {
+        recheck_context_sha256: None,
         continuation: None,
         from: next.targets[0].from.clone(),
         ..review
@@ -922,94 +960,5 @@ fn agent_reviews_github_gitlab_launchpad_with_dedupe_and_failure_safe_checkpoint
     fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
 }
 
-#[test]
-fn same_link_from_distinct_upstreams_preserves_each_case() {
-    let directory = tempfile::tempdir().unwrap();
-    let project = uuid::Uuid::new_v4().to_string();
-    let path = directory.path().join("vulnbell.yaml");
-    fs::write(&path, format!("schema: 1\nproject_id: {project}\nname: independent-sources\ncomponents:\n  - ref: example-a\n    version: '1.0.0'\n    upstream: https://github.com/example/a\n  - ref: example-b\n    version: '1.0.0'\n    upstream: https://github.com/example/b\n")).unwrap();
-    let profile = vulnbell::profile::load(&path).unwrap();
-    vulnbell::engine::scan(&profile, &path, true).unwrap();
-    let mut store = Store::open(&project).unwrap();
-    let plan = vulnbell::research::plan_page(&store, "", 20).unwrap();
-    let url = "https://github.com/example/a/issues/1";
-    let sources = plan
-        .targets
-        .iter()
-        .map(|target| SourceReview {
-            upstream: target.upstream.clone(),
-            from: target.from.clone(),
-            until: target.until.clone(),
-            coverage: ReviewCoverage::Partial,
-            detail: "synthetic".into(),
-            continuation: None,
-        })
-        .collect();
-    let events = plan
-        .targets
-        .iter()
-        .enumerate()
-        .map(|(index, target)| ResearchEvent {
-            workspace_revisions: Vec::new(),
-            upstream: target.upstream.clone(),
-            instance_ids: target.instance_ids.clone(),
-            reviewed_instance_ids: target.instance_ids.clone(),
-            provider: "github".into(),
-            external_id: format!("item-{index}"),
-            kind: EventKind::Issue,
-            url: url.into(),
-            title: "synthetic".into(),
-            excerpt: "synthetic".into(),
-            updated_at: target.until.clone(),
-            assessment: if index == 0 {
-                Assessment::Informational
-            } else {
-                Assessment::Review
-            },
-            not_applicable_reason: None,
-            rationale: "synthetic".into(),
-            source_facts: Default::default(),
-        })
-        .collect();
-    vulnbell::research::import(
-        &mut store,
-        ResearchBatch {
-            schema_version: 1,
-            project_id: project.clone(),
-            snapshot_id: plan.snapshot_id.clone(),
-            sources,
-            events,
-        },
-    )
-    .unwrap();
-    let original = store.cases().unwrap();
-    assert_eq!(original.len(), 2);
-    assert!(
-        original
-            .iter()
-            .any(|case| case.decision == Decision::Review)
-    );
-    vulnbell::research::import(
-        &mut store,
-        ResearchBatch {
-            schema_version: 1,
-            project_id: project.clone(),
-            snapshot_id: plan.snapshot_id,
-            sources: vec![],
-            events: vec![],
-        },
-    )
-    .unwrap();
-    let cases = store.cases().unwrap();
-    assert_eq!(cases.len(), 2);
-    assert!(cases.iter().any(|case| case.decision == Decision::Review));
-    assert!(
-        original
-            .iter()
-            .all(|old| cases.iter().any(|case| case.case_id == old.case_id
-                && case.facts_sha256 == old.facts_sha256
-                && case.evidence.len() == old.evidence.len()))
-    );
-    drop(store);
-    fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
-}
+#[path = "research/remaining.rs"]
+mod remaining;

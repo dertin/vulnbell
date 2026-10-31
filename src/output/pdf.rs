@@ -31,12 +31,30 @@ fn evidence_link(value: &str) -> String {
 }
 
 fn attestation_details(attestation: &crate::sandbox::Attestation, language: Language) -> String {
-    let (oracle, control, execution, inputs) = match language {
-        Language::Es => ("Oráculo", "Control", "Ejecución", "Hashes de entrada"),
-        Language::En => ("Oracle", "Control", "Execution", "Input hashes"),
+    let (oracle, control, execution, inputs, expected, marker, complete, exit) = match language {
+        Language::Es => (
+            "Oráculo",
+            "Control",
+            "Ejecución",
+            "Hashes de entrada",
+            "salida esperada",
+            "marcador",
+            "completo",
+            "salida",
+        ),
+        Language::En => (
+            "Oracle",
+            "Control",
+            "Execution",
+            "Input hashes",
+            "expected exit",
+            "marker",
+            "complete",
+            "exit",
+        ),
     };
     let mut out = format!(
-        "  - {oracle}: {:?}; salida esperada `{}`; marcador `{}`.\n  - {execution}: completo={}; timeout={}; salida={:?}; SHA-256 `{}`.\n  - {inputs}: {}.\n",
+        "  - {oracle}: {:?}; {expected} `{}`; {marker} `{}`.\n  - {execution}: {complete}={}; timeout={}; {exit}={:?}; SHA-256 `{}`.\n  - {inputs}: {}.\n",
         attestation.oracle.purpose,
         attestation.oracle.expected_exit,
         text(&attestation.oracle.stdout_contains),
@@ -47,8 +65,12 @@ fn attestation_details(attestation: &crate::sandbox::Attestation, language: Lang
         text(&attestation.input_sha256.join(", ")),
     );
     if let Some(observation) = &attestation.control {
+        let (input, output) = match language {
+            Language::Es => ("entrada", "salida"),
+            Language::En => ("input", "output"),
+        };
         out.push_str(&format!(
-            "  - {control}: {}; oracle_matched={}; policy_verified={}; input SHA-256 {}; output SHA-256 `{}`.\n",
+            "  - {control}: {}; oracle_matched={}; policy_verified={}; {input} SHA-256 {}; {output} SHA-256 `{}`.\n",
             text(&observation.artifact_version),
             observation.oracle_matched,
             observation.policy_verified,
@@ -278,6 +300,7 @@ pub fn pdf_markdown(
                 && matches!(
                     evidence.source.as_str(),
                     "local_impact_evidence"
+                        | "local_scope_evidence"
                         | "review_handoff_note"
                         | "agent_note"
                         | "microsandbox_stdout"
@@ -515,6 +538,12 @@ mod tests {
         assert!(text.contains("oracle_matched=true"));
         assert!(text.contains("controlinput"));
         assert!(text.contains("controloutput"));
+        assert!(text.contains("expected exit `0`; marker `EXPECTED_MARKER`"));
+        assert!(text.contains("Execution: complete=true; timeout=false; exit=Some(0)"));
+        let spanish = attestation_details(&attestation, crate::profile::Language::Es);
+        assert!(spanish.contains("salida esperada `0`; marcador `EXPECTED_MARKER`"));
+        assert!(spanish.contains("Ejecución: completo=true; timeout=false; salida=Some(0)"));
+        assert!(spanish.contains("entrada SHA-256 controlinput; salida SHA-256 `controloutput`"));
 
         let project = uuid::Uuid::new_v4().to_string();
         let store = crate::store::Store::open(&project).unwrap();
@@ -641,6 +670,14 @@ mod tests {
         let mut missing = note.clone();
         missing.id = "EV-missing".into();
         missing.sha256 = "../outside".into();
+        let scope = store
+            .record_evidence(
+                b"Scope verified at src/scope.rs:21",
+                "local_scope_evidence",
+                None,
+                EvidenceKind::Context,
+            )
+            .unwrap();
         let case = Case {
             schema_version: 1,
             case_id: "SIG-test".into(),
@@ -650,7 +687,7 @@ mod tests {
             instances: vec![],
             claims: vec![],
             upstream_events: vec![],
-            evidence: vec![note.clone(), missing],
+            evidence: vec![note.clone(), scope, missing],
             coverage: vec![],
             applicability: Applicability::Unknown,
             verification: Verification::Inconclusive,
@@ -668,6 +705,7 @@ mod tests {
             pdf_markdown("# Report", &[case], &store, crate::profile::Language::Es).unwrap();
         assert!(output.contains("SIG-test"));
         assert!(output.contains("Reachable at src/auth.rs:12"));
+        assert!(output.contains("Scope verified at src/scope.rs:21"));
         assert!(output.contains(&note.sha256));
         assert!(output.contains("no disponible o integridad inválida"));
         assert!(

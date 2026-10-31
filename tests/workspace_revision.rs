@@ -135,6 +135,7 @@ fn changed_checkout_blocks_recording_and_keeps_the_scanned_revision_in_reports()
         project_id: project.to_string(),
         snapshot_id: plan.snapshot_id.clone(),
         sources: vec![SourceReview {
+            recheck_context_sha256: None,
             upstream: target.upstream.clone(),
             from: target.from.clone(),
             until: target.until.clone(),

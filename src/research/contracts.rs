@@ -20,6 +20,8 @@ pub struct SourceReview {
     pub coverage: ReviewCoverage,
     pub detail: String,
     pub continuation: Option<SourceContinuation>,
+    /// Context of an explicitly reopened recheck, if applicable.
+    pub recheck_context_sha256: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

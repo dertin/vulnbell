@@ -34,6 +34,8 @@ pub struct ResearchDecisions {
     pub schema_version: u32,
     /// Monitor that owns these decisions.
     pub project_id: String,
+    /// Whether these decisions belong to an explicit recheck.
+    pub recheck: bool,
     pub decisions: Vec<ItemDecision>,
 }
 
@@ -60,6 +62,8 @@ pub struct ItemDecision {
     /// Instances of the item's upstream the reading applies to.
     #[serde(default)]
     pub instance_ids: Vec<String>,
+    /// Candidate instances actually examined for this item.
+    pub reviewed_instance_ids: Vec<String>,
     /// Explicitly assess every instance of a multi-component upstream as one scope.
     #[serde(default)]
     pub all_instances: bool,
@@ -67,10 +71,12 @@ pub struct ItemDecision {
 
 impl ItemDecision {
     pub(super) fn needs_scope(&self, target: &ResearchTarget) -> bool {
-        self.assessment == Assessment::Review
-            && target.instance_ids.len() > 1
-            && self.instance_ids.is_empty()
-            && !self.all_instances
+        (target.instance_ids.len() > 1 && self.instance_ids.is_empty() && !self.all_instances)
+            || self.reviewed_instance_ids.len() != target.instance_ids.len()
+            || self
+                .reviewed_instance_ids
+                .iter()
+                .any(|id| !target.instance_ids.contains(id))
     }
 }
 
@@ -130,6 +136,20 @@ impl ResearchDecisions {
             if decision.all_instances && !decision.instance_ids.is_empty() {
                 bail!("decision {key}: choose instance_ids or all_instances, not both");
             }
+            let reviewed: HashSet<_> = decision.reviewed_instance_ids.iter().collect();
+            let selected: HashSet<_> = decision.instance_ids.iter().collect();
+            if reviewed.is_empty()
+                || reviewed.len() != decision.reviewed_instance_ids.len()
+                || selected.len() != decision.instance_ids.len()
+                || decision
+                    .instance_ids
+                    .iter()
+                    .any(|id| !reviewed.contains(id))
+            {
+                bail!(
+                    "decision {key}: reviewed_instance_ids must be unique and include selected instances"
+                );
+            }
             if (decision.assessment == Assessment::NotApplicable)
                 != decision.not_applicable_reason.is_some()
             {
@@ -175,6 +195,7 @@ struct DecisionPacket {
     schema_version: u32,
     project_id: String,
     snapshot_id: String,
+    recheck: bool,
     workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     review: Vec<DecisionPacketItem>,
 }
@@ -187,7 +208,7 @@ struct DecisionPacketItem {
     context_sha256: String,
 }
 
-/// Save one decision without advancing the upstream checkpoint.
+/// Save a small batch of decisions without advancing the upstream checkpoint.
 pub fn save_decision(store: &Store, packet: &Path, from: &Path, output: &Path) -> Result<()> {
     let _lock = store.lock()?;
     store.ensure_workspace_current()?;
@@ -204,70 +225,81 @@ pub fn save_decision(store: &Store, packet: &Path, from: &Path, output: &Path) -
     let packet: DecisionPacket =
         serde_json::from_slice(&crate::read_limited(packet, 64 * 1024 * 1024)?)
             .context("invalid hits packet")?;
-    let mut input = ResearchDecisions::load(from)?;
-    if input.decisions.len() != 1 {
-        bail!("submit exactly one decision");
+    let input = ResearchDecisions::load(from)?;
+    if !(1..=10).contains(&input.decisions.len()) {
+        bail!("submit 1..10 decisions");
     }
-    let decision = input.decisions.remove(0);
-    let plan = crate::research::full_plan(store)?;
+    let plan = crate::research::decision_plan(store)?;
     if packet.schema_version != 1
         || packet.project_id != plan.project_id
         || input.project_id != plan.project_id
+        || input.recheck != packet.recheck
         || packet.snapshot_id != plan.snapshot_id
         || !crate::workspace_revision::same_revisions(
             &packet.workspace_revisions,
             &plan.workspace_revisions,
         )
-        || !crate::workspace_revision::same_revisions(
-            &decision.workspace_revisions,
-            &plan.workspace_revisions,
-        )
     {
         bail!("hits packet or decision belongs to another project, snapshot or codebase revision");
     }
-    let target = plan
-        .targets
-        .iter()
-        .find(|target| target.upstream == decision.upstream)
-        .context("decision upstream is outside the current research plan")?;
-    if decision.context_sha256 != target.context_sha256
-        || !packet.review.iter().any(|item| {
-            item.upstream == decision.upstream
-                && item.key == decision.key
-                && item.context_sha256 == decision.context_sha256
-                && super::same_instant(&item.updated_at, &decision.updated_at)
-        })
-    {
-        bail!("decision does not match an item in the current hits packet");
-    }
-    if decision.needs_scope(target)
-        || decision
-            .instance_ids
+    for decision in &input.decisions {
+        if !crate::workspace_revision::same_revisions(
+            &decision.workspace_revisions,
+            &plan.workspace_revisions,
+        ) {
+            bail!("decision belongs to another codebase revision");
+        }
+        let target = plan
+            .targets
+            .iter()
+            .find(|target| target.upstream == decision.upstream)
+            .context("decision upstream is outside the current research plan")?;
+        if decision.context_sha256 != target.context_sha256
+            || !packet.review.iter().any(|item| {
+                item.upstream == decision.upstream
+                    && item.key == decision.key
+                    && item.context_sha256 == decision.context_sha256
+                    && super::same_instant(&item.updated_at, &decision.updated_at)
+            })
+        {
+            bail!("decision does not match an item in the current hits packet");
+        }
+        if decision
+            .reviewed_instance_ids
             .iter()
             .any(|id| !target.instance_ids.contains(id))
-    {
-        bail!("decision instance scope is incomplete or outside the current target");
+            || (decision.all_instances && decision.needs_scope(target))
+            || decision
+                .instance_ids
+                .iter()
+                .any(|id| !target.instance_ids.contains(id))
+        {
+            bail!("decision instance scope is incomplete or outside the current target");
+        }
     }
     let mut saved = match output.symlink_metadata() {
         Ok(_) => ResearchDecisions::load(output)?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => ResearchDecisions {
             schema_version: 1,
             project_id: plan.project_id.clone(),
+            recheck: packet.recheck,
             decisions: Vec::new(),
         },
         Err(error) => return Err(error.into()),
     };
-    if saved.project_id != plan.project_id {
-        bail!("decisions file belongs to another monitor");
+    if saved.project_id != plan.project_id || saved.recheck != packet.recheck {
+        bail!("decisions file belongs to another monitor or review mode");
     }
-    if let Some(existing) = saved
-        .decisions
-        .iter_mut()
-        .find(|existing| existing.upstream == decision.upstream && existing.key == decision.key)
-    {
-        *existing = decision;
-    } else {
-        saved.decisions.push(decision);
+    for decision in input.decisions {
+        if let Some(existing) = saved
+            .decisions
+            .iter_mut()
+            .find(|existing| existing.upstream == decision.upstream && existing.key == decision.key)
+        {
+            *existing = decision;
+        } else {
+            saved.decisions.push(decision);
+        }
     }
     saved.validate()?;
     let bytes = serde_json::to_vec_pretty(&saved)?;
@@ -294,8 +326,9 @@ pub fn draft(
     decisions: &ResearchDecisions,
     partial: bool,
 ) -> Result<(ResearchBatch, DraftSummary)> {
-    if decisions.project_id != prepared.project_id {
-        bail!("decisions file belongs to another monitor");
+    decisions.validate()?;
+    if decisions.project_id != prepared.project_id || decisions.recheck != prepared.recheck {
+        bail!("decisions file belongs to another monitor or review mode");
     }
     let mut sources = Vec::new();
     let mut events = Vec::new();
@@ -325,6 +358,9 @@ pub fn draft(
             coverage,
             detail: truncate_bytes(&detail(prepared_target, &review), DETAIL_BYTES),
             continuation: None,
+            recheck_context_sha256: prepared
+                .recheck
+                .then(|| prepared_target.target.context_sha256.clone()),
         });
     }
     if !partial && !incomplete.is_empty() {
@@ -403,7 +439,7 @@ fn target_events(
             (DecisionLookup::Current(decision), _) if decision.needs_scope(target) => {
                 review.undecided += 1;
                 undecided.push(format!(
-                    "{} (select instance_ids or all_instances)",
+                    "{} (review all candidates and select instance_ids or all_instances)",
                     entry.item.key
                 ));
                 continue;
@@ -416,6 +452,7 @@ fn target_events(
                     rationale: &decision.rationale,
                     facts: &decision.source_facts,
                     instance_ids: &decision.instance_ids,
+                    reviewed_instance_ids: &decision.reviewed_instance_ids,
                 }
             }
             (_, Disposition::Rule(outcome)) => {
@@ -426,6 +463,7 @@ fn target_events(
                     rationale: &outcome.rationale,
                     facts: &outcome.facts,
                     instance_ids: &outcome.instance_ids,
+                    reviewed_instance_ids: &target.instance_ids,
                 }
             }
             _ => {
@@ -451,6 +489,7 @@ struct Reading<'a> {
     rationale: &'a str,
     facts: &'a SourceFacts,
     instance_ids: &'a [String],
+    reviewed_instance_ids: &'a [String],
 }
 
 fn event(
@@ -496,7 +535,7 @@ fn event(
         } else {
             reading.instance_ids.to_vec()
         },
-        reviewed_instance_ids: target.instance_ids.clone(),
+        reviewed_instance_ids: reading.reviewed_instance_ids.to_vec(),
         provider: provider.to_owned(),
         external_id: item.key.clone(),
         kind: item.kind.event_kind(),

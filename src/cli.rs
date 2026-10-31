@@ -130,6 +130,9 @@ pub(super) enum Commands {
         /// RFC3339 start of the reopened review window.
         #[arg(long, requires = "reopen")]
         since: Option<String>,
+        /// Start a new recheck generation for the reopened sources.
+        #[arg(long, requires = "reopen")]
+        recheck: bool,
         #[arg(long)]
         json: bool,
     },
@@ -355,14 +358,14 @@ pub(super) enum ResearchTools {
         #[arg(long)]
         review_limit: Option<usize>,
     },
-    /// Atomically save one reviewed item from a current hits packet.
+    /// Atomically save 1..10 reviewed items from a current hits packet.
     Decide {
         #[arg(long)]
         project: PathBuf,
         /// Review packet written by tools hits.
         #[arg(long)]
         packet: PathBuf,
-        /// Decisions JSON containing exactly one item.
+        /// Decisions JSON containing 1..10 items.
         #[arg(long)]
         from: PathBuf,
         /// Per-monitor decisions file to update or create.
@@ -376,8 +379,9 @@ pub(super) enum ResearchTools {
         project: PathBuf,
         #[arg(long)]
         raw: PathBuf,
+        /// Omit when no manual decisions were recorded.
         #[arg(long)]
-        decisions: PathBuf,
+        decisions: Option<PathBuf>,
         #[arg(long)]
         output: PathBuf,
         /// Accept missing responses and undecided items; their sources stay partial.

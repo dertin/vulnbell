@@ -605,6 +605,7 @@ fn reimported_research_keeps_promoted_advisory_and_evidence() {
         rationale: "Review the reported issue.".into(), source_facts: Default::default(),
     };
     let source = |target: &research::ResearchTarget| SourceReview {
+        recheck_context_sha256: None,
         upstream: target.upstream.clone(),
         from: target.from.clone(),
         until: target.until.clone(),

@@ -268,6 +268,7 @@ fn research_pages_reach_every_researched_category_and_resume_a_pinned_partial_wi
     let plan = crate::research::plan_page(&store, "", 1).unwrap();
     let target = &plan.targets[0];
     let review = crate::research::SourceReview {
+        recheck_context_sha256: None,
         upstream: target.upstream.clone(),
         from: target.from.clone(),
         until: target.until.clone(),

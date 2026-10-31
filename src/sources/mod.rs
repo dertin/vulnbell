@@ -1,3 +1,4 @@
+use crate::identity::normalize_pypi;
 use crate::{
     model::{Applicability, Case, Claim, Coverage, CoverageState, EvidenceKind, Instance},
     network::Http,
@@ -502,20 +503,6 @@ pub(crate) fn osv_package_identity(
         }
     }
     Some(true)
-}
-
-pub(crate) fn normalize_pypi(name: &str) -> String {
-    let mut result = String::new();
-    for character in name.chars() {
-        if matches!(character, '-' | '_' | '.') {
-            if !result.ends_with('-') {
-                result.push('-');
-            }
-        } else {
-            result.push(character.to_ascii_lowercase());
-        }
-    }
-    result
 }
 
 /// Package URL without version for an OSV ecosystem and package name.
