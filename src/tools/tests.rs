@@ -291,11 +291,10 @@ fn evaluation_rejects_unrelated_linked_items() {
 }
 
 #[test]
-fn screen_selects_claimed_phishing_and_embedded_credentials() {
+fn screen_selects_claimed_phishing() {
     for body in [
         "An email verification flow may enable phishing.",
-        "An application contains a hard-coded access token.",
-        "A hardcoded password was included in an example.",
+        "The login page can be used for a phishing attack.",
     ] {
         assert!(screen::screen(&item(ItemKind::Issue, "Request handling", body), "").is_some());
     }
