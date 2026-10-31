@@ -122,6 +122,36 @@ fn impact_plan_is_fixed_for_every_instance() {
 }
 
 #[test]
+fn impact_assessment_is_stale_when_codebase_revision_changes() {
+    let (project, mut store, case, evidence) = fixture();
+    vulnbell::impact::assess(
+        &mut store,
+        &case.case_id,
+        ImpactSubmission {
+            schema_version: 1,
+            case_id: case.case_id.clone(),
+            facts_sha256: case.facts_sha256.clone(),
+            answers: vec![answer(
+                &case.instances[0].id,
+                ImpactQuestionId::AffectedFeatureUsed,
+                ImpactAnswerValue::Yes,
+                &evidence,
+            )],
+        },
+    )
+    .unwrap();
+    let mut recorded = store.case(&case.case_id).unwrap();
+    assert!(vulnbell::impact::latest(&recorded, &store).is_some());
+    let other = tempfile::tempdir().unwrap();
+    recorded
+        .workspace_revisions
+        .push(vulnbell::workspace_revision::capture_path(other.path()));
+    assert!(vulnbell::impact::latest(&recorded, &store).is_none());
+    drop(store);
+    std::fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+}
+
+#[test]
 fn artifact_identity_and_lab_evidence_do_not_prove_deployment() {
     let (project, mut store, mut case, context) = fixture();
     let mut references = Vec::new();

@@ -57,7 +57,9 @@ fn report(
             print(&vulnbell::output::markdown(&snapshot))?;
         }
     } else {
-        let report = vulnbell::output::morning_report(&snapshot, &store, audience)?;
+        let mut report = vulnbell::output::morning_report(&snapshot, &store, audience)?;
+        let pending = vulnbell::tools::cases::pending(&store)?;
+        vulnbell::output::add_research_coverage(&mut report, &pending);
         if json {
             emit(&report)?;
         } else {
@@ -68,7 +70,7 @@ fn report(
                 None => format!(
                     "{}{}",
                     vulnbell::output::delivery_status_markdown(
-                        &vulnbell::tools::cases::pending(&store)?,
+                        &pending,
                         snapshot.partial,
                         report.language,
                     ),
@@ -83,9 +85,7 @@ fn report(
                         profile::Language::En => "> **Custom content:** the text was supplied by the user and was not validated by VulnBell.\n\n",
                     });
                 }
-                input.push_str(&markdown);
-                input.push_str("\n\n");
-                input.push_str(&vulnbell::output::verification_markdown(&report));
+                input.push_str(&vulnbell::output::pdf_report_body(&markdown, &report));
                 let document = vulnbell::output::pdf_markdown(
                     &input,
                     &snapshot.cases,

@@ -162,6 +162,8 @@ pub struct ResearchPlan {
     pub tracker_scope: crate::profile::TrackerScope,
     pub deferred_transitive_instances: usize,
     pub deferred_unknown_instances: usize,
+    /// Observations no longer valid for the current discovery context; rescan before research.
+    pub stale_observations: usize,
     /// No inventory instance was selected for tracker research.
     pub scope_unselected: bool,
     /// Evidence-backed candidates for focused investigation; these do not change the scope.

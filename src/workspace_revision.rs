@@ -30,7 +30,7 @@ pub struct WorkspaceRevision {
     pub repository: Option<String>,
     pub branch: Option<String>,
     pub commit: Option<String>,
-    /// Changes excluding private paths, ignored files and submodule contents.
+    /// Changes excluding private paths, ignored files, generated untracked files and submodules.
     pub dirty: Option<bool>,
     /// Hash of Git's status entries and changed files, without retaining names or contents.
     pub worktree_status_sha256: Option<String>,
@@ -218,6 +218,10 @@ fn git_status(workspace: &Path, repository: &Path, commit: &str) -> Result<Vec<u
         )?;
     }
     let worktree_config = git_worktree_config(workspace)?;
+    let output_paths: Vec<String> = crate::inventory::EXCLUDED_DIRECTORIES
+        .iter()
+        .map(|name| format!(":(exclude,glob)**/{name}/**"))
+        .collect();
     let shadow_command = || {
         let mut command = git_command(workspace);
         for (name, value) in &worktree_config {
@@ -237,6 +241,7 @@ fn git_status(workspace: &Path, repository: &Path, commit: &str) -> Result<Vec<u
     if !flags.status.success() {
         bail!("Git index flags are unavailable");
     }
+    let mut excluded = Vec::new();
     for entry in flags
         .stdout
         .split(|byte| *byte == 0)
@@ -246,7 +251,12 @@ fn git_status(workspace: &Path, repository: &Path, commit: &str) -> Result<Vec<u
             bail!("invalid Git index entry");
         }
         let path = std::str::from_utf8(&entry[2..])?;
-        if !private_path(path)? && (entry[0] == b'S' || entry[0].is_ascii_lowercase()) {
+        if private_path(path)? {
+            excluded.push(format!(":(top,exclude,literal){path}"));
+            if excluded.len() > MAX_CHANGED_FILES {
+                bail!("too many excluded paths");
+            }
+        } else if entry[0] == b'S' || entry[0].is_ascii_lowercase() {
             bail!("Git index hides working-tree changes");
         }
     }
@@ -255,12 +265,12 @@ fn git_status(workspace: &Path, repository: &Path, commit: &str) -> Result<Vec<u
             "ls-files",
             "--full-name",
             "-z",
-            "--cached",
             "--others",
             "--exclude-standard",
             "--",
             ".",
         ])
+        .args(&output_paths)
         .output()?;
     if !paths.status.success() {
         bail!(
@@ -268,18 +278,17 @@ fn git_status(workspace: &Path, repository: &Path, commit: &str) -> Result<Vec<u
             String::from_utf8_lossy(&paths.stderr).trim()
         );
     }
-    let mut excluded = Vec::new();
+    let mut untracked = Vec::new();
     for path in paths
         .stdout
         .split(|byte| *byte == 0)
         .filter(|path| !path.is_empty())
     {
         let value = std::str::from_utf8(path)?;
-        if private_path(value)? {
-            excluded.push(format!(":(top,exclude,literal){value}"));
-            if excluded.len() > MAX_CHANGED_FILES {
-                bail!("too many excluded paths");
-            }
+        if !private_path(value)? {
+            untracked.extend_from_slice(b"?? ");
+            untracked.extend_from_slice(path);
+            untracked.push(0);
         }
     }
     let output = shadow_command()
@@ -287,7 +296,7 @@ fn git_status(workspace: &Path, repository: &Path, commit: &str) -> Result<Vec<u
             "status",
             "--porcelain=v1",
             "-z",
-            "--untracked-files=all",
+            "--untracked-files=no",
             "--ignore-submodules=all",
             "--",
             ".",
@@ -300,7 +309,9 @@ fn git_status(workspace: &Path, repository: &Path, commit: &str) -> Result<Vec<u
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    Ok(output.stdout)
+    let mut status = output.stdout;
+    status.extend_from_slice(&untracked);
+    Ok(status)
 }
 
 fn worktree_digest(workspace: &Path, repository: &Path, status: &[u8]) -> Result<String> {
@@ -404,6 +415,9 @@ pub fn capture_path(path: &Path) -> WorkspaceRevision {
         worktree_status_sha256: None,
         observed_at: crate::now(),
     };
+    if crate::inventory::excluded_path(&workspace) {
+        return revision;
+    }
     if !workspace.is_dir() {
         return revision;
     }

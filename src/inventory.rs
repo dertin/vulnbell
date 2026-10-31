@@ -8,6 +8,41 @@ use std::{
 
 mod requirements;
 
+pub(crate) const EXCLUDED_DIRECTORIES: &[&str] = &[
+    ".git",
+    "node_modules",
+    "vendor",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".gradle",
+    ".terraform",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".next",
+    ".nuxt",
+    ".sqlx",
+    ".cache",
+    "dist",
+    "build",
+    "target",
+    "bower_components",
+    ".pnpm-store",
+    ".bundle",
+];
+
+pub(crate) fn excluded_directory(name: &str) -> bool {
+    EXCLUDED_DIRECTORIES.contains(&name)
+}
+
+pub(crate) fn excluded_path(path: &Path) -> bool {
+    path.components().any(|component| {
+        matches!(component, std::path::Component::Normal(name) if excluded_directory(&name.to_string_lossy()))
+    })
+}
+
 #[derive(Default)]
 pub struct Inventory {
     pub instances: Vec<Instance>,
@@ -701,22 +736,22 @@ pub fn discover(
                 continue;
             }
         };
+        if excluded_path(&root) {
+            inventory.coverage.push(Coverage::new(
+                "workspace",
+                workspace,
+                CoverageState::Unavailable,
+                "dependency or build output cannot be an inventory codebase",
+            ));
+            continue;
+        }
         let walker = ignore::WalkBuilder::new(&root)
             .hidden(false)
             .follow_links(false)
             .max_depth(Some(32))
             .filter_entry(|entry| {
-                ![
-                    ".git",
-                    "node_modules",
-                    "vendor",
-                    ".venv",
-                    "target",
-                    ".cache",
-                    "dist",
-                    "build",
-                ]
-                .contains(&entry.file_name().to_string_lossy().as_ref())
+                !entry.file_type().is_some_and(|kind| kind.is_dir())
+                    || !excluded_directory(&entry.file_name().to_string_lossy())
             })
             .build();
         let mut supported_files = 0;

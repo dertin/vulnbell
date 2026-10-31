@@ -122,6 +122,27 @@ fn manual_then_mixed_monitor_is_auditable_and_preserves_history() {
     assert!(vulnbell::engine::triage(&mut store, &case.case_id, forged).is_err());
     let second = vulnbell::engine::scan(&profile, &path, true).unwrap();
     assert_eq!(second.cases[0].facts_sha256, case.facts_sha256);
+    let mut stale_context = second.cases[0].clone();
+    stale_context.workspace_revisions =
+        vec![vulnbell::workspace_revision::capture_path(directory.path())];
+    stale_context.applicability = Applicability::NotAffected;
+    stale_context.verification = Verification::LabReproduced;
+    stale_context.decision = Decision::Dismissed;
+    store.save_case(&stale_context).unwrap();
+    let reassessed = vulnbell::engine::scan(&profile, &path, true).unwrap();
+    assert_eq!(reassessed.cases[0].facts_sha256, case.facts_sha256);
+    assert_eq!(reassessed.cases[0].applicability, Applicability::Affected);
+    assert_eq!(
+        reassessed.cases[0].verification,
+        Verification::SourceConfirmed
+    );
+    assert_eq!(reassessed.cases[0].decision, Decision::Actionable);
+    assert!(
+        reassessed.cases[0]
+            .open_questions
+            .iter()
+            .any(|question| question.contains("Codebase revision changed"))
+    );
     cache(
         &store,
         "GET",
@@ -159,7 +180,7 @@ fn manual_then_mixed_monitor_is_auditable_and_preserves_history() {
         .connection
         .query_row("SELECT COUNT(*) FROM snapshots", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(count, 4);
+    assert_eq!(count, 5);
     let locked_case = snapshot
         .cases
         .iter()
@@ -190,6 +211,18 @@ fn manual_then_mixed_monitor_is_auditable_and_preserves_history() {
         unchanged.instances[0].provenance.sha256,
         locked_case.instances[0].provenance.sha256
     );
+    let mut stale_research = store.case(&research_case.case_id).unwrap();
+    stale_research.workspace_revisions.clear();
+    stale_research.verification = Verification::LabReproduced;
+    store.save_case(&stale_research).unwrap();
+    let revision_changed = vulnbell::engine::scan(&mixed, &path, true).unwrap();
+    let reopened_research = revision_changed
+        .cases
+        .iter()
+        .find(|case| case.case_id == research_case.case_id)
+        .unwrap();
+    assert_eq!(reopened_research.decision, Decision::Review);
+    assert_eq!(reopened_research.verification, Verification::Inconclusive);
     lock["packages"]["node_modules/lodash"]["integrity"] = json!("sha512-changed-artifact");
     fs::write(&lock_path, serde_json::to_vec(&lock).unwrap()).unwrap();
     let changed = vulnbell::engine::scan(&mixed, &path, true).unwrap();

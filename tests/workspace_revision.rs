@@ -29,6 +29,63 @@ fn git(path: &Path, args: &[&str]) -> String {
 }
 
 #[test]
+fn generated_directories_are_excluded_from_git_worktree_fingerprints() {
+    let dir = tempfile::tempdir().unwrap();
+    git(dir.path(), &["init", "-b", "main"]);
+    fs::write(dir.path().join("project.txt"), "initial").unwrap();
+    fs::create_dir(dir.path().join("vendor")).unwrap();
+    fs::write(dir.path().join("vendor/tracked.txt"), "initial").unwrap();
+    git(dir.path(), &["add", "project.txt", "vendor/tracked.txt"]);
+    git(dir.path(), &["commit", "-m", "fixture"]);
+    let initial = workspace_revision::capture_path(dir.path());
+    for path in [
+        "node_modules/package",
+        "nested/target/debug",
+        "vendor/package",
+        ".venv/lib",
+    ] {
+        fs::create_dir_all(dir.path().join(path)).unwrap();
+        fs::write(dir.path().join(path).join("generated.txt"), "generated").unwrap();
+    }
+    let excluded = workspace_revision::capture_path(dir.path());
+    assert_eq!(initial.dirty, Some(false));
+    assert_eq!(excluded.dirty, Some(false));
+    assert_eq!(
+        initial.worktree_status_sha256,
+        excluded.worktree_status_sha256
+    );
+    fs::write(dir.path().join("vendor/tracked.txt"), "updated dependency").unwrap();
+    let tracked_change = workspace_revision::capture_path(dir.path());
+    assert_eq!(tracked_change.dirty, Some(true));
+    assert!(workspace_revision::ensure_current(std::slice::from_ref(&initial)).is_err());
+    fs::write(dir.path().join("vendor/tracked.txt"), "initial").unwrap();
+    fs::write(dir.path().join("project.txt"), "changed").unwrap();
+    let changed = workspace_revision::capture_path(dir.path());
+    assert_eq!(changed.dirty, Some(true));
+    assert_ne!(
+        initial.worktree_status_sha256,
+        changed.worktree_status_sha256
+    );
+}
+
+#[test]
+fn generated_directories_are_excluded_for_a_nested_git_codebase() {
+    let dir = tempfile::tempdir().unwrap();
+    git(dir.path(), &["init", "-b", "main"]);
+    let workspace = dir.path().join("service");
+    fs::create_dir(&workspace).unwrap();
+    fs::write(workspace.join("project.txt"), "initial").unwrap();
+    git(dir.path(), &["add", "service/project.txt"]);
+    git(dir.path(), &["commit", "-m", "fixture"]);
+    let initial = workspace_revision::capture_path(&workspace);
+    fs::create_dir_all(workspace.join("nested/target/debug")).unwrap();
+    fs::write(workspace.join("nested/target/debug/output"), "generated").unwrap();
+    let after = workspace_revision::capture_path(&workspace);
+    assert_eq!(after.dirty, Some(false));
+    assert_eq!(initial.worktree_status_sha256, after.worktree_status_sha256);
+}
+
+#[test]
 fn index_flags_cannot_hide_worktree_changes() {
     for flag in ["--assume-unchanged", "--skip-worktree"] {
         let dir = tempfile::tempdir().unwrap();

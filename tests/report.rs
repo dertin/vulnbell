@@ -10,6 +10,7 @@ fn delivery_status_distinguishes_partial_coverage_from_complete_reports() {
         verdict_missing: Vec::new(),
         challenge_open: Vec::new(),
         research_open: Vec::new(),
+        stale_observations: 0,
         discovery_open: None,
         tracker_scope_unresolved: false,
         workspace_context_changed: false,
@@ -521,6 +522,29 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
             .detail
             .contains("proprietary binary")
     );
+    let custom = vulnbell::output::pdf_report_body("# Custom report\n", &report);
+    assert!(custom.contains("proprietary binary"));
+    let standard = vulnbell::output::morning_markdown(&report);
+    let pdf = vulnbell::output::pdf_report_body(&standard, &report);
+    assert_eq!(pdf.matches("proprietary binary").count(), 1);
+    let custom_copy = vulnbell::output::pdf_report_body(&pdf, &report);
+    assert_eq!(custom_copy.matches("proprietary binary").count(), 1);
+    let edited = pdf.replace("proprietary binary", "customized explanation");
+    let with_current = vulnbell::output::pdf_report_body(&edited, &report);
+    assert!(with_current.contains("customized explanation"));
+    assert!(with_current.contains("proprietary binary"));
+    assert!(with_current.contains("## Verification recorded by VulnBell"));
+    let mut stale_blocker = blocked.clone();
+    let changed = tempfile::tempdir().unwrap();
+    stale_blocker
+        .workspace_revisions
+        .push(vulnbell::workspace_revision::capture_path(changed.path()));
+    snapshot.cases = vec![stale_blocker];
+    let stale_report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    assert_ne!(
+        stale_report.finding_checks[0].local_checks[0].result,
+        vulnbell::output::LocalResult::Blocked
+    );
     assert_eq!(blocked.verification, Verification::SourceConfirmed);
     assert!(
         vulnbell::sandbox::record_blocker(
@@ -949,6 +973,7 @@ fn unconfirmed_versions_need_a_review_disposition_without_requiring_a_test() {
             &serde_json::to_vec(&json!({
                 "schema_version": 1,
                 "case_id": "SIG-issue",
+                "workspace_revisions": [],
                 "facts_sha256": "facts",
                 "instance_id": instance.id,
                 "reason": "Deployment configuration is unavailable.",

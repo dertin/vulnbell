@@ -811,7 +811,7 @@ pub fn verification_markdown(report: &MorningReport) -> String {
 
 /// Only open cases with possible project exposure get references and local checks; the rest are
 /// counted and keep their detail in the JSON report.
-fn verification_section(report: &MorningReport, impact_answers: bool) -> String {
+pub(super) fn verification_section(report: &MorningReport, impact_answers: bool) -> String {
     let open: Vec<&FindingCheck> = report
         .finding_checks
         .iter()

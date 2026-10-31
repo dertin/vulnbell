@@ -183,6 +183,10 @@ pub(super) fn finding_check(case: &Case, store: &Store, language: Language) -> F
                         if blocker.schema_version == 1
                             && blocker.case_id == case.case_id
                             && blocker.facts_sha256 == case.facts_sha256
+                            && crate::workspace_revision::same_revisions(
+                                &blocker.workspace_revisions,
+                                &case.workspace_revisions,
+                            )
                             && blocker.instance_id == instance.id =>
                     {
                         if blocker.cleared {

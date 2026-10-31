@@ -3,7 +3,7 @@ use vulnbell::store::Store;
 
 #[test]
 fn incompatible_state_is_rejected_without_conversion_or_data_changes() {
-    for version in [0_u32, 1_u32, 2_u32] {
+    for version in [0_u32, 1_u32, 2_u32, 3_u32] {
         let project = uuid::Uuid::new_v4().to_string();
         let directory = vulnbell::store::data_root().join(&project);
         fs::create_dir_all(&directory).unwrap();
@@ -62,7 +62,7 @@ fn current_database_is_initialized_once_and_reopens_without_rebuilding_tables() 
         .connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
     store.set_meta("sentinel", "retained").unwrap();
     store
         .connection
@@ -160,7 +160,7 @@ fn mixed_codebase_inventories_each_ecosystem_with_its_own_provenance() {
             Origin::Locked,
         ),
         (
-            "pkg:pypi/requests",
+            "python-requirement:requests",
             "python/requirements.txt",
             "2.31.0",
             Origin::Declared,

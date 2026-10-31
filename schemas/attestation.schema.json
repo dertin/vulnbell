@@ -91,7 +91,7 @@
           ]
         },
         "dirty": {
-          "description": "Changes excluding private paths, ignored files and submodule contents.",
+          "description": "Changes excluding private paths, ignored files, generated untracked files and submodules.",
           "type": [
             "boolean",
             "null"
@@ -244,7 +244,6 @@
       "$ref": "#/$defs/Verification"
     },
     "workspace_revisions": {
-      "default": [],
       "items": {
         "$ref": "#/$defs/WorkspaceRevision"
       },
@@ -255,6 +254,7 @@
     "schema_version",
     "project_id",
     "case_id",
+    "workspace_revisions",
     "facts_sha256",
     "instance_id",
     "artifact_version",

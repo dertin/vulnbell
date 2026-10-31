@@ -75,7 +75,6 @@ pub enum BlockerKind {
 pub struct VerificationBlocker {
     pub schema_version: u32,
     pub case_id: String,
-    #[serde(default)]
     pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     pub facts_sha256: String,
     pub instance_id: String,
@@ -246,7 +245,6 @@ pub struct Attestation {
     pub schema_version: u32,
     pub project_id: String,
     pub case_id: String,
-    #[serde(default)]
     pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
     pub facts_sha256: String,
     pub instance_id: String,
@@ -294,6 +292,10 @@ pub fn read_attestation(
         || attestation.project_id != case.project_id
         || attestation.case_id != case.case_id
         || attestation.facts_sha256 != case.facts_sha256
+        || !crate::workspace_revision::same_revisions(
+            &attestation.workspace_revisions,
+            &case.workspace_revisions,
+        )
         || !case.instances.iter().any(|instance| {
             instance.id == attestation.instance_id
                 && instance.resolved_version.as_deref() == Some(&attestation.artifact_version)

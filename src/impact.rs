@@ -552,6 +552,10 @@ fn read_result(case: &Case, store: &Store, evidence: &Evidence) -> Result<Impact
     if result.schema_version != 1
         || result.case_id != case.case_id
         || result.facts_sha256 != case.facts_sha256
+        || !crate::workspace_revision::same_revisions(
+            &result.workspace_revisions,
+            &case.workspace_revisions,
+        )
     {
         bail!("stale or mismatched impact assessment");
     }

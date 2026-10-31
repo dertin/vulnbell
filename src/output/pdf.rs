@@ -16,6 +16,86 @@ fn text(value: &str) -> String {
     super::markdown::inline(value)
 }
 
+fn evidence_link(value: &str) -> String {
+    match url::Url::parse(value) {
+        Ok(url)
+            if url.scheme() == "https"
+                && url.host_str().is_some()
+                && url.username().is_empty()
+                && url.password().is_none() =>
+        {
+            format!("<{}>", url.as_str())
+        }
+        _ => text(value),
+    }
+}
+
+fn attestation_details(attestation: &crate::sandbox::Attestation, language: Language) -> String {
+    let (oracle, control, execution, inputs) = match language {
+        Language::Es => ("Oráculo", "Control", "Ejecución", "Hashes de entrada"),
+        Language::En => ("Oracle", "Control", "Execution", "Input hashes"),
+    };
+    let mut out = format!(
+        "  - {oracle}: {:?}; salida esperada `{}`; marcador `{}`.\n  - {execution}: completo={}; timeout={}; salida={:?}; SHA-256 `{}`.\n  - {inputs}: {}.\n",
+        attestation.oracle.purpose,
+        attestation.oracle.expected_exit,
+        text(&attestation.oracle.stdout_contains),
+        attestation.execution_complete,
+        attestation.timed_out,
+        attestation.exit_code,
+        text(&attestation.output_sha256),
+        text(&attestation.input_sha256.join(", ")),
+    );
+    if let Some(observation) = &attestation.control {
+        out.push_str(&format!(
+            "  - {control}: {}; oracle_matched={}; policy_verified={}; input SHA-256 {}; output SHA-256 `{}`.\n",
+            text(&observation.artifact_version),
+            observation.oracle_matched,
+            observation.policy_verified,
+            text(&observation.input_sha256.join(", ")),
+            text(&observation.output_sha256),
+        ));
+    } else {
+        out.push_str(match language {
+            Language::Es => "  - Control: no registrado.\n",
+            Language::En => "  - Control: not recorded.\n",
+        });
+    }
+    out
+}
+
+/// Include all recorded verification details without repeating the standard section.
+pub fn report_body(markdown: &str, report: &super::MorningReport) -> String {
+    if report.finding_checks.is_empty() {
+        return markdown.to_owned();
+    }
+    let compact = super::markdown::verification_section(report, false);
+    let checks: Vec<&super::verification::FindingCheck> = report.finding_checks.iter().collect();
+    let full = super::verification::markdown(&checks, true, report.language);
+    if markdown.contains(&full) {
+        markdown.to_owned()
+    } else if !compact.is_empty() && markdown.contains(&compact) {
+        markdown.replacen(&compact, &full, 1)
+    } else {
+        let (original, current) = match report.language {
+            Language::Es => (
+                "## Referencias y verificación local",
+                "## Verificación registrada por VulnBell",
+            ),
+            Language::En => (
+                "## References and local verification",
+                "## Verification recorded by VulnBell",
+            ),
+        };
+        let full = if markdown.contains(original) {
+            full.replacen(original, current, 1)
+        } else {
+            full
+        };
+        format!("{markdown}\n\n{full}")
+    }
+}
+
 /// Extend the report with evidence metadata and locally registered review notes.
 pub fn pdf_markdown(
     markdown: &str,
@@ -93,10 +173,10 @@ pub fn pdf_markdown(
         }
         for event in &case.upstream_events {
             output.push_str(&format!(
-                "- {}: {} <{}> — SHA-256 `{}`\n",
+                "- {}: {} {} — SHA-256 `{}`\n",
                 text(&event.kind),
                 text(&event.title),
-                text(&event.url),
+                evidence_link(&event.url),
                 text(&event.sha256)
             ));
             if !event.source_facts.identifiers.is_empty() {
@@ -180,9 +260,20 @@ pub fn pdf_markdown(
                 state
             ));
             if let Some(url) = &evidence.url {
-                output.push_str(&format!(" — <{}>", text(url)));
+                output.push_str(&format!(" — {}", evidence_link(url)));
             }
             output.push('\n');
+            if evidence.kind == crate::model::EvidenceKind::Attestation {
+                match crate::sandbox::read_attestation(case, store, evidence) {
+                    Ok(attestation) => {
+                        output.push_str(&attestation_details(&attestation, language))
+                    }
+                    Err(_) => output.push_str(match language {
+                        Language::Es => "  - Atestación no disponible o inválida.\n",
+                        Language::En => "  - Attestation unavailable or invalid.\n",
+                    }),
+                }
+            }
             if valid
                 && matches!(
                     evidence.source.as_str(),
@@ -259,8 +350,21 @@ fn safe_html(markdown: &str) -> String {
     });
     let mut body = String::new();
     html::push_html(&mut body, events);
+    let appendix = ["Anexo de evidencias", "Evidence appendix"]
+        .into_iter()
+        .filter_map(|heading| {
+            let marker = format!("<h1>{heading}</h1>");
+            body.rfind(&marker).map(|start| (start, marker, heading))
+        })
+        .max_by_key(|(start, _, _)| *start);
+    if let Some((start, marker, heading)) = appendix {
+        body.replace_range(
+            start..start + marker.len(),
+            &format!("<h1 class=\"evidence-appendix\">{heading}</h1>"),
+        );
+    }
     format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; base-uri 'none'; form-action 'none'\"><title>VulnBell report</title><style>@page{{size:A4;margin:18mm 15mm;@bottom-right{{content:counter(page) \" / \" counter(pages);font:8pt sans-serif;color:#52647a}}}}body{{font:10pt/1.45 sans-serif;color:#182338}}h1,h2,h3{{color:#183a67;break-after:avoid}}h1{{font-size:20pt}}h2{{font-size:15pt;border-bottom:1px solid #cad5e3;padding-bottom:4px}}h3{{font-size:12pt}}p,li{{overflow-wrap:anywhere}}table{{width:100%;border-collapse:collapse;font-size:8.5pt;table-layout:fixed}}th,td{{border:1px solid #cad5e3;padding:5px;vertical-align:top;overflow-wrap:anywhere}}th{{background:#eaf0f7;text-align:left}}tr{{break-inside:avoid}}thead{{display:table-header-group}}pre{{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f5f8;padding:8px;font-size:8pt}}code{{overflow-wrap:anywhere}}a{{color:#1554a0;overflow-wrap:anywhere}}blockquote{{border-left:3px solid #b86b10;margin-left:0;padding-left:10px}}</style></head><body>{body}</body></html>"
+        "<!doctype html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; base-uri 'none'; form-action 'none'\"><title>VulnBell report</title><style>@page{{size:A4;margin:18mm 15mm;@bottom-right{{content:counter(page) \" / \" counter(pages);font:8pt sans-serif;color:#52647a}}}}body{{font:10pt/1.45 sans-serif;color:#182338}}h1,h2,h3{{color:#183a67;break-after:avoid}}h1{{font-size:20pt}}h1.evidence-appendix{{break-before:page}}li{{break-inside:avoid}}h2{{font-size:15pt;border-bottom:1px solid #cad5e3;padding-bottom:4px}}h3{{font-size:12pt}}p,li{{overflow-wrap:anywhere}}table{{width:100%;border-collapse:collapse;font-size:8.5pt;table-layout:fixed}}th,td{{border:1px solid #cad5e3;padding:5px;vertical-align:top;overflow-wrap:anywhere}}th{{background:#eaf0f7;text-align:left}}tr{{break-inside:avoid}}thead{{display:table-header-group}}pre{{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f5f8;padding:8px;font-size:8pt}}code{{overflow-wrap:anywhere}}a{{color:#1554a0;overflow-wrap:anywhere}}blockquote{{border-left:3px solid #b86b10;margin-left:0;padding-left:10px}}</style></head><body>{body}</body></html>"
     )
 }
 
@@ -389,7 +493,117 @@ pub fn write_pdf(markdown: &str, output: &Path, browser: Option<&Path>) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use super::{pdf_markdown, safe_html, write_pdf};
+    use super::{attestation_details, evidence_link, pdf_markdown, safe_html, write_pdf};
+    #[test]
+    fn attestation_summary_includes_oracle_and_positive_control() {
+        let mut attestation: crate::sandbox::Attestation = serde_json::from_value(serde_json::json!({
+            "schema_version":2,"project_id":"project","case_id":"case","workspace_revisions":[],
+            "facts_sha256":"facts","instance_id":"instance","artifact_version":"1.0",
+            "runtime":"microsandbox","runtime_version":"0.7","runtime_sha256":"runtime",
+            "test_sha256":"test","image_reference":"image","image_manifest_digest":"imagehash",
+            "staging_sha256":"stage","policy_sha256":"policy","input_sha256":["inputhash"],
+            "oracle":{"stdout_contains":"EXPECTED_MARKER","expected_exit":0,"purpose":"positive_non_applicability"},
+            "control":{"artifact_version":"2.0","input_sha256":["controlinput"],"output_sha256":"controloutput","oracle_matched":true,"policy_verified":true},
+            "network_devices":"none","host_mounts":[],"memory_mib":512,"cpu_count":1,
+            "timeout_seconds":120,"output_sha256":"output","execution_status_sha256":"status",
+            "exit_code":0,"execution_complete":true,"timed_out":false,"verification":"disproven",
+            "observed_at":"2026-01-01T00:00:00Z"
+        })).unwrap();
+        let text = attestation_details(&attestation, crate::profile::Language::En);
+        assert!(text.contains("EXPECTED_MARKER"));
+        assert!(text.contains("PositiveNonApplicability"));
+        assert!(text.contains("oracle_matched=true"));
+        assert!(text.contains("controlinput"));
+        assert!(text.contains("controloutput"));
+
+        let project = uuid::Uuid::new_v4().to_string();
+        let store = crate::store::Store::open(&project).unwrap();
+        let instance = crate::model::Instance::declared(&crate::profile::Component {
+            reference: "fixture".into(),
+            version: Some("1.0".into()),
+            usage: Default::default(),
+            upstream: None,
+            feeds: Vec::new(),
+        });
+        attestation.project_id = project.clone();
+        attestation.instance_id = instance.id.clone();
+        let mut evidence = Vec::new();
+        for (source, content) in [
+            ("stdout", b"stdout".as_slice()),
+            ("policy", b"policy"),
+            ("status", b"status"),
+            ("control", b"control"),
+        ] {
+            evidence.push(
+                store
+                    .record_evidence(content, source, None, crate::model::EvidenceKind::Context)
+                    .unwrap(),
+            );
+        }
+        attestation.output_sha256 = evidence[0].sha256.clone();
+        attestation.policy_sha256 = evidence[1].sha256.clone();
+        attestation.execution_status_sha256 = evidence[2].sha256.clone();
+        attestation.control.as_mut().unwrap().output_sha256 = evidence[3].sha256.clone();
+        let recorded = store
+            .record_evidence(
+                &serde_json::to_vec(&attestation).unwrap(),
+                "microsandbox_attestation",
+                None,
+                crate::model::EvidenceKind::Attestation,
+            )
+            .unwrap();
+        evidence.push(recorded);
+        let mut case = crate::model::Case {
+            schema_version: 1,
+            case_id: "case".into(),
+            project_id: project.clone(),
+            snapshot_id: "snapshot".into(),
+            workspace_revisions: vec![],
+            instances: vec![instance],
+            claims: vec![],
+            upstream_events: vec![],
+            evidence,
+            coverage: vec![],
+            applicability: crate::model::Applicability::Unknown,
+            verification: crate::model::Verification::Inconclusive,
+            decision: crate::model::Decision::Review,
+            facts_sha256: "facts".into(),
+            open_questions: vec![],
+            suggested_search_queries: vec![],
+            sandbox: crate::model::SandboxAvailability {
+                available: false,
+                reason: "fixture".into(),
+            },
+            updated_at: crate::now(),
+        };
+        let appendix = pdf_markdown(
+            "# Report",
+            &[case.clone()],
+            &store,
+            crate::profile::Language::En,
+        )
+        .unwrap();
+        assert!(appendix.contains("EXPECTED_MARKER"));
+        assert!(appendix.contains("oracle_matched=true"));
+        assert!(appendix.contains("controlinput"));
+        let changed = tempfile::tempdir().unwrap();
+        case.workspace_revisions
+            .push(crate::workspace_revision::capture_path(changed.path()));
+        let stale =
+            pdf_markdown("# Report", &[case], &store, crate::profile::Language::En).unwrap();
+        assert!(stale.contains("Attestation unavailable or invalid"));
+        assert!(!stale.contains("EXPECTED_MARKER"));
+        drop(store);
+        std::fs::remove_dir_all(crate::store::data_root().join(project)).unwrap();
+    }
+    #[test]
+    fn evidence_links_preserve_underscores_and_reject_credentials() {
+        let url = "https://github.com/_owner/repo/issues/1?some_key=value";
+        let html = safe_html(&evidence_link(url));
+        assert!(html.contains(&format!("href=\"{url}\"")));
+        let unsafe_url = evidence_link("https://user:secret@example.com/path");
+        assert!(!safe_html(&unsafe_url).contains("href="));
+    }
     #[test]
     fn report_html_disables_active_content_and_external_images() {
         let output = safe_html(
@@ -400,6 +614,13 @@ mod tests {
         assert!(!output.contains("href=\"javascript:"));
         assert!(output.contains("href=\"https://example.com/advisory\""));
         assert!(output.contains("default-src 'none'"));
+    }
+
+    #[test]
+    fn evidence_appendix_starts_a_new_page() {
+        let output = safe_html("# Report\n\n# Evidence appendix\n\nEvidence.");
+        assert!(output.contains("<h1 class=\"evidence-appendix\">Evidence appendix</h1>"));
+        assert!(output.contains("h1.evidence-appendix{break-before:page}"));
     }
 
     #[test]

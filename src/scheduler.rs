@@ -229,8 +229,9 @@ pub fn run(profile: &Profile, profile_path: &Path, force: bool) -> Result<serde_
         (None, research) => research,
     };
     report_snapshot.cases = store.cases()?;
-    let report = crate::output::morning_report(&report_snapshot, &store, "manager")?;
+    let mut report = crate::output::morning_report(&report_snapshot, &store, "manager")?;
     let pending = crate::tools::cases::pending(&store)?;
+    crate::output::add_research_coverage(&mut report, &pending);
     let report_data = directory.join("morning-data.json");
     crate::atomic_write(&report_data, &serde_json::to_vec_pretty(&report)?)?;
     let words = text::text(report.language);

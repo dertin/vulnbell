@@ -17,22 +17,6 @@ const ENTRY_PAGE: usize = 256;
 const SLICE_BYTES: u64 = 64 * 1024;
 const DIRECTORIES_PER_PLAN: usize = 64;
 const GITIGNORE_BYTES: u64 = 1024 * 1024;
-const DEPENDENCY_OUTPUT: [&str; 13] = [
-    "node_modules",
-    ".venv",
-    "venv",
-    "__pycache__",
-    ".gradle",
-    ".terraform",
-    ".tox",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".next",
-    ".nuxt",
-    ".sqlx",
-];
-const BUILD_MANIFESTS: [&str; 4] = ["Cargo.toml", "pom.xml", "build.gradle", "build.gradle.kts"];
 const NATIVE_INVENTORY: &str =
     "parsed by the native lockfile/SBOM inventory; parse failures appear as inventory coverage";
 const CANNOT_DECLARE: &str = "source or documentation file type cannot declare dependency versions";
@@ -63,9 +47,16 @@ const REPOSITORY_METADATA: [&str; 4] =
     [".gitattributes", ".editorconfig", ".mailmap", "CODEOWNERS"];
 const GIT_IGNORED: &str = "git-ignored path (generated or local output, not tracked source)";
 const OUTPUT_DIRECTORY: &str = "dependency or build output directory (installed or generated)";
+const INCLUDE_GUARD: &str = "requirements sources, includes or unresolved input require local review before agent discovery";
 
 /// Returns the state and reason for files that need no agent review, or `None` to review.
 fn file_classification(parent: &str, name: &str) -> Option<(&'static str, &'static str)> {
+    if requirements_file(name) {
+        return Some((
+            "unavailable",
+            "requirements may contain private package identities or source paths; review locally",
+        ));
+    }
     if crate::inventory::native_inventory_file(name) {
         return Some(("excluded", NATIVE_INVENTORY));
     }
@@ -98,6 +89,12 @@ fn file_classification(parent: &str, name: &str) -> Option<(&'static str, &'stat
         | "gz" | "tgz" | "class" => Some(("unavailable", ARTIFACT)),
         _ => None,
     }
+}
+
+fn requirements_file(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    (name.starts_with("requirements") || name.starts_with("constraints"))
+        && (name.ends_with(".txt") || name.ends_with(".in"))
 }
 
 fn inline_markers(name: &str) -> Option<&'static [&'static str]> {
@@ -174,14 +171,6 @@ fn git_ignored(rules: &[ignore::gitignore::Gitignore], path: &Path, is_dir: bool
             ignore::Match::Whitelist(_) => Some(false),
         })
         .unwrap_or(false)
-}
-
-fn output_directory(parent: &Path, name: &str) -> bool {
-    DEPENDENCY_OUTPUT.contains(&name)
-        || (name == "target"
-            && BUILD_MANIFESTS
-                .iter()
-                .any(|manifest| fs::symlink_metadata(parent.join(manifest)).is_ok()))
 }
 
 fn exclude_subtree(
@@ -342,6 +331,9 @@ pub(super) fn prepare(
         let root = path.canonicalize()?;
         if path.is_symlink() || !root.is_dir() || root.starts_with(crate::store::data_root()) {
             bail!("discovery workspace must be an authorized real project directory");
+        }
+        if crate::inventory::excluded_path(&root) {
+            bail!("dependency or build output cannot be a discovery codebase");
         }
         let root = root.to_str().context("workspace path must be UTF-8")?;
         adopt_reviews(store, scope, root)?;
@@ -522,7 +514,7 @@ fn expand(store: &Store, scope: &str) -> Result<bool> {
             if metadata.is_dir() && !private {
                 let skipped = if ignored {
                     Some(GIT_IGNORED)
-                } else if output_directory(&path, &name) {
+                } else if crate::inventory::excluded_directory(&name) {
                     Some(OUTPUT_DIRECTORY)
                 } else {
                     None
@@ -586,6 +578,15 @@ pub(super) fn slice(store: &Store, scope: &str, id: &str) -> Result<FileSlice> {
 fn read_slice(root: &str, relative: &str, id: &str, offset: u64) -> Result<FileSlice> {
     if Path::new(relative)
         .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(requirements_file)
+    {
+        bail!(
+            "requirements may contain private package identities or source paths; review locally"
+        );
+    }
+    if Path::new(relative)
+        .file_name()
         .is_some_and(|name| name == "composer.json")
     {
         bail!(
@@ -599,64 +600,8 @@ fn read_slice(root: &str, relative: &str, id: &str, offset: u64) -> Result<FileS
         bail!("discovery input must be a regular file");
     }
     let mut bytes = Vec::new();
-    let requirements_file = Path::new(relative)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(str::to_ascii_lowercase)
-        .is_some_and(|name| {
-            (name.starts_with("requirements") || name.starts_with("constraints"))
-                && (name.ends_with(".txt") || name.ends_with(".in"))
-        });
-    if requirements_file {
-        let mut contents = Vec::new();
-        (&mut file)
-            .take(32 * 1024 * 1024 + 1)
-            .read_to_end(&mut contents)?;
-        if contents.len() > 32 * 1024 * 1024 {
-            bail!("requirements file exceeds discovery size limit");
-        }
-        let sensitive = contents.contains(&b'@')
-            || contents.windows(3).any(|part| part == b"://")
-            || contents.windows(2).any(|part| part == b"${")
-            || (contents.windows(11).any(|part| part == b"-----BEGIN ")
-                && contents.windows(16).any(|part| part == b"PRIVATE KEY-----"))
-            || contents.split(|byte| *byte == b'\n').any(|line| {
-                let line = line
-                    .strip_prefix(b"\xef\xbb\xbf")
-                    .unwrap_or(line)
-                    .trim_ascii_start();
-                [
-                    b"--index-url".as_slice(),
-                    b"--extra-index-url",
-                    b"--find-links",
-                    b"--no-index",
-                    b"--requirement",
-                    b"--constraint",
-                    b"-i",
-                    b"-f",
-                    b"-r",
-                    b"-c",
-                ]
-                .iter()
-                .any(|option| line.starts_with(option))
-            });
-        if sensitive {
-            bail!(
-                "requirements file contains source, include or credential-sensitive entries; review locally without exporting its contents"
-            );
-        }
-        let start = usize::try_from(offset).context("invalid discovery offset")?;
-        if start > contents.len() {
-            bail!("invalid discovery offset");
-        }
-        let end = start
-            .saturating_add(SLICE_BYTES as usize)
-            .min(contents.len());
-        bytes.extend_from_slice(&contents[start..end]);
-    } else {
-        file.seek(SeekFrom::Start(offset))?;
-        file.take(SLICE_BYTES).read_to_end(&mut bytes)?;
-    }
+    file.seek(SeekFrom::Start(offset))?;
+    file.take(SLICE_BYTES).read_to_end(&mut bytes)?;
     if bytes.contains(&0) {
         bail!("binary file excluded from text discovery");
     }
@@ -736,12 +681,158 @@ pub(super) fn page(store: &Store, scope: &str, limit: usize) -> Result<Vec<FileS
     Ok(slices)
 }
 
+/// Close the agent boundary until all codebase directories have been classified.
+pub(super) fn sync_include_guard(store: &Store, scope: &str) -> Result<bool> {
+    let unfinished: bool = store.connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM discovery_walk WHERE scope=?1 AND state='pending')",
+        [scope],
+        |row| row.get(0),
+    )?;
+    if unfinished {
+        return Ok(false);
+    }
+    let blocked = blocked_requirement_roots(store, scope)?;
+    let roots: Vec<String> = store
+        .connection
+        .prepare("SELECT root FROM discovery_walk WHERE scope=?1 AND path=''")?
+        .query_map([scope], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let transaction = store.connection.unchecked_transaction()?;
+    for root in roots {
+        if blocked.contains(&root) {
+            transaction.execute(
+                "DELETE FROM discovery_packages WHERE file_id IN (SELECT id FROM discovery_files WHERE scope=?1 AND root=?2)",
+                params![scope, root],
+            )?;
+            transaction.execute(
+                "UPDATE discovery_files SET state='unavailable',offset=0,reason=?3 WHERE scope=?1 AND root=?2 AND state IN ('pending','done')",
+                params![scope, root, INCLUDE_GUARD],
+            )?;
+        } else {
+            transaction.execute(
+                "UPDATE discovery_files SET state='pending',offset=0,reason='' WHERE scope=?1 AND root=?2 AND state='unavailable' AND reason=?3",
+                params![scope, root, INCLUDE_GUARD],
+            )?;
+        }
+    }
+    transaction.commit()?;
+    Ok(true)
+}
+
+/// Included or local sources can have any name; keep the codebase local when scope is uncertain.
+fn blocked_requirement_roots(store: &Store, scope: &str) -> Result<BTreeSet<String>> {
+    let mut blocked: BTreeSet<String> = store
+        .connection
+        .prepare("SELECT DISTINCT root FROM discovery_walk WHERE scope=?1 AND state='unavailable'")?
+        .query_map([scope], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut query = store.connection.prepare(
+        "SELECT root,path,state FROM discovery_files WHERE scope=?1 AND state<>'removed' AND (lower(path) LIKE '%requirements%.txt' OR lower(path) LIKE '%requirements%.in' OR lower(path) LIKE '%constraints%.txt' OR lower(path) LIKE '%constraints%.in') ORDER BY root,path",
+    )?;
+    let files: Vec<(String, String, String)> = query
+        .query_map([scope], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut budget = 1024 * 1024_u64;
+    for (root, path, state) in files {
+        let is_requirements = Path::new(&path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(requirements_file);
+        if !is_requirements || blocked.contains(&root) {
+            continue;
+        }
+        if state == "excluded" {
+            blocked.insert(root);
+            continue;
+        }
+        let check = || -> Result<(bool, u64)> {
+            let input = checked_path(&root, &path)?;
+            let before = stamp(&input)?;
+            let mut contents = Vec::new();
+            open_file(&root, &path)?
+                .take(budget.saturating_add(1))
+                .read_to_end(&mut contents)?;
+            if contents.len() as u64 > budget {
+                bail!("requirements preflight budget exceeded");
+            }
+            if stamp(&input)? != before {
+                bail!("requirements changed during preflight");
+            }
+            let text = std::str::from_utf8(&contents)?;
+            let logical = text.replace("\\\r\n", "").replace("\\\n", "");
+            let includes = logical.lines().any(|line| {
+                let line = line.trim_start_matches('\u{feff}').trim_start();
+                if line.starts_with('#') || line.is_empty() {
+                    return false;
+                }
+                [
+                    "-r",
+                    "-c",
+                    "-e",
+                    "-i",
+                    "-f",
+                    "--requirement",
+                    "--constraint",
+                    "--editable",
+                    "--index-url",
+                    "--extra-index-url",
+                    "--no-index",
+                    "--find-links",
+                    "./",
+                    "../",
+                    "/",
+                    "~",
+                    "file:",
+                    "\\\\",
+                ]
+                .iter()
+                .any(|option| line.starts_with(option))
+                    || line.contains('@')
+                    || line.contains("://")
+                    || line.contains("${")
+                    || line.contains('/')
+                    || line.contains('\\')
+                    || line.as_bytes().get(1) == Some(&b':')
+            });
+            Ok((includes, contents.len() as u64))
+        };
+        match check() {
+            Ok((includes, size)) => {
+                budget = budget.saturating_sub(size);
+                if includes {
+                    blocked.insert(root);
+                }
+            }
+            Err(_) => {
+                blocked.insert(root);
+            }
+        }
+    }
+    if !blocked.is_empty() {
+        blocked = store
+            .connection
+            .prepare("SELECT root FROM discovery_walk WHERE scope=?1 AND path=''")?
+            .query_map([scope], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+    }
+    Ok(blocked)
+}
+
 pub(super) fn import(
     profile: &Profile,
     store: &mut Store,
     scope: &str,
     reviews: Vec<FileReview>,
 ) -> Result<()> {
+    let unfinished: bool = store.connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM discovery_walk WHERE scope=?1 AND state='pending')",
+        [scope],
+        |row| row.get(0),
+    )?;
+    if unfinished {
+        bail!("workspace discovery must finish enumerating before importing a review");
+    }
+    let blocked_roots = blocked_requirement_roots(store, scope)?;
     let mut prepared = Vec::new();
     let mut seen = BTreeSet::new();
     for review in reviews {
@@ -752,15 +843,18 @@ pub(super) fn import(
         {
             bail!("duplicate file review, excessive packages or missing bounded rationale");
         }
-        let chunk = slice(store, scope, &review.file_id)?;
-        if review.offset != chunk.offset || review.sha256 != chunk.sha256 {
-            bail!("stale discovery chunk; reread current page");
-        }
         let (root, relative): (String, String) = store.connection.query_row(
             "SELECT root,path FROM discovery_files WHERE id=?1",
             [&review.file_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
+        if blocked_roots.contains(&root) {
+            bail!(INCLUDE_GUARD);
+        }
+        let chunk = slice(store, scope, &review.file_id)?;
+        if review.offset != chunk.offset || review.sha256 != chunk.sha256 {
+            bail!("stale discovery chunk; reread current page");
+        }
         let mut packages = Vec::new();
         for observation in &review.packages {
             if observation.direct.is_some() {
@@ -936,7 +1030,7 @@ pub(super) fn settled_paths(
 }
 
 pub(super) fn instances(store: &Store, scope: &str) -> Result<Vec<Instance>> {
-    let mut query = store.connection.prepare("SELECT p.body,f.root,f.path,p.start,p.sha256 FROM discovery_packages p JOIN discovery_files f ON p.file_id=f.id WHERE p.scope=?1")?;
+    let mut query = store.connection.prepare("SELECT p.body,f.root,f.path,p.start,p.sha256 FROM discovery_packages p JOIN discovery_files f ON p.file_id=f.id WHERE p.scope=?1 AND f.state IN ('pending','done')")?;
     let rows: Vec<(String, String, String, u64, String)> = query
         .query_map([scope], |row| {
             Ok((

@@ -72,6 +72,10 @@ pub fn map_registries(
     }
     let _lock = store.lock()?;
     let scope = scope(profile, path)?;
+    workspace::prepare(profile, path, store, &scope)?;
+    if !workspace::sync_include_guard(store, &scope)? {
+        bail!("finish workspace enumeration before mapping registry sources");
+    }
     let mut http = crate::network::Http::new(store, offline);
     let first_party = sources::first_party(&roots(profile, path)?);
     let run = sources::map_registries(
@@ -110,12 +114,14 @@ pub fn plan(profile: &Profile, path: &Path, store: &Store, limit: usize) -> Resu
     if profile.discovery == DiscoveryMode::Agent {
         workspace::prepare(profile, path, store, &scope)?;
     }
-    let workspace = if profile.discovery == DiscoveryMode::Agent {
+    let ready =
+        profile.discovery == DiscoveryMode::Agent && workspace::sync_include_guard(store, &scope)?;
+    let workspace = if ready {
         workspace::page(store, &scope, limit)?
     } else {
         Vec::new()
     };
-    let components = if profile.discovery == DiscoveryMode::Agent {
+    let components = if ready {
         sources::targets(
             store,
             &scope,
@@ -165,6 +171,7 @@ pub fn import(
                 &scope_sha256,
                 reviews.len(),
             )?;
+            workspace::prepare(profile, path, store, &current_scope)?;
             workspace::import(profile, store, &current_scope, reviews)?;
         }
         DiscoveryBatch::Sources {
@@ -231,6 +238,7 @@ pub fn augment(
     }
     let scope = scope(profile, path)?;
     let preparation = workspace::prepare(profile, path, store, &scope);
+    let ready = preparation.is_ok() && workspace::sync_include_guard(store, &scope)?;
     let settled = workspace::settled_paths(store, &scope)?;
     inventory_coverage.retain(|row| {
         row.source != "inventory"
@@ -238,7 +246,9 @@ pub fn augment(
                 && !(row.detail == crate::inventory::UNSUPPORTED_MANIFEST
                     && settled.contains(&row.scope))
     });
-    append_workspace_instances(store, &scope, instances)?;
+    if ready {
+        append_workspace_instances(store, &scope, instances)?;
+    }
     sources::apply(store, &scope, instances)?;
     let first_party = sources::first_party(&roots(profile, path)?);
     let summary = summary_for_instances(profile, store, &scope, &first_party, instances)?;
@@ -395,6 +405,26 @@ pub fn mapped_sources(
         return Ok(Vec::new());
     }
     sources::mapped(store, &scope(profile, path)?)
+}
+
+/// Current, locally validated agent observations; never reuse stale public identities.
+pub(crate) fn current_observation_ids(
+    profile: &Profile,
+    path: &Path,
+    store: &Store,
+) -> Result<std::collections::HashSet<String>> {
+    if profile.discovery == DiscoveryMode::Off {
+        return Ok(std::collections::HashSet::new());
+    }
+    let scope = scope(profile, path)?;
+    workspace::prepare(profile, path, store, &scope)?;
+    if !workspace::sync_include_guard(store, &scope)? {
+        return Ok(std::collections::HashSet::new());
+    }
+    Ok(workspace::instances(store, &scope)?
+        .into_iter()
+        .map(|instance| instance.id)
+        .collect())
 }
 
 pub fn source_map(

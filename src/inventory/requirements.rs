@@ -66,25 +66,6 @@ pub(super) fn parse(
         }
     }
     let incomplete_line = !logical.is_empty();
-    let uncertain_source = line_limit
-        || incomplete_line
-        || lines.iter().any(|(_, line)| {
-            let line = line.trim_start();
-            [
-                "--index-url",
-                "--extra-index-url",
-                "--no-index",
-                "--find-links",
-                "--requirement",
-                "--constraint",
-                "-i",
-                "-f",
-                "-r",
-                "-c",
-            ]
-            .iter()
-            .any(|option| line.starts_with(option))
-        });
     let mut unsupported = usize::from(incomplete_line);
     let mut unsupported_lines = Vec::new();
     if incomplete_line {
@@ -185,14 +166,7 @@ pub(super) fn parse(
             break;
         }
         let name = requirement.name.to_string();
-        let purl = if uncertain_source {
-            None
-        } else {
-            Some(packageurl::PackageUrl::new("pypi", &name)?.to_string())
-        };
-        let reference = purl
-            .clone()
-            .unwrap_or_else(|| format!("python-requirement:{name}"));
+        let reference = format!("python-requirement:{name}");
         let occurrence = occurrences
             .entry((reference.clone(), requested.clone()))
             .or_default();
@@ -219,7 +193,7 @@ pub(super) fn parse(
                 artifact_integrity: None,
                 line: Some(line_number),
             },
-            purl,
+            purl: None,
             cpe_product: None,
             upstream: None,
             identity_evidence: Vec::new(),
@@ -240,11 +214,7 @@ pub(super) fn parse(
     };
     let detail = format!(
         "requirements declarations are not installed inventory; directness, source and dependency closure are unverified; {unresolved} unpinned, {conditional} conditional and {unsupported} unsupported entries{unsupported_locations}; {}; {}",
-        if uncertain_source {
-            "public package identities not inferred due to index or included-file options"
-        } else {
-            "public package identities require source confirmation"
-        },
+        "public package identities require source confirmation",
         if line_limit {
             "100000 line limit reached"
         } else if truncated {
@@ -265,7 +235,8 @@ mod tests {
         let text = b"# sample\nRequests[security]==2.31.0 \\\n    --hash=sha256:abc\nurllib3>=1.26,<3\nwinpkg==1.2; sys_platform == 'win32'\nprivate @ https://user:secret@example.invalid/pkg.whl\n";
         let (items, detail) = parse(text, "workspace", "requirements.txt", 10).unwrap();
         assert_eq!(items.len(), 3);
-        assert_eq!(items[0].reference, "pkg:pypi/requests");
+        assert_eq!(items[0].reference, "python-requirement:requests");
+        assert_eq!(items[0].purl, None);
         assert_eq!(items[0].resolved_version.as_deref(), Some("2.31.0"));
         assert_eq!(items[0].provenance.line, Some(2));
         assert_eq!(items[0].provenance.direct, None);
@@ -297,7 +268,7 @@ mod tests {
                 parse(text.as_bytes(), "workspace", "requirements.txt", 10).unwrap();
             assert_eq!(items[0].reference, "python-requirement:requests");
             assert_eq!(items[0].purl, None);
-            assert!(detail.contains("public package identities not inferred"));
+            assert!(detail.contains("public package identities require source confirmation"));
             assert!(!format!("{items:?}{detail}").contains("secret"));
         }
     }
@@ -332,7 +303,7 @@ mod tests {
             10,
         )
         .unwrap();
-        assert_eq!(items[0].reference, "pkg:pypi/requests");
+        assert_eq!(items[0].reference, "python-requirement:requests");
         assert_eq!(items[0].provenance.line, Some(1));
     }
 }

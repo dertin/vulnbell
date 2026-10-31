@@ -8,7 +8,7 @@ To produce Markdown and a PDF with a verification section and evidence appendix:
 vulnbell report --project <profile> --audience cyber --pdf <new-report.pdf> > <new-report.md>
 ```
 
-A local Chromium-based browser is required. Use `--pdf-browser <executable>` when it is not on PATH. The CLI does not overwrite an existing PDF. For a user-requested customization, edit a copy of the Markdown and add `--from-markdown <edited.md>` to the PDF command. The PDF labels customized text as unvalidated by the CLI.
+A local Chromium-based browser is required. Use `--pdf-browser <executable>` when it is not on PATH. The CLI does not overwrite an existing PDF. For a user-requested customization, edit a copy of the Markdown and add `--from-markdown <edited.md>` to the PDF command. The PDF labels customized text as unvalidated by the CLI and retains current recorded verification details; an edited verification section is preserved separately.
 
 The appendix contains case statuses, recorded impact answers, source claims, evidence identifiers, SHA-256 values, integrity status, registered local notes and textual sandbox output. It does not embed original external documents, full responses or binary artifacts; unavailable or invalid evidence remains visible. Review the PDF before sharing: notes, paths and deployment details may be confidential. A PDF cannot establish that omitted or unavailable evidence was reviewed.
 

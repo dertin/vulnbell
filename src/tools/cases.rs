@@ -544,6 +544,8 @@ pub struct PendingReport {
     /// Subset of verdict_missing whose separate review needs reassessment.
     pub challenge_open: Vec<String>,
     pub research_open: Vec<ResearchOpen>,
+    /// Agent observations removed from the current scope; rescan before research.
+    pub stale_observations: usize,
     /// General discovery work left to the agent; null when nothing remains.
     pub discovery_open: Option<DiscoveryOpen>,
     /// Inventory exists, but no product or dependency was selected for tracker research.
@@ -603,6 +605,7 @@ pub fn pending(store: &Store) -> Result<PendingReport> {
         .collect();
     let plan = crate::research::full_plan(store)?;
     let tracker_scope_unresolved = plan.scope_unselected;
+    let stale_observations = plan.stale_observations;
     let research_open: Vec<ResearchOpen> = plan
         .targets
         .into_iter()
@@ -662,6 +665,7 @@ pub fn pending(store: &Store) -> Result<PendingReport> {
             && verdict_missing.is_empty()
             && challenge_open.is_empty()
             && research_open.is_empty()
+            && stale_observations == 0
             && !tracker_scope_unresolved
             && !workspace_context_changed
             && discovery_open.is_none(),
@@ -669,6 +673,7 @@ pub fn pending(store: &Store) -> Result<PendingReport> {
         verdict_missing,
         challenge_open,
         research_open,
+        stale_observations,
         discovery_open,
         tracker_scope_unresolved,
         workspace_context_changed,

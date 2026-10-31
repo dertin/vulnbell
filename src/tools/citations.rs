@@ -130,11 +130,20 @@ pub fn check(store: &Store, case_id: &str, batch: CitationBatch) -> Result<Citat
         workspace_revisions: snapshot.workspace_revisions,
         complete,
         citations: results,
-        limitations: "Checks current file and line existence and optional line hash only; it does not verify meaning, reachability or deployment. Ignored files, private paths and non-Git trees are not bound by the Git fingerprint.",
+        limitations: "Checks current file and line existence and optional line hash only; it does not verify meaning, reachability or deployment. Ignored files, private paths, untracked dependency/build output and non-Git trees are not bound by the Git fingerprint. Output directories are excluded from citation checks.",
     })
 }
 
 fn line_hash(root: &str, path: &str, line: usize) -> Result<String> {
+    let mut components = std::path::Path::new(path).components().peekable();
+    while let Some(component) = components.next() {
+        if components.peek().is_some()
+            && let std::path::Component::Normal(name) = component
+            && crate::inventory::excluded_directory(&name.to_string_lossy())
+        {
+            bail!("dependency or build output is outside the reviewed codebase fingerprint");
+        }
+    }
     crate::discovery::checked_path(root, path)?;
     let file = crate::discovery::open_file(root, path)?;
     let metadata = file.metadata()?;
@@ -175,6 +184,13 @@ mod tests {
         assert!(line_hash(root, ".env", 1).is_err());
         fs::write(dir.path().join("binary.txt"), b"not\0text").unwrap();
         assert!(line_hash(root, "binary.txt", 1).is_err());
+        fs::create_dir(dir.path().join("vendor")).unwrap();
+        fs::write(
+            dir.path().join("vendor/dependency.txt"),
+            "outside fingerprint\n",
+        )
+        .unwrap();
+        assert!(line_hash(root, "vendor/dependency.txt", 1).is_err());
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink("source.txt", dir.path().join("link.txt")).unwrap();

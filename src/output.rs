@@ -19,6 +19,46 @@ pub use discovery::discovery_markdown;
 use markdown::inline;
 pub use markdown::{morning_markdown, verification_markdown};
 
+/// Report research coverage from current checkpoints, separately from the scan snapshot.
+pub fn add_research_coverage(
+    report: &mut MorningReport,
+    pending: &crate::tools::cases::PendingReport,
+) {
+    if !pending.research_open.is_empty()
+        || pending.tracker_scope_unresolved
+        || pending.stale_observations > 0
+    {
+        let detail = match report.language {
+            Language::Es => format!(
+                "{} ventanas upstream pendientes; {} observaciones desactualizadas requieren un nuevo scan; alcance de fuentes sin resolver: {}",
+                pending.research_open.len(),
+                pending.stale_observations,
+                if pending.tracker_scope_unresolved {
+                    "sí"
+                } else {
+                    "no"
+                }
+            ),
+            Language::En => format!(
+                "{} upstream windows pending; {} stale observations require a new scan; tracker scope unresolved: {}",
+                pending.research_open.len(),
+                pending.stale_observations,
+                if pending.tracker_scope_unresolved {
+                    "yes"
+                } else {
+                    "no"
+                }
+            ),
+        };
+        report.coverage_gaps.push(crate::model::Coverage::new(
+            "research_web",
+            "project",
+            crate::model::CoverageState::Partial,
+            &detail,
+        ));
+    }
+}
+
 /// Summarize the actual delivery gate without hiding unresolved work.
 pub fn delivery_status_markdown(
     pending: &crate::tools::cases::PendingReport,
@@ -31,10 +71,11 @@ pub fn delivery_status_markdown(
     let discovery = pending.discovery_open.is_some();
     match language {
         crate::profile::Language::Es => format!(
-            "> **Cobertura o revisión incompleta:** verificaciones pendientes: {}; veredictos pendientes: {}; ventanas upstream pendientes: {}; descubrimiento pendiente: {}; alcance de fuentes sin resolver: {}; codebase cambiada o sin identificar: {}; scan parcial: {}. Consulte `vulnbell tools pending` para el detalle.\n\n",
+            "> **Cobertura o revisión incompleta:** verificaciones pendientes: {}; veredictos pendientes: {}; ventanas upstream pendientes: {}; observaciones desactualizadas: {}; descubrimiento pendiente: {}; alcance de fuentes sin resolver: {}; codebase cambiada o sin identificar: {}; scan parcial: {}. Consulte `vulnbell tools pending` para el detalle.\n\n",
             pending.verification_pending.len(),
             pending.verdict_missing.len(),
             pending.research_open.len(),
+            pending.stale_observations,
             if discovery { "sí" } else { "no" },
             if pending.tracker_scope_unresolved {
                 "sí"
@@ -49,10 +90,11 @@ pub fn delivery_status_markdown(
             if scan_partial { "sí" } else { "no" },
         ),
         crate::profile::Language::En => format!(
-            "> **Incomplete coverage or review:** {} pending verifications, {} verdicts and {} upstream windows; discovery pending: {}; tracker scope unresolved: {}; codebase changed or unidentified: {}; partial scan: {}. See `vulnbell tools pending` for details.\n\n",
+            "> **Incomplete coverage or review:** {} pending verifications, {} verdicts, {} upstream windows and {} stale observations; discovery pending: {}; tracker scope unresolved: {}; codebase changed or unidentified: {}; partial scan: {}. See `vulnbell tools pending` for details.\n\n",
             pending.verification_pending.len(),
             pending.verdict_missing.len(),
             pending.research_open.len(),
+            pending.stale_observations,
             if discovery { "yes" } else { "no" },
             if pending.tracker_scope_unresolved {
                 "yes"
@@ -68,7 +110,7 @@ pub fn delivery_status_markdown(
         ),
     }
 }
-pub use pdf::{pdf_markdown, write_pdf};
+pub use pdf::{pdf_markdown, report_body as pdf_report_body, write_pdf};
 pub use text::report_language;
 pub use verification::{FindingCheck, FindingReference, LocalCheck, LocalResult};
 

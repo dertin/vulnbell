@@ -71,8 +71,17 @@ pub(super) fn targets(
         return Ok(Vec::new());
     }
     let snapshot = store.latest()?;
+    let current_observations: HashSet<String> = super::workspace::instances(store, scope)?
+        .into_iter()
+        .map(|instance| instance.id)
+        .collect();
     let mut targets = Vec::new();
     for instance in &snapshot.instances {
+        if instance.origin == crate::model::Origin::AgentObserved
+            && !current_observations.contains(&instance.id)
+        {
+            continue;
+        }
         if first_party.contains(&instance.reference) || !research.tracks(instance) {
             continue;
         }

@@ -10,6 +10,83 @@ use vulnbell::{
 };
 
 #[test]
+fn completed_research_can_close_a_clean_scan_without_hiding_open_windows() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = uuid::Uuid::new_v4().to_string();
+    let path = directory.path().join("vulnbell.yaml");
+    fs::write(&path, format!("schema: 1\nproject_id: {project}\nname: completion\ndiscovery: off\ncomponents:\n  - ref: app\n    version: '1.0.0'\n    upstream: https://github.com/example/app\n")).unwrap();
+    let profile = vulnbell::profile::load(&path).unwrap();
+    let mut snapshot = vulnbell::engine::scan(&profile, &path, true).unwrap();
+    assert!(
+        !snapshot
+            .coverage
+            .iter()
+            .any(|item| item.source == "upstream_agent")
+    );
+    // Isolate the upstream gate from the deliberately offline scan's unrelated source gaps.
+    snapshot.id = uuid::Uuid::new_v4().to_string();
+    snapshot.coverage.clear();
+    snapshot.partial = false;
+    let mut store = Store::open(&project).unwrap();
+    store.save_snapshot(&snapshot).unwrap();
+    let before = vulnbell::tools::cases::pending(&store).unwrap();
+    assert!(!before.deliverable);
+    assert_eq!(before.research_open.len(), 1);
+    let mut report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    vulnbell::output::add_research_coverage(&mut report, &before);
+    assert!(
+        report
+            .coverage_gaps
+            .iter()
+            .any(|gap| gap.source == "research_web")
+    );
+    let plan = vulnbell::research::plan_page(&store, "", 20).unwrap();
+    let target = &plan.targets[0];
+    vulnbell::research::import(
+        &mut store,
+        ResearchBatch {
+            schema_version: 1,
+            project_id: project.clone(),
+            snapshot_id: plan.snapshot_id,
+            sources: vec![SourceReview {
+                upstream: target.upstream.clone(),
+                from: target.from.clone(),
+                until: target.until.clone(),
+                coverage: ReviewCoverage::Complete,
+                detail: "synthetic complete review".into(),
+                continuation: None,
+            }],
+            events: vec![],
+        },
+    )
+    .unwrap();
+    let after = vulnbell::tools::cases::pending(&store).unwrap();
+    assert!(after.deliverable);
+    let mut report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    vulnbell::output::add_research_coverage(&mut report, &after);
+    assert!(
+        !report
+            .coverage_gaps
+            .iter()
+            .any(|gap| gap.source == "research_web")
+    );
+    assert!(
+        vulnbell::output::delivery_status_markdown(
+            &after,
+            snapshot.partial,
+            vulnbell::profile::Language::En
+        )
+        .is_empty()
+    );
+    assert!(
+        !vulnbell::output::delivery_status_markdown(&after, true, vulnbell::profile::Language::En)
+            .is_empty()
+    );
+    drop(store);
+    fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+}
+
+#[test]
 fn research_keeps_declared_order_and_deduplicates_mapped_sources() {
     use vulnbell::{
         discovery::{

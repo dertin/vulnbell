@@ -122,7 +122,6 @@ fn scan_inner(
     for case in &mut cases {
         case.workspace_revisions = workspace_revisions.clone();
     }
-    coverage.push(Coverage::new("upstream_agent", "project", CoverageState::Partial, "GitHub, GitLab, Launchpad and similar sites are reviewed by the local agent; run research to obtain windows and seen IDs, then import its evidence"));
     let mut merged_previous_ids = HashSet::new();
     for case in &mut cases {
         let related: Vec<&Case> = previous_cases
@@ -188,10 +187,20 @@ fn scan_inner(
             continue;
         };
         if previous.facts_sha256 == case.facts_sha256 {
-            case.applicability = previous.applicability;
-            case.verification = previous.verification;
-            case.decision = previous.decision;
             case.evidence = previous.evidence;
+            if crate::workspace_revision::same_revisions(
+                &previous.workspace_revisions,
+                &case.workspace_revisions,
+            ) {
+                case.applicability = previous.applicability;
+                case.verification = previous.verification;
+                case.decision = previous.decision;
+            } else {
+                case.open_questions.push(
+                    "Codebase revision changed; reassess the previous verdict and any local verification."
+                        .into(),
+                );
+            }
         } else if previous
             .evidence
             .iter()
@@ -214,7 +223,11 @@ fn scan_inner(
         {
             continue;
         }
-        let mut context_changed = reconcile_research_instances(&mut previous, &instances);
+        let mut context_changed = reconcile_research_instances(&mut previous, &instances)
+            || !crate::workspace_revision::same_revisions(
+                &previous.workspace_revisions,
+                &workspace_revisions,
+            );
         if !previous
             .instances
             .iter()
@@ -473,7 +486,6 @@ pub fn cases_from_claims(
                     .iter()
                     .any(|claim| claim.applicability == Applicability::NotAffected);
         let observed_identity = instance.origin == crate::model::Origin::AgentObserved
-            || instance.is_python_requirement()
             || instance
                 .identity_evidence
                 .iter()

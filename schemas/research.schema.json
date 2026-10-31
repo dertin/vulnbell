@@ -263,7 +263,7 @@
           ]
         },
         "dirty": {
-          "description": "Changes excluding private paths, ignored files and submodule contents.",
+          "description": "Changes excluding private paths, ignored files, generated untracked files and submodules.",
           "type": [
             "boolean",
             "null"

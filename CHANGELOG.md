@@ -2,8 +2,9 @@
 
 ## 0.1.3 - Unreleased
 
-- Render scheduled reports locally and export PDF reports with verification and evidence appendices.
-- Inventory Python requirements declarations, retaining version and environment uncertainty as coverage limitations.
+- Render scheduled reports locally, track upstream coverage separately, and export PDF reports with evidence appendices.
+- Inventory Python requirements locally without inferring public identities; retain version and environment uncertainty as coverage limitations.
+- Exclude dependency and build output directories consistently from native and agent discovery.
 - Strengthen evidence checks for consequential impact assessments.
 - Distinguish monitored codebases from VulnBell workspaces and require project context for confirmed shipment or deployment.
 - Check source citations without exposing code, group advisory aliases as duplicate candidates, and measure screening recall for labelled high-priority signals.
