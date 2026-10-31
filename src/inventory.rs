@@ -914,7 +914,12 @@ pub fn discover(
                             ));
                             continue;
                         }
-                        let reference = purl.to_string();
+                        let unverified_composer = name == "composer.lock";
+                        let reference = if unverified_composer {
+                            format!("composer-lock:{}", package.name)
+                        } else {
+                            purl.to_string()
+                        };
                         let identity = format!(
                             "{:?}:{relative:?}:{reference:?}:{:?}:{:?}",
                             root, package.version, package.resolution
@@ -939,14 +944,27 @@ pub fn discover(
                                 artifact_integrity: package.artifact_integrity,
                                 line: package.line,
                             },
-                            purl: Some(reference),
+                            purl: (!unverified_composer).then_some(reference),
                             cpe_product: None,
                             upstream: None,
                             identity_evidence: Vec::new(),
                             release: None,
                         });
                     }
-                    inventory.coverage.push(Coverage::new("inventory", &relative, CoverageState::Checked, "registry packages parsed; directness is included when available; local/git dependencies have no registry equivalence"));
+                    let (state, detail) = if name == "composer.lock" {
+                        (
+                            CoverageState::Partial,
+                            "Composer versions inventoried locally; public package origins are unverified and excluded from external lookup",
+                        )
+                    } else {
+                        (
+                            CoverageState::Checked,
+                            "registry packages parsed; directness is included when available; local/git dependencies have no registry equivalence",
+                        )
+                    };
+                    inventory
+                        .coverage
+                        .push(Coverage::new("inventory", &relative, state, detail));
                 }
                 Err(error) => inventory.coverage.push(Coverage::new(
                     "inventory",

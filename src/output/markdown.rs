@@ -217,7 +217,6 @@ pub fn morning_markdown(report: &MorningReport) -> String {
     let challenged: Vec<_> = report
         .finding_checks
         .iter()
-        .filter(|check| matches!(check.decision, Decision::Actionable | Decision::Review))
         .flat_map(|check| {
             check
                 .open_challenges

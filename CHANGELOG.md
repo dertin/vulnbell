@@ -9,6 +9,7 @@
 - Record evidence-bound second assessments and reopen disputed or inconclusive verdicts.
 - Screen phishing claims, and evaluate linked tracker metadata and false-positive keys.
 - Screen sensitive-data exposure claims and avoid treating ordinary deserialization mentions as security signals.
+- Keep unverified Composer identities local, use local reporting when needed, and surface challenges to closed verdicts.
 
 ## 0.1.2 - 2026-10-29
 

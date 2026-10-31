@@ -135,6 +135,112 @@ fn requirements_with_credentials_are_not_exported_even_beyond_the_first_chunk() 
 }
 
 #[test]
+fn composer_private_packages_stay_local_even_when_all_trackers_are_selected() {
+    let (directory, path, mut profile, mut store) = project();
+    profile.research.tracker_scope = vulnbell::profile::TrackerScope::All;
+    fs::write(&path, serde_saphyr::to_string(&profile).unwrap()).unwrap();
+    fs::write(
+        directory.path().join("workspace/composer.lock"),
+        r#"{"packages":[{"name":"private-vendor/private-package","version":"1.2.3","source":{"url":"https://secret.invalid/project"}}],"packages-dev":[]}"#,
+    )
+    .unwrap();
+    fs::write(
+        directory.path().join("workspace/composer.json"),
+        r#"{"require":{"private-vendor/private-package":"1.2.3"},"repositories":[{"type":"composer","url":"https://user:synthetic-secret@private.invalid"}]}"#,
+    )
+    .unwrap();
+
+    let snapshot = vulnbell::engine::scan(&profile, &path, true).unwrap();
+    let package = snapshot
+        .instances
+        .iter()
+        .find(|item| item.reference == "composer-lock:private-vendor/private-package")
+        .unwrap();
+    assert_eq!(package.resolved_version.as_deref(), Some("1.2.3"));
+    assert!(package.purl.is_none());
+    assert!(!profile.research.tracks(package));
+    assert!(snapshot.coverage.iter().any(|row| row.source == "inventory"
+        && row.scope == "composer.lock"
+        && row.state == vulnbell::model::CoverageState::Partial));
+    assert!(snapshot.coverage.iter().any(|row| row.source == "osv"
+        && row.scope == package.id
+        && row.state == vulnbell::model::CoverageState::Unsupported));
+
+    let page = discovery::plan(&profile, &path, &store, 20).unwrap();
+    assert!(page.workspace.is_empty());
+    assert!(page.components.is_empty());
+    assert_eq!(page.summary.files_unavailable, 1);
+    let exported = serde_json::to_string(&page).unwrap();
+    assert!(!exported.contains("private-vendor"));
+    assert!(!exported.contains("synthetic-secret"));
+
+    let mut legacy = snapshot.clone();
+    legacy.id = uuid::Uuid::new_v4().to_string();
+    let legacy_package = legacy
+        .instances
+        .iter_mut()
+        .find(|item| item.id == package.id)
+        .unwrap();
+    legacy_package.reference = "pkg:composer/private-vendor/private-package".into();
+    legacy_package.purl = Some(legacy_package.reference.clone());
+    legacy_package.upstream = Some("https://github.com/private-vendor/private-package".into());
+    legacy_package.provenance.direct = Some(true);
+    assert!(legacy_package.has_unverified_local_identity());
+    assert!(!profile.research.tracks(legacy_package));
+    let mut checked = legacy_package.clone();
+    let mut http = vulnbell::network::Http::new(&store, false);
+    vulnbell::identity::resolve(&mut checked, &mut http);
+    assert_eq!(http.requests, 0);
+    assert!(checked.purl.is_none());
+    assert!(checked.upstream.is_none());
+    let mut old_manifest_observation = legacy_package.clone();
+    old_manifest_observation.id = "old-manifest-observation".into();
+    old_manifest_observation.origin = vulnbell::model::Origin::AgentObserved;
+    old_manifest_observation.provenance.path = Some("composer.json".into());
+    assert!(old_manifest_observation.has_unverified_local_identity());
+    legacy.instances.push(old_manifest_observation);
+    store.save_snapshot(&legacy).unwrap();
+    let page = discovery::plan(&profile, &path, &store, 20).unwrap();
+    assert!(page.components.is_empty());
+    assert!(
+        !serde_json::to_string(&page)
+            .unwrap()
+            .contains("private-vendor")
+    );
+    let research = vulnbell::research::plan_page(&store, "", 20).unwrap();
+    assert!(
+        !serde_json::to_string(&research)
+            .unwrap()
+            .contains("private-vendor")
+    );
+
+    profile.components.push(
+        serde_saphyr::from_str(
+            "ref: pkg:composer/public-vendor/public-package\nversion: '1.2.3'\n",
+        )
+        .unwrap(),
+    );
+    fs::write(&path, serde_saphyr::to_string(&profile).unwrap()).unwrap();
+    let snapshot = vulnbell::engine::scan(&profile, &path, true).unwrap();
+    assert!(snapshot.instances.iter().any(|item| {
+        item.reference == "pkg:composer/public-vendor/public-package"
+            && item.purl.as_deref() == Some("pkg:composer/public-vendor/public-package")
+    }));
+    let page = discovery::plan(&profile, &path, &store, 20).unwrap();
+    assert!(
+        page.components
+            .iter()
+            .any(|item| { item.reference == "pkg:composer/public-vendor/public-package" })
+    );
+    assert!(
+        !serde_json::to_string(&page)
+            .unwrap()
+            .contains("private-vendor")
+    );
+    cleanup(store, &profile);
+}
+
+#[test]
 fn requirements_with_includes_are_not_exported_as_public_package_evidence() {
     let (directory, path, profile, store) = project();
     fs::write(

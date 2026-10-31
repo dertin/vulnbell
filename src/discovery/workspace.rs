@@ -18,7 +18,7 @@ const SLICE_BYTES: u64 = 64 * 1024;
 const DIRECTORIES_PER_PLAN: usize = 64;
 /// Bump when exclusion or classification rules change: walked directories are listed again so
 /// existing entries are reclassified, while unchanged reviewed files keep their review.
-const CLASSIFICATION_RULES: &str = "3";
+const CLASSIFICATION_RULES: &str = "4";
 const GITIGNORE_BYTES: u64 = 1024 * 1024;
 const DEPENDENCY_OUTPUT: [&str; 13] = [
     "node_modules",
@@ -71,6 +71,12 @@ const OUTPUT_DIRECTORY: &str = "dependency or build output directory (installed 
 fn file_classification(parent: &str, name: &str) -> Option<(&'static str, &'static str)> {
     if crate::inventory::native_inventory_file(name) {
         return Some(("excluded", NATIVE_INVENTORY));
+    }
+    if name == "composer.json" {
+        return Some((
+            "unavailable",
+            "Composer manifest may contain private package names or repository credentials; review locally",
+        ));
     }
     let legal = ["LICENSE", "LICENCE", "COPYING", "NOTICE", "AUTHORS"]
         .iter()
@@ -593,6 +599,14 @@ pub(super) fn slice(store: &Store, scope: &str, id: &str) -> Result<FileSlice> {
 }
 
 fn read_slice(root: &str, relative: &str, id: &str, offset: u64) -> Result<FileSlice> {
+    if Path::new(relative)
+        .file_name()
+        .is_some_and(|name| name == "composer.json")
+    {
+        bail!(
+            "Composer manifest may contain private package names or repository credentials; review locally"
+        );
+    }
     let path = checked_path(root, relative)?;
     let before = stamp(&path)?;
     let mut file = open_file(root, relative)?;

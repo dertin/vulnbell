@@ -385,6 +385,7 @@ pub fn list(store: &Store, limit: usize, offset: usize, unworked: bool) -> Resul
         .map(|p| p.case_id.as_str())
         .collect();
     let missing: HashSet<&str> = pending.verdict_missing.iter().map(String::as_str).collect();
+    let challenged: HashSet<&str> = pending.challenge_open.iter().map(String::as_str).collect();
     let followed = match store.meta("profile_path")? {
         Some(path) => {
             crate::profile::load(std::path::Path::new(&path))?
@@ -395,7 +396,9 @@ pub fn list(store: &Store, limit: usize, offset: usize, unworked: bool) -> Resul
     };
     let mut ranked: Vec<(u8, QueueItem)> = Vec::new();
     for case in store.cases()? {
-        if !matches!(case.decision, Decision::Actionable | Decision::Review) {
+        if !matches!(case.decision, Decision::Actionable | Decision::Review)
+            && !challenged.contains(case.case_id.as_str())
+        {
             continue;
         }
         let q = item(

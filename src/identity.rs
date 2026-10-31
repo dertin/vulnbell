@@ -156,6 +156,13 @@ pub fn resolve(instance: &mut Instance, http: &mut Http<'_>) -> Vec<Coverage> {
     coverage
 }
 fn resolve_inner(instance: &mut Instance, http: &mut Http<'_>) -> Result<()> {
+    if instance.has_unverified_local_identity() {
+        instance.purl = None;
+        instance.upstream = None;
+        bail!(
+            "local package source is unverified; identify the public package explicitly before external lookup"
+        );
+    }
     if instance.reference.starts_with("pkg:") {
         let purl: packageurl::PackageUrl<'_> = instance.reference.parse()?;
         instance.purl = Some(purl.to_string());

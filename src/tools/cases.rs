@@ -595,7 +595,10 @@ pub fn pending(store: &Store) -> Result<PendingReport> {
     let verdict_missing: Vec<String> = snapshot
         .cases
         .iter()
-        .filter(|case| matches!(case.decision, Decision::Actionable | Decision::Review))
+        .filter(|case| {
+            matches!(case.decision, Decision::Actionable | Decision::Review)
+                || crate::tools::challenge::blocks_verdict(case, store)
+        })
         .filter(|case| !has_current_verdict(case, store))
         .map(|case| case.case_id.clone())
         .collect();
@@ -648,19 +651,17 @@ pub fn pending(store: &Store) -> Result<PendingReport> {
             .workspace_revisions
             .iter()
             .any(|revision| !revision.matches);
-    let challenge_open = report
+    let challenge_open: Vec<String> = report
         .finding_checks
         .iter()
-        .filter(|check| {
-            matches!(check.decision, Decision::Actionable | Decision::Review)
-                && !check.open_challenges.is_empty()
-        })
+        .filter(|check| !check.open_challenges.is_empty())
         .map(|check| check.case_id.clone())
         .collect();
     Ok(PendingReport {
         schema_version: 1,
         deliverable: report.verification_pending.is_empty()
             && verdict_missing.is_empty()
+            && challenge_open.is_empty()
             && research_open.is_empty()
             && !tracker_scope_unresolved
             && !workspace_context_changed

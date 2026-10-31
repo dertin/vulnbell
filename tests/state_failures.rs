@@ -136,7 +136,7 @@ fn mixed_codebase_inventories_each_ecosystem_with_its_own_provenance() {
             Origin::Declared,
         ),
         (
-            "pkg:composer/monolog/monolog",
+            "composer-lock:monolog/monolog",
             "php/composer.lock",
             "3.9.0",
             Origin::Locked,

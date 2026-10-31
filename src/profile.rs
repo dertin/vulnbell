@@ -176,12 +176,13 @@ pub enum TrackerScope {
 }
 impl Research {
     pub fn tracks(&self, instance: &crate::model::Instance) -> bool {
-        self.tracker_scope == TrackerScope::All
-            || instance.provenance.direct == Some(true)
-            || self
-                .follow
-                .iter()
-                .any(|reference| reference == &instance.reference)
+        !instance.has_unverified_local_identity()
+            && (self.tracker_scope == TrackerScope::All
+                || instance.provenance.direct == Some(true)
+                || self
+                    .follow
+                    .iter()
+                    .any(|reference| reference == &instance.reference))
     }
 }
 #[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema)]

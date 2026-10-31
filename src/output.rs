@@ -318,6 +318,8 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
             continue;
         }
         match case.decision {
+            Decision::Informational | Decision::Dismissed
+                if crate::tools::challenge::blocks_verdict(case, store) => {}
             Decision::Informational => {
                 informational_count += 1;
                 continue;

@@ -79,6 +79,19 @@ pub struct ReleaseDate {
     pub evidence: Evidence,
 }
 impl Instance {
+    /// Locally observed names whose public registry identity has not been established.
+    pub fn has_unverified_local_identity(&self) -> bool {
+        self.reference.starts_with("composer-lock:")
+            || self.reference.starts_with("python-requirement:")
+            || (matches!(self.origin, Origin::Locked | Origin::AgentObserved)
+                && self.provenance.path.as_deref().is_some_and(|path| {
+                    std::path::Path::new(path).file_name().is_some_and(|name| {
+                        (self.origin == Origin::Locked && name == "composer.lock")
+                            || (self.origin == Origin::AgentObserved && name == "composer.json")
+                    })
+                }))
+    }
+
     pub fn is_python_requirement(&self) -> bool {
         self.origin == Origin::Declared
             && self.reference.starts_with("pkg:pypi/")

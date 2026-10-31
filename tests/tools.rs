@@ -546,6 +546,36 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
     let challenged_report =
         vulnbell::output::morning_report(&challenged_snapshot, &store, "cyber").unwrap();
     assert!(vulnbell::output::morning_markdown(&challenged_report).contains("Conclusion disputed"));
+    for decision in [
+        vulnbell::model::Decision::Informational,
+        vulnbell::model::Decision::Dismissed,
+    ] {
+        let mut closed = challenged.clone();
+        closed.decision = decision;
+        store.save_case(&closed).unwrap();
+        let pending = cases::pending(&store).unwrap();
+        assert!(pending.challenge_open.contains(&case_id));
+        assert!(pending.verdict_missing.contains(&case_id));
+        assert!(!pending.deliverable);
+        assert!(
+            queue::list(&store, 20, 0, false)
+                .unwrap()
+                .items
+                .iter()
+                .any(|item| item.case_id == case_id && item.verdict_missing)
+        );
+        let mut snapshot = store.latest().unwrap();
+        snapshot.cases = store.cases().unwrap();
+        let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+        assert!(
+            report
+                .needs_review
+                .iter()
+                .any(|item| item.case_id == case_id)
+        );
+        assert!(vulnbell::output::morning_markdown(&report).contains("Conclusion disputed"));
+    }
+    store.save_case(&challenged).unwrap();
     assert!(
         cases::pending(&store)
             .unwrap()

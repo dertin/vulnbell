@@ -144,7 +144,8 @@ pub(super) fn repository_advisories(
     let mut by_repository: BTreeMap<String, Vec<(&Instance, &'static str, String)>> =
         BTreeMap::new();
     for instance in instances.iter().filter(|instance| {
-        research.tracks(instance) || previously_claimed.contains(instance.id.as_str())
+        !instance.has_unverified_local_identity()
+            && (research.tracks(instance) || previously_claimed.contains(instance.id.as_str()))
     }) {
         if instance.resolved_version.is_none() {
             continue;

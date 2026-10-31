@@ -134,6 +134,9 @@ pub fn scan(
     osv(instances, http, &mut intelligence);
     repository_advisories(instances, http, &mut intelligence, research, previous_cases);
     for instance in instances {
+        if instance.has_unverified_local_identity() {
+            continue;
+        }
         if instance.resolved_version.is_none() {
             intelligence.coverage.push(Coverage::new(
                 "advisories",
@@ -184,6 +187,15 @@ pub fn scan(
 fn osv(instances: &[Instance], http: &mut Http<'_>, intelligence: &mut Intelligence) {
     let mut unique: BTreeMap<(String, String), Vec<&Instance>> = BTreeMap::new();
     for instance in instances {
+        if instance.has_unverified_local_identity() {
+            intelligence.coverage.push(Coverage::new(
+                "osv",
+                &instance.id,
+                CoverageState::Unsupported,
+                "local package source is unverified; no external lookup",
+            ));
+            continue;
+        }
         match (&instance.purl, &instance.resolved_version) {
             (Some(purl), Some(version)) => {
                 unique
