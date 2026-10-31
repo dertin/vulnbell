@@ -486,7 +486,13 @@ fn run() -> Result<i32> {
                 "runners": vulnbell::runners::list()?,
                 "adapters": vulnbell::runners::adapter_catalog(),
             }))?,
-            RunnerCommands::Check { id, live, .. } => emit(&vulnbell::runners::check(&id, live)?)?,
+            RunnerCommands::Check { id, live, .. } => {
+                let check = vulnbell::runners::check(&id, live)?;
+                emit(&check)?;
+                if !check.ready {
+                    return Ok(2);
+                }
+            }
         },
         Commands::Schedule {
             action,

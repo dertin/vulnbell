@@ -3,7 +3,7 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::{path::Path, process::Command};
 
-pub(super) const TESTED_VERSION: &str = "0.164.0";
+pub(super) const TESTED_VERSION: &str = "0.166.0";
 
 pub(super) struct CodexAdapter<'a> {
     pub executable: &'a Path,

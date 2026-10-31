@@ -2,6 +2,8 @@
 
 ## 0.1.3 - 2026-10-31
 
+- Validate local runner isolation with Codex CLI 0.166.0; report unavailable web research as a partial review.
+
 - Show an interactive environment check with contextual recommendations and a machine-readable option.
 
 - Use the active GitHub CLI credential for supported GitHub API requests without exporting a token.

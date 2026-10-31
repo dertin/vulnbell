@@ -1,5 +1,6 @@
 use serde_json::json;
 use std::{fs, path::Path};
+mod support;
 use vulnbell::{
     model::{Applicability, Decision, EvidenceReference, Verdict, Verification},
     profile::{self, Profile},
@@ -291,6 +292,9 @@ fn cli_runs_with_one_mebibyte_stack() {
 
 #[test]
 fn status_lists_registered_projects_and_persisted_schedule_outcomes() {
+    if support::isolate_data("status_lists_registered_projects_and_persisted_schedule_outcomes") {
+        return;
+    }
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("vulnbell.yaml");
     let output = assert_cmd::Command::new(assert_cmd::cargo::cargo_bin!("vulnbell"))

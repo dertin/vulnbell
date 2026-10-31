@@ -61,3 +61,45 @@ fn runner_configuration_is_local_listed_and_checked_before_use() {
             .contains("requires tested version")
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn live_check_returns_nonzero_when_web_research_is_unavailable() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("data");
+    let executable = directory.path().join("fake-codex");
+    fs::write(&executable, include_bytes!("fixtures/runner/fake-codex.py")).unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+    let config = vulnbell::runners::RunnerConfig {
+        schema_version: 1,
+        id: "offline-reader".into(),
+        adapter: vulnbell::runners::AdapterConfig::Codex {
+            executable,
+            model: None,
+        },
+    };
+    let source = directory.path().join("runner.json");
+    fs::write(&source, serde_json::to_vec(&config).unwrap()).unwrap();
+    assert_cmd::cargo::cargo_bin_cmd!("vulnbell")
+        .env("VULNBELL_DATA_DIR", &data)
+        .args(["runners", "configure", "--from"])
+        .arg(&source)
+        .assert()
+        .success();
+    let output = assert_cmd::cargo::cargo_bin_cmd!("vulnbell")
+        .env("VULNBELL_DATA_DIR", &data)
+        .args(["runners", "check", "offline-reader", "--live", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["ready"], false);
+    assert_eq!(report["web_research"], false);
+    assert!(
+        report["reason"]
+            .as_str()
+            .unwrap()
+            .contains("Synthetic web tool unavailable")
+    );
+}

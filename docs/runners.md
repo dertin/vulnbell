@@ -19,12 +19,12 @@ Runner configurations are stored in `<data directory>/runners/<id>.json`. `vulnb
 
 | Adapter | Tested client | Configuration |
 |---|---|---|
-| `codex` | Codex CLI 0.164.0 | Absolute executable path; optional model |
+| `codex` | Codex CLI 0.166.0 | Absolute executable path; optional model |
 | `opencode` | OpenCode 1.19.4 | Absolute executable path; required `provider/model` |
 
 Examples are available in [`examples/runner-codex.json`](../examples/runner-codex.json) and [`examples/runner-opencode.json`](../examples/runner-opencode.json).
 
-Both adapters clear the inherited environment and verify the exact tested client version. Workspace extraction has no tools. Public discovery and research have public web search without workspace access. The CLI validates structured output separately from the role's permissions and renders reports locally. `runners check` verifies the installed client and capability policy. `runners check <id> --live` also sends one public research request through the runner and reports `web_research: false` with the reason when the client's web tools do not work. Some clients exit successfully in that case. The probe uses the configured model. Run `vulnbell run --project <profile> --now` to check provider access, credentials, research output, and report delivery together.
+Both adapters clear the inherited environment and verify the exact tested client version. Workspace extraction has no tools. Public discovery and research permit public web search without workspace access when the client provides a compatible web tool. The CLI validates structured output separately from the role's permissions and renders reports locally. `runners check` verifies the installed client and capability policy. `runners check <id> --live` also sends one public research request through the runner and exits 2 with `web_research: false` and the reason when the client's web tools do not work, even if the client exits successfully. Codex models that expose web access only through the tool execution host cannot perform web research in this adapter, which keeps that host disabled; scheduled research stays partial when web access is unavailable. The probe uses the configured model. Run `vulnbell run --project <profile> --now` to check provider access, credentials, research output, and report delivery together.
 
 ## Project schedule
 

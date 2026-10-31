@@ -1,6 +1,14 @@
+#[cfg(unix)]
+mod support;
+
 #[test]
 #[cfg(unix)]
 fn scheduled_discovery_separates_local_extraction_public_mapping_and_reporting() {
+    if support::isolate_data(
+        "scheduled_discovery_separates_local_extraction_public_mapping_and_reporting",
+    ) {
+        return;
+    }
     use std::{fs, os::unix::fs::PermissionsExt};
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
@@ -96,6 +104,9 @@ fn scheduled_discovery_separates_local_extraction_public_mapping_and_reporting()
 #[test]
 #[cfg(unix)]
 fn scheduled_report_keeps_unverified_package_names_out_of_the_agent() {
+    if support::isolate_data("scheduled_report_keeps_unverified_package_names_out_of_the_agent") {
+        return;
+    }
     use std::{fs, os::unix::fs::PermissionsExt};
 
     let directory = tempfile::tempdir().unwrap();

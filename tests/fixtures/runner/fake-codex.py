@@ -6,13 +6,15 @@ import sys
 
 args = sys.argv[1:]
 if "--version" in args:
-    print("codex-cli 0.164.0")
+    print("codex-cli 0.166.0")
 elif "mcp" in args:
     print("[]")
 else:
     prompt = sys.stdin.read()
     output = Path(args[args.index("--output-last-message") + 1])
-    if prompt.startswith("Extract software dependencies"):
+    if prompt.startswith("Connectivity probe."):
+        value = {"reachable": False, "title": "", "detail": "Synthetic web tool unavailable"}
+    elif prompt.startswith("Extract software dependencies"):
         assert 'web_search="disabled"' in args
         task = json.loads(prompt.split("\n\nInput:\n", 1)[1])
         chunk = task["workspace"][0]
