@@ -129,7 +129,7 @@ fn declares_inline(root: &str, relative: &str, markers: &[&str]) -> bool {
     markers.iter().any(|marker| text.contains(marker))
 }
 
-/// `.gitignore` rules from the workspace root down to `relative`, outermost first.
+/// `.gitignore` rules from the codebase root down to `relative`, outermost first.
 /// Unreadable rule files are skipped, which only widens the reviewed set.
 fn ignore_rules(root: &str, relative: &str) -> Vec<ignore::gitignore::Gitignore> {
     let mut rules = Vec::new();
@@ -232,7 +232,7 @@ pub(super) fn reopen(store: &Store, scope: &str, relative: &str) -> Result<usize
         .query_map(params![scope, relative], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     if ids.is_empty() {
-        bail!("no reviewed or unavailable discovery file at that workspace-relative path");
+        bail!("no reviewed or unavailable discovery file at that codebase-relative path");
     }
     for id in &ids {
         store
@@ -302,12 +302,12 @@ pub(crate) fn private_name(value: &str) -> bool {
 pub(crate) fn checked_path(root: &str, relative: &str) -> Result<PathBuf> {
     let root = Path::new(root);
     if root.is_symlink() || root.canonicalize()? != root {
-        bail!("workspace root changed or redirects");
+        bail!("codebase root changed or redirects");
     }
     let mut path = root.to_owned();
     for component in Path::new(relative).components() {
         let Component::Normal(name) = component else {
-            bail!("discovery path must stay inside its workspace");
+            bail!("discovery path must stay inside its codebase");
         };
         let name = name.to_str().context("discovery requires UTF-8 paths")?;
         if private_name(name) || name.chars().any(char::is_control) {
@@ -331,16 +331,16 @@ pub(super) fn prepare(
     scope: &str,
 ) -> Result<()> {
     let base = profile_path.parent().unwrap_or(Path::new("."));
-    for workspace in &profile.workspaces {
-        let path = base.join(workspace);
+    for codebase in &profile.codebases {
+        let path = base.join(codebase);
         let root = path.canonicalize()?;
         if path.is_symlink() || !root.is_dir() || root.starts_with(crate::store::data_root()) {
-            bail!("discovery workspace must be an authorized real project directory");
+            bail!("discovery codebase must be an authorized real project directory");
         }
         if crate::inventory::excluded_path(&root) {
             bail!("dependency or build output cannot be a discovery codebase");
         }
-        let root = root.to_str().context("workspace path must be UTF-8")?;
+        let root = root.to_str().context("codebase path must be UTF-8")?;
         adopt_reviews(store, scope, root)?;
         store.connection.execute(
             "INSERT OR IGNORE INTO discovery_walk VALUES (?1,?2,'','','','pending')",
@@ -356,7 +356,7 @@ pub(super) fn prepare(
     for (root, relative, previous) in directories {
         let current = checked_path(&root, &relative).and_then(|path| stamp(&path));
         if !relative.is_empty() && current.as_ref().err().is_some_and(missing) {
-            store.connection.execute("UPDATE discovery_walk SET state='removed',stamp='removed from workspace' WHERE scope=?1 AND root=?2 AND path=?3", params![scope,root,relative])?;
+            store.connection.execute("UPDATE discovery_walk SET state='removed',stamp='removed from codebase' WHERE scope=?1 AND root=?2 AND path=?3", params![scope,root,relative])?;
             continue;
         }
         if current.as_ref().ok() != Some(&previous) {
@@ -380,7 +380,7 @@ pub(super) fn prepare(
     for (id, root, relative, previous, state) in files {
         let current = checked_path(&root, &relative).and_then(|path| stamp(&path));
         if current.as_ref().err().is_some_and(missing) {
-            store.connection.execute("UPDATE discovery_files SET state='removed',reason='removed from workspace' WHERE id=?1", [&id])?;
+            store.connection.execute("UPDATE discovery_files SET state='removed',reason='removed from codebase' WHERE id=?1", [&id])?;
             store
                 .connection
                 .execute("DELETE FROM discovery_packages WHERE file_id=?1", [&id])?;
@@ -418,7 +418,7 @@ pub(super) fn prepare(
     Ok(())
 }
 
-/// Adding or removing a workspace changes the scope. A root without reviewed files in this scope
+/// Adding or removing a codebase changes the scope. A root without reviewed files in this scope
 /// takes over the walk, file reviews and packages recorded for it under the earlier scope with the
 /// most reviews; the stamp checks in `prepare` then reopen only what changed on disk.
 fn adopt_reviews(store: &Store, scope: &str, root: &str) -> Result<()> {
@@ -644,7 +644,7 @@ pub(crate) fn open_file(root: &str, relative: &str) -> Result<fs::File> {
     let mut components = Path::new(relative).components().peekable();
     while let Some(component) = components.next() {
         let Component::Normal(name) = component else {
-            bail!("invalid workspace path component");
+            bail!("invalid codebase path component");
         };
         let final_component = components.peek().is_none();
         let child_flags = if final_component {
@@ -658,7 +658,7 @@ pub(crate) fn open_file(root: &str, relative: &str) -> Result<fs::File> {
         }
         directory = descriptor;
     }
-    bail!("select a file below the workspace root")
+    bail!("select a file below the codebase root")
 }
 
 #[cfg(not(unix))]
@@ -698,7 +698,7 @@ pub(super) fn import(
         |row| row.get(0),
     )?;
     if unfinished {
-        bail!("workspace discovery must finish enumerating before importing a review");
+        bail!("codebase discovery must finish enumerating before importing a review");
     }
     let blocked_roots = blocked_requirement_roots(store, scope)?;
     let mut prepared = Vec::new();
@@ -759,7 +759,7 @@ pub(super) fn import(
                 || !observation.component.feeds.is_empty()
             {
                 bail!(
-                    "workspace observations cannot grant deployment, upstream identity or feed access"
+                    "codebase observations cannot grant deployment, upstream identity or feed access"
                 );
             }
             if observation.excerpt.trim().is_empty()
@@ -796,7 +796,7 @@ pub(super) fn import(
                             || version_source.contains(&format!("{operator} {version}"))
                     }))
             {
-                bail!("workspace discovery requires a literal exact version or unknown");
+                bail!("codebase discovery requires a literal exact version or unknown");
             }
             let name = if component.reference.starts_with("pkg:") {
                 let purl: packageurl::PackageUrl<'_> = component.reference.parse()?;
@@ -821,13 +821,13 @@ pub(super) fn import(
             );
             instance.origin = Origin::AgentObserved;
             instance.provenance.path = Some(relative.clone());
-            instance.provenance.workspace = Some(root.clone());
+            instance.provenance.codebase = Some(root.clone());
             instance.provenance.sha256 = chunk.sha256.clone();
             instance.provenance.direct = observation.direct;
             instance.provenance.line = excerpt_line(&root, &relative, &chunk, &observation.excerpt);
             instance.identity_evidence.push(store.record_evidence(
                 &serde_json::to_vec(observation)?,
-                "agent_workspace_observation",
+                "agent_codebase_observation",
                 None,
                 EvidenceKind::Context,
             )?);
@@ -854,7 +854,7 @@ pub(super) fn import(
     }
     let transaction = store.connection.transaction()?;
     for (id, chunk, packages, finished, current_stamp, body) in prepared {
-        transaction.execute("INSERT INTO discovery_history(scope,phase,body,recorded_at) VALUES (?1,'workspace',?2,?3)",params![scope,body,crate::now()])?;
+        transaction.execute("INSERT INTO discovery_history(scope,phase,body,recorded_at) VALUES (?1,'codebase',?2,?3)",params![scope,body,crate::now()])?;
         for instance in packages {
             transaction.execute(
                 "INSERT OR REPLACE INTO discovery_packages VALUES (?1,?2,?3,?4,?5,?6,?7)",
@@ -883,7 +883,7 @@ pub(super) fn import(
     Ok(())
 }
 
-/// Workspace-relative files that discovery reviewed or excluded with a recorded reason.
+/// Codebase-relative files that discovery reviewed or excluded with a recorded reason.
 pub(super) fn settled_paths(
     store: &Store,
     scope: &str,

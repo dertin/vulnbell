@@ -36,7 +36,7 @@ pub(super) fn fingerprint(instance: &Instance) -> String {
     )
 }
 
-/// Maven artifacts that a workspace root `pom.xml` builds; their source is the monitored workspace,
+/// Maven artifacts that a Maven reactor root `pom.xml` builds; their source is the monitored codebase,
 /// so they need no public source mapping.
 pub(super) fn first_party(roots: &[String]) -> BTreeSet<String> {
     roots
@@ -71,7 +71,7 @@ pub(super) fn targets(
         return Ok(Vec::new());
     }
     let snapshot = store.latest()?;
-    let current_observations: HashSet<String> = super::workspace::instances(store, scope)?
+    let current_observations: HashSet<String> = super::codebase::instances(store, scope)?
         .into_iter()
         .map(|instance| instance.id)
         .collect();

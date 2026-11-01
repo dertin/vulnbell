@@ -29,7 +29,7 @@ fn same_link_from_distinct_upstreams_preserves_each_case() {
         .iter()
         .enumerate()
         .map(|(index, target)| ResearchEvent {
-            workspace_revisions: Vec::new(),
+            codebase_revisions: Vec::new(),
             upstream: target.upstream.clone(),
             instance_ids: target.instance_ids.clone(),
             reviewed_instance_ids: target.instance_ids.clone(),

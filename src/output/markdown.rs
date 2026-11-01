@@ -271,16 +271,16 @@ pub fn morning_markdown(report: &MorningReport) -> String {
         }
         text.push('\n');
     }
-    if report.workspace_scope_changed {
+    if report.codebase_scope_changed {
         text.push_str(if language == Language::Es {
             "> **Codebases modificadas:** ejecute un nuevo scan antes de continuar.\n\n"
         } else {
             "> **Codebase configuration changed:** run a new scan before continuing.\n\n"
         });
     }
-    text.push_str(&workspace_revisions_markdown(
-        &report.workspace_revisions,
-        report.workspace_context_unrecorded,
+    text.push_str(&codebase_revisions_markdown(
+        &report.codebase_revisions,
+        report.codebase_context_unrecorded,
         language,
     ));
     text.push_str(&inventory_markdown(&report.inventory, language));
@@ -687,8 +687,8 @@ fn inventory_markdown(inventory: &[MonitoredComponent], language: Language) -> S
         std::collections::BTreeMap::new();
     let mut listed = Vec::new();
     for component in inventory {
-        let location = match (&component.workspace, &component.path) {
-            (Some(workspace), Some(path)) => format!("{}/{path}", workspace.trim_end_matches('/')),
+        let location = match (&component.codebase, &component.path) {
+            (Some(codebase), Some(path)) => format!("{}/{path}", codebase.trim_end_matches('/')),
             (None, Some(path)) => path.clone(),
             (_, None) => words.profile_location.to_owned(),
         };
@@ -912,8 +912,8 @@ fn source_facts_text(facts: &SourceFacts, language: Language) -> String {
     parts.join("; ")
 }
 
-pub(super) fn workspace_revisions_markdown(
-    revisions: &[crate::workspace_revision::WorkspaceComparison],
+pub(super) fn codebase_revisions_markdown(
+    revisions: &[crate::codebase_revision::CodebaseComparison],
     unrecorded: bool,
     language: Language,
 ) -> String {
@@ -944,7 +944,7 @@ pub(super) fn workspace_revisions_markdown(
             } else {
                 "Changed or unavailable; run a new scan"
             }
-        } else if reviewed.state == crate::workspace_revision::RepositoryState::NotGit {
+        } else if reviewed.state == crate::codebase_revision::RepositoryState::NotGit {
             if es {
                 "Sin repositorio Git"
             } else {
@@ -972,7 +972,7 @@ pub(super) fn workspace_revisions_markdown(
             });
         out.push_str(&format!(
             "| `{}` | `{}` | `{}` | {} |\n",
-            inline(&reviewed.workspace),
+            inline(&reviewed.codebase),
             inline(branch),
             inline(reviewed.commit.as_deref().unwrap_or(missing)),
             state

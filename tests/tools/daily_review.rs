@@ -109,7 +109,7 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
             "key": "example/project#1",
             "updated_at": updated,
             "context_sha256": plan.targets[0].context_sha256,
-            "workspace_revisions": [],
+            "codebase_revisions": [],
             "reviewed_instance_ids": plan.targets[0].instance_ids,
             "assessment": "review",
             "rationale": "Synthetic report of token reuse; check the audience validation in the monitored version."
@@ -118,7 +118,7 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
             "key": "example/project#3",
             "updated_at": updated,
             "context_sha256": plan.targets[0].context_sha256,
-            "workspace_revisions": [],
+            "codebase_revisions": [],
             "reviewed_instance_ids": plan.targets[0].instance_ids,
             "assessment": "ignore",
             "rationale": "The synthetic dependency is not in the monitored inventory."
@@ -466,8 +466,8 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
 
     queue::record(&store, &case_id, queue::WorkState::InProgress, None).unwrap();
     let mut changed_revision = original.clone();
-    changed_revision.workspace_revisions =
-        vec![vulnbell::workspace_revision::capture_path(directory.path())];
+    changed_revision.codebase_revisions =
+        vec![vulnbell::codebase_revision::capture_path(directory.path())];
     store.save_case(&changed_revision).unwrap();
     let reopened = queue::list(&store, 20, 0, true).unwrap();
     assert!(reopened.items[0].previous_progress_stale);

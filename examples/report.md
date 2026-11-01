@@ -17,7 +17,7 @@ Counts refer to cases. Incomplete source or inventory checks are listed separate
 |---|---|---|
 | @nestjs/core (npm) | 10.4.8 | tracked; declared |
 
-No workspace or deployment inventory was provided.
+No codebase or deployment inventory was provided.
 
 ## Actionable
 
@@ -28,12 +28,12 @@ No workspace or deployment inventory was provided.
 - **Problem:** `SseStream._transform()` accepts CR/LF in `message.type` and `message.id`. An application that maps untrusted values to those fields can forge SSE fields or events.
 - **Required conditions:** the application uses NestJS SSE and assigns untrusted data to `type` or `id`. Ordinary request input does not reach these fields automatically.
 - **Fix:** 11.1.18 removes CR/LF. Confirm branch compatibility or a supported backport before upgrading a 10.x application.
-- **Project impact:** **needs evidence** · low confidence. The library behavior is confirmed, but deployment, affected-feature use, input reachability, and mitigation are unknown because this monitor has no workspace or deployment evidence.
+- **Project impact:** **needs evidence** · low confidence. The library behavior is confirmed, but deployment, affected-feature use, input reachability, and mitigation are unknown because this monitor has no codebase or deployment evidence.
 - **Action:** if 10.4.8 is deployed, check the five impact questions. Prioritize the update if the affected fields receive untrusted data; otherwise keep it in the normal upgrade plan.
 
 | Project condition | Answer | Evidence |
 |---|---|---|
-| Exact artifact deployed | Unknown | No workspace, SBOM, or deployment record |
+| Exact artifact deployed | Unknown | No codebase, SBOM, or deployment record |
 | Affected SSE fields used | Unknown | No project source |
 | Untrusted input reaches those fields | Unknown | No project source or data-flow evidence |
 | Advisory conditions present | Unknown | No project configuration |
@@ -66,5 +66,5 @@ The test ran as a non-root user in Microsandbox 0.7.11 with network denied and n
 
 | Source | Gap | Effect |
 |---|---|---|
-| Deployment | No workspace, SBOM, or deployment record | Project exposure cannot be claimed |
+| Deployment | No codebase, SBOM, or deployment record | Project exposure cannot be claimed |
 | NVD mapping | No validated CPE for this npm instance | NVD is not used for version applicability |

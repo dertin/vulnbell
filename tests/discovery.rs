@@ -17,7 +17,7 @@ fn project() -> (tempfile::TempDir, std::path::PathBuf, Profile, Store) {
     let id = uuid::Uuid::new_v4().to_string();
     fs::write(
         &path,
-        format!("schema: 1\nproject_id: {id}\nname: general-discovery\nworkspaces: [workspace]\n"),
+        format!("schema: 1\nproject_id: {id}\nname: general-discovery\ncodebases: [workspace]\n"),
     )
     .unwrap();
     let profile = profile::load(&path).unwrap();
@@ -49,7 +49,7 @@ fn generated_directories_are_pruned_in_both_discovery_paths() {
     }
     fs::write(workspace.join("requirements.txt"), "visible-package==1.0\n").unwrap();
     let page = discovery::plan(&profile, &path, &store, 20).unwrap();
-    assert!(page.workspace.is_empty());
+    assert!(page.codebase_files.is_empty());
     let gaps = discovery::gaps(&profile, &path, &store, "", 100).unwrap();
     for name in [
         "node_modules",
@@ -90,7 +90,7 @@ fn an_explicit_codebase_inside_generated_output_is_not_scanned() {
     let output = directory.path().join("workspace/target/generated");
     fs::create_dir_all(&output).unwrap();
     fs::write(output.join("requirements.txt"), "must-not-be-read==1.0\n").unwrap();
-    profile.workspaces = vec!["workspace/target/generated".into()];
+    profile.codebases = vec!["workspace/target/generated".into()];
     fs::write(&path, serde_saphyr::to_string(&profile).unwrap()).unwrap();
     let snapshot = vulnbell::engine::scan(&profile, &path, true).unwrap();
     assert!(snapshot.instances.is_empty());
@@ -102,15 +102,15 @@ fn an_explicit_codebase_inside_generated_output_is_not_scanned() {
     );
     assert!(discovery::plan(&profile, &path, &store, 20).is_err());
     assert_eq!(
-        vulnbell::workspace_revision::capture_path(&output).state,
-        vulnbell::workspace_revision::RepositoryState::Unavailable
+        vulnbell::codebase_revision::capture_path(&output).state,
+        vulnbell::codebase_revision::RepositoryState::Unavailable
     );
     cleanup(store, &profile);
 }
 
 fn review(page: &discovery::DiscoveryPlan, packages: Vec<PackageObservation>) -> DiscoveryBatch {
-    let chunk = &page.workspace[0];
-    DiscoveryBatch::Workspace {
+    let chunk = &page.codebase_files[0];
+    DiscoveryBatch::Codebase {
         schema_version: 1,
         project_id: page.project_id.clone(),
         scope_sha256: page.scope_sha256.clone(),
@@ -206,7 +206,7 @@ fn requirements_with_credentials_are_not_exported_even_beyond_the_first_chunk() 
     )
     .unwrap();
     let page = discovery::plan(&profile, &path, &store, 20).unwrap();
-    assert!(page.workspace.is_empty());
+    assert!(page.codebase_files.is_empty());
     assert_eq!(page.summary.files_unavailable, 3);
     assert!(
         !serde_json::to_string(&page)
@@ -232,7 +232,7 @@ fn requirements_never_export_private_names_or_local_paths_to_discovery() {
         fs::write(workspace.join(name), content).unwrap();
     }
     let page = discovery::plan(&profile, &path, &store, 20).unwrap();
-    assert!(page.workspace.is_empty());
+    assert!(page.codebase_files.is_empty());
     assert_eq!(page.summary.files_unavailable, 4);
     assert!(
         !serde_json::to_string(&page)
@@ -257,10 +257,10 @@ fn requirements_includes_keep_arbitrary_paths_local_before_any_agent_page() {
     .unwrap();
     fs::write(workspace.join("prod.json"), "--index-url https://user:synthetic-secret@example.invalid/simple\nsynthetic-private==1.0\n").unwrap();
     let first = discovery::plan(&profile, &path, &store, 20).unwrap();
-    assert!(first.workspace.is_empty());
+    assert!(first.codebase_files.is_empty());
     assert!(first.summary.directories_pending > 0);
     let page = discovery::plan(&profile, &path, &store, 20).unwrap();
-    assert!(page.workspace.is_empty());
+    assert!(page.codebase_files.is_empty());
     assert!(page.summary.files_unavailable >= 2);
     let serialized = serde_json::to_string(&page).unwrap();
     assert!(!serialized.contains("synthetic-secret"));
@@ -275,7 +275,7 @@ fn requirements_include_guard_blocks_cross_codebase_paths() {
     let id = uuid::Uuid::new_v4();
     fs::write(
         &path,
-        format!("schema: 1\nproject_id: {id}\nname: isolated\nworkspaces: [workspace, other]\n"),
+        format!("schema: 1\nproject_id: {id}\nname: isolated\ncodebases: [workspace, other]\n"),
     )
     .unwrap();
     let profile = profile::load(&path).unwrap();
@@ -296,7 +296,7 @@ fn requirements_include_guard_blocks_cross_codebase_paths() {
     )
     .unwrap();
     let page = discovery::plan(&profile, &path, &isolated_store, 20).unwrap();
-    assert!(page.workspace.is_empty());
+    assert!(page.codebase_files.is_empty());
     assert!(
         !serde_json::to_string(&page)
             .unwrap()
@@ -319,7 +319,7 @@ fn bare_relative_python_source_keeps_its_codebase_local() {
     )
     .unwrap();
     let page = discovery::plan(&profile, &path, &store, 20).unwrap();
-    assert!(page.workspace.is_empty());
+    assert!(page.codebase_files.is_empty());
     let json = serde_json::to_string(&page).unwrap();
     assert!(!json.contains("synthetic-private-name"));
     assert!(!json.contains("synthetic-canary"));
@@ -351,7 +351,7 @@ fn dotted_python_local_sources_do_not_leave_the_codebase() {
         )
         .unwrap();
         let page = discovery::plan(&profile, &path, &store, 20).unwrap();
-        assert!(page.workspace.is_empty(), "{requirement}");
+        assert!(page.codebase_files.is_empty(), "{requirement}");
         let json = serde_json::to_string(&page).unwrap();
         assert!(!json.contains("synthetic-canary"));
         assert!(!json.contains("synthetic-private-name"));
@@ -397,7 +397,7 @@ fn local_python_archives_do_not_leave_the_codebase() {
         )
         .unwrap();
         let page = discovery::plan(&profile, &path, &store, 20).unwrap();
-        assert!(page.workspace.is_empty(), "{requirement}");
+        assert!(page.codebase_files.is_empty(), "{requirement}");
         let json = serde_json::to_string(&page).unwrap();
         assert!(!json.contains("synthetic-canary"));
         assert!(!json.contains("synthetic-private-name"));
@@ -421,7 +421,7 @@ fn requirements_comments_do_not_block_generic_discovery() {
     .unwrap();
     let page = discovery::plan(&profile, &path, &store, 20).unwrap();
     assert!(
-        page.workspace
+        page.codebase_files
             .iter()
             .any(|item| item.path.ends_with("dependencies.json"))
     );
@@ -439,7 +439,7 @@ fn requirements_preflight_budget_keeps_the_monitor_local() {
     .unwrap();
     fs::write(workspace.join("dependency.json"), "synthetic-private-value").unwrap();
     let page = discovery::plan(&profile, &path, &store, 20).unwrap();
-    assert!(page.workspace.is_empty());
+    assert!(page.codebase_files.is_empty());
     assert_eq!(page.summary.files_unavailable, 2);
     assert!(
         !serde_json::to_string(&page)
@@ -490,7 +490,7 @@ fn new_requirements_include_retires_previous_agent_observations_before_rescan() 
     )
     .unwrap();
     let before_rescan = discovery::plan(&profile, &path, &store, 20).unwrap();
-    assert!(before_rescan.workspace.is_empty());
+    assert!(before_rescan.codebase_files.is_empty());
     assert!(
         before_rescan
             .components
@@ -509,7 +509,7 @@ fn new_requirements_include_retires_previous_agent_observations_before_rescan() 
             .any(|item| item.reference == "pkg:pypi/requests")
     );
     let blocked = discovery::plan(&profile, &path, &store, 20).unwrap();
-    assert!(blocked.workspace.is_empty());
+    assert!(blocked.codebase_files.is_empty());
     assert!(
         blocked
             .components
@@ -520,7 +520,7 @@ fn new_requirements_include_retires_previous_agent_observations_before_rescan() 
     let reopened = discovery::plan(&profile, &path, &store, 20).unwrap();
     assert!(
         reopened
-            .workspace
+            .codebase_files
             .iter()
             .any(|item| item.path == "dependencies.manifest")
     );
@@ -540,7 +540,7 @@ fn include_guard_retires_observations_from_an_unavailable_later_chunk() {
     let page = discovery::plan(&profile, &path, &store, 20).unwrap();
     discovery::import(&profile, &path, &mut store, review(&page, vec![package()])).unwrap();
     let next = discovery::plan(&profile, &path, &store, 20).unwrap();
-    assert!(next.workspace.is_empty());
+    assert!(next.codebase_files.is_empty());
     assert_eq!(next.summary.files_unavailable, 1);
     fs::write(
         workspace.join("b/requirements.txt"),
@@ -597,7 +597,7 @@ fn composer_private_packages_stay_local_even_when_all_trackers_are_selected() {
         && row.state == vulnbell::model::CoverageState::Unsupported));
 
     let page = discovery::plan(&profile, &path, &store, 20).unwrap();
-    assert!(page.workspace.is_empty());
+    assert!(page.codebase_files.is_empty());
     assert!(page.components.is_empty());
     assert_eq!(page.summary.files_unavailable, 1);
     let exported = serde_json::to_string(&page).unwrap();
@@ -656,7 +656,7 @@ fn requirements_with_includes_are_not_exported_as_public_package_evidence() {
     )
     .unwrap();
     let page = discovery::plan(&profile, &path, &store, 20).unwrap();
-    assert!(page.workspace.is_empty());
+    assert!(page.codebase_files.is_empty());
     assert_eq!(page.summary.files_unavailable, 1);
     cleanup(store, &profile);
 }
@@ -773,7 +773,7 @@ fn requirements_are_kept_local_and_reinventoried_after_changes() {
     assert_eq!(item.origin, vulnbell::model::Origin::Declared);
     assert_eq!(item.resolved_version.as_deref(), Some("2.31.0"));
     let page = discovery::plan(&profile, &path, &store, 1).unwrap();
-    assert!(page.workspace.is_empty());
+    assert!(page.codebase_files.is_empty());
     assert_eq!(page.summary.files_unavailable, 1);
     fs::write(&file, "requests==2.32.0\n").unwrap();
     let updated = vulnbell::engine::scan(&profile, &path, true).unwrap();
@@ -928,7 +928,7 @@ fn adding_a_workspace_keeps_reviews_of_the_existing_workspace() {
     fs::write(
         &path,
         format!(
-            "schema: 1\nproject_id: {}\nname: general-discovery\nworkspaces: [workspace, extra]\n",
+            "schema: 1\nproject_id: {}\nname: general-discovery\ncodebases: [workspace, extra]\n",
             profile.project_id
         ),
     )
@@ -939,7 +939,7 @@ fn adding_a_workspace_keeps_reviews_of_the_existing_workspace() {
         page.scope_sha256,
         discovery::scope(&profile, &path).unwrap()
     );
-    assert!(page.workspace.is_empty());
+    assert!(page.codebase_files.is_empty());
     assert_eq!(
         (page.summary.files_pending, page.summary.files_reviewed),
         (0, 1)

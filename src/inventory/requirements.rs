@@ -35,7 +35,7 @@ fn nesting_within_limit(line: &str) -> bool {
 
 pub(super) fn parse(
     bytes: &[u8],
-    workspace: &str,
+    codebase: &str,
     path: &str,
     budget: usize,
 ) -> Result<(Vec<Instance>, String)> {
@@ -171,7 +171,7 @@ pub(super) fn parse(
             .entry((reference.clone(), requested.clone()))
             .or_default();
         let id = crate::digest(
-            format!("requirement:{workspace:?}:{path:?}:{reference:?}:{requested:?}:{occurrence}")
+            format!("requirement:{codebase:?}:{path:?}:{reference:?}:{requested:?}:{occurrence}")
                 .as_bytes(),
         );
         *occurrence += 1;
@@ -185,8 +185,8 @@ pub(super) fn parse(
                 path: Some(path.to_owned()),
                 sha256: hash.clone(),
                 observed_at: crate::now(),
-                workspace: Some(workspace.to_owned()),
-                workspace_context_sha256: None,
+                codebase: Some(codebase.to_owned()),
+                codebase_context_sha256: None,
                 direct: None,
                 resolution: (!requirement.marker.is_true())
                     .then(|| "environment marker not evaluated".into()),

@@ -85,7 +85,7 @@ fn multi_component_review_requires_an_explicit_scope() {
             project_id: "0de0a8e7-f1a4-4bdc-a198-422b90bbbd84".into(),
             recheck: false,
             snapshot_id: "snapshot".into(),
-            workspace_revisions: Vec::new(),
+            codebase_revisions: Vec::new(),
             targets: vec![super::hits::PreparedTarget {
                 target,
                 collected: empty_collected(upstream),
@@ -107,7 +107,7 @@ fn multi_component_review_requires_an_explicit_scope() {
         recheck: false,
         decisions: vec![ItemDecision {
             reviewed_instance_ids: vec!["instance-1".into()],
-            workspace_revisions: Vec::new(),
+            codebase_revisions: Vec::new(),
             upstream: upstream.into(),
             key: "example/project#1".into(),
             updated_at: "2026-10-20T10:00:00+00:00".into(),
@@ -193,7 +193,7 @@ fn recheck_skips_decisions_from_the_current_pass() {
         project_id: "0de0a8e7-f1a4-4bdc-a198-422b90bbbd84".into(),
         snapshot_id: "snapshot".into(),
         recheck: true,
-        workspace_revisions: vec![],
+        codebase_revisions: vec![],
         targets: vec![super::hits::PreparedTarget {
             target,
             collected: empty_collected(upstream),
@@ -217,7 +217,7 @@ fn recheck_skips_decisions_from_the_current_pass() {
             key: item.key.clone(),
             updated_at: item.updated_at.clone(),
             context_sha256: item.context_sha256.clone(),
-            workspace_revisions: vec![],
+            codebase_revisions: vec![],
             assessment: Assessment::Review,
             not_applicable_reason: None,
             rationale: "Review the synthetic claim.".into(),
@@ -676,7 +676,7 @@ fn truncated_identifiers_require_review_for_releases_and_dependency_updates() {
         project_id: "0de0a8e7-f1a4-4bdc-a198-422b90bbbd84".into(),
         recheck: false,
         snapshot_id: "snapshot".into(),
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         targets: vec![super::hits::PreparedTarget {
             target: target("https://github.com/example/project"),
             collected,
@@ -776,7 +776,7 @@ fn repository_advisories_are_evaluated_against_the_target_instances() {
 fn decisions_are_validated_and_stale_ones_are_reported() {
     let decision = ItemDecision {
         reviewed_instance_ids: vec!["instance-1".into()],
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         upstream: "https://github.com/example/project".into(),
         key: "example/project#7".into(),
         updated_at: "2026-10-20T10:00:00Z".into(),

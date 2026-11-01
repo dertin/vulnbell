@@ -169,7 +169,7 @@ fn run() -> Result<i32> {
                 schema: 1,
                 project_id: uuid::Uuid::new_v4(),
                 name: "my-monitor".into(),
-                workspaces: Vec::new(),
+                codebases: Vec::new(),
                 components: Vec::new(),
                 discovery: Default::default(),
                 research: Default::default(),
@@ -191,7 +191,7 @@ fn run() -> Result<i32> {
             let store = Store::open(&profile.project_id.to_string())?;
             store.register_project(&profile.name, &output)?;
             emit(
-                &serde_json::json!({"schema_version":1,"project_id":profile.project_id,"profile":output,"warning":"empty_scope: add components/workspaces before scan"}),
+                &serde_json::json!({"schema_version":1,"project_id":profile.project_id,"profile":output,"warning":"empty_scope: add components/codebases before scan"}),
             )?;
         }
         Commands::Schema { contract, .. } => {
@@ -311,7 +311,7 @@ fn run() -> Result<i32> {
                 || validation_blocker.is_some()
                 || clear_validation_blocker.is_some()
             {
-                store.ensure_workspace_current()?;
+                store.ensure_codebases_current()?;
             }
             let mut case = store.case(&id)?;
             let evidence_before = case.evidence.len();

@@ -41,7 +41,7 @@ pub(super) enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Create a valid empty project; does not require a local workspace.
+    /// Create a valid empty project; does not require a local codebase.
     Init {
         #[arg(long)]
         output: PathBuf,
@@ -87,7 +87,7 @@ pub(super) enum Commands {
         /// Fetch and register a public research link as context, never as an attestation.
         #[arg(long)]
         evidence_url: Option<String>,
-        /// Register a reviewed local note or result as evidence; do not include secrets or raw workspaces.
+        /// Register a reviewed local note or result as evidence; do not include secrets or raw codebases.
         #[arg(long)]
         evidence_file: Option<PathBuf>,
         /// Record why a needed sandbox check cannot run; this is context, never proof of safety.
@@ -160,7 +160,7 @@ pub(super) enum Commands {
         evidence_url: Option<String>,
         #[arg(long,conflicts_with_all=["from","evidence_url"])]
         gaps: bool,
-        /// Reopen a reviewed workspace-relative file so its packages are reviewed again.
+        /// Reopen a reviewed codebase-relative file so its packages are reviewed again.
         #[arg(long,conflicts_with_all=["from","evidence_url","gaps"])]
         reopen: Option<String>,
         /// Map pending components from public registry records; `--limit` counts packages (1..500).

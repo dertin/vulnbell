@@ -50,8 +50,8 @@ pub struct ItemDecision {
     pub updated_at: String,
     /// Context fingerprint returned by tools hits for the exact reviewed target.
     pub context_sha256: String,
-    /// Workspace revisions reported by `tools hits` for this reading.
-    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
+    /// Codebase revisions reported by `tools hits` for this reading.
+    pub codebase_revisions: Vec<crate::codebase_revision::CodebaseRevision>,
     pub assessment: Assessment,
     /// Required with `not_applicable`; forbidden otherwise.
     #[serde(default)]
@@ -167,7 +167,7 @@ impl ResearchDecisions {
         &self,
         item: &Item,
         target: &ResearchTarget,
-        revisions: &[crate::workspace_revision::WorkspaceRevision],
+        revisions: &[crate::codebase_revision::CodebaseRevision],
     ) -> DecisionLookup<'_> {
         match self
             .decisions
@@ -177,8 +177,8 @@ impl ResearchDecisions {
             Some(decision)
                 if super::same_instant(&decision.updated_at, &item.updated_at)
                     && decision.context_sha256 == target.context_sha256
-                    && crate::workspace_revision::same_revisions(
-                        &decision.workspace_revisions,
+                    && crate::codebase_revision::same_revisions(
+                        &decision.codebase_revisions,
                         revisions,
                     ) =>
             {
@@ -196,7 +196,7 @@ struct DecisionPacket {
     project_id: String,
     snapshot_id: String,
     recheck: bool,
-    workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
+    codebase_revisions: Vec<crate::codebase_revision::CodebaseRevision>,
     review: Vec<DecisionPacketItem>,
 }
 
@@ -211,7 +211,7 @@ struct DecisionPacketItem {
 /// Save a small batch of decisions without advancing the upstream checkpoint.
 pub fn save_decision(store: &Store, packet: &Path, from: &Path, output: &Path) -> Result<()> {
     let _lock = store.lock()?;
-    store.ensure_workspace_current()?;
+    store.ensure_codebases_current()?;
     for input in [packet, from] {
         if input == output
             || input
@@ -235,17 +235,17 @@ pub fn save_decision(store: &Store, packet: &Path, from: &Path, output: &Path) -
         || input.project_id != plan.project_id
         || input.recheck != packet.recheck
         || packet.snapshot_id != plan.snapshot_id
-        || !crate::workspace_revision::same_revisions(
-            &packet.workspace_revisions,
-            &plan.workspace_revisions,
+        || !crate::codebase_revision::same_revisions(
+            &packet.codebase_revisions,
+            &plan.codebase_revisions,
         )
     {
         bail!("hits packet or decision belongs to another project, snapshot or codebase revision");
     }
     for decision in &input.decisions {
-        if !crate::workspace_revision::same_revisions(
-            &decision.workspace_revisions,
-            &plan.workspace_revisions,
+        if !crate::codebase_revision::same_revisions(
+            &decision.codebase_revisions,
+            &plan.codebase_revisions,
         ) {
             bail!("decision belongs to another codebase revision");
         }
@@ -342,7 +342,7 @@ pub fn draft(
         let review = target_events(
             prepared_target,
             decisions,
-            &prepared.workspace_revisions,
+            &prepared.codebase_revisions,
             &mut events,
             &mut undecided,
         )?;
@@ -378,7 +378,7 @@ pub fn draft(
         );
     }
     for event in &mut events {
-        event.workspace_revisions = prepared.workspace_revisions.clone();
+        event.codebase_revisions = prepared.codebase_revisions.clone();
     }
     let mut assessments: BTreeMap<String, usize> = BTreeMap::new();
     for event in &events {
@@ -420,7 +420,7 @@ struct TargetReview {
 fn target_events(
     prepared_target: &PreparedTarget,
     decisions: &ResearchDecisions,
-    revisions: &[crate::workspace_revision::WorkspaceRevision],
+    revisions: &[crate::codebase_revision::CodebaseRevision],
     events: &mut Vec<ResearchEvent>,
     undecided: &mut Vec<String>,
 ) -> Result<TargetReview> {
@@ -528,7 +528,7 @@ fn event(
         EXCERPT_CHARS,
     );
     Ok(ResearchEvent {
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         upstream: target.upstream.clone(),
         instance_ids: if reading.instance_ids.is_empty() {
             target.instance_ids.clone()

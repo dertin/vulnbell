@@ -51,7 +51,7 @@ def read(root, relative, format_name, offset, limit):
     if offset < 0 or not 1 <= limit <= 1000:
         raise ValueError("offset must be nonnegative and limit must be 1..1000")
     if relative.is_absolute() or not relative.parts or ".." in relative.parts:
-        raise ValueError("select a relative path inside the authorized workspace")
+        raise ValueError("select a relative path inside the authorized codebase")
     root = root.resolve(strict=True)
     path = root
     for part in relative.parts:

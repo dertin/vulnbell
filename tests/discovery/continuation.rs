@@ -23,7 +23,7 @@ fn excluding_a_directory_leaves_siblings_whose_names_differ_only_by_wildcard_cha
         .unwrap();
     let page = discovery::plan(&profile, &path, &store, 20).unwrap();
     let pending: Vec<&str> = page
-        .workspace
+        .codebase_files
         .iter()
         .map(|chunk| chunk.path.as_str())
         .collect();
@@ -59,7 +59,7 @@ fn ignored_root_files_do_not_hide_nested_inputs() {
     fs::write(workspace.join("logo.png"), [0u8, 1, 2]).unwrap();
     loop {
         let page = discovery::plan(&profile, &path, &store, 1).unwrap();
-        if page.workspace.is_empty() {
+        if page.codebase_files.is_empty() {
             break;
         }
         discovery::import(&profile, &path, &mut store, review(&page, vec![package()])).unwrap();
@@ -77,7 +77,7 @@ fn ignored_root_files_do_not_hide_nested_inputs() {
             .any(|gap| { gap.path == "requirements.txt" && gap.state == "excluded" })
     );
     assert!(
-        page.workspace
+        page.codebase_files
             .iter()
             .all(|slice| slice.path != "app/requirements.txt")
     );
@@ -113,7 +113,7 @@ fn requirements_keep_partial_inventory_coverage_after_agent_review() {
             .any(|row| { row.detail == vulnbell::inventory::NO_NATIVE_INVENTORY })
     );
     let page = discovery::plan(&profile, &path, &store, 1).unwrap();
-    assert!(page.workspace.is_empty());
+    assert!(page.codebase_files.is_empty());
     assert_eq!(page.summary.files_unavailable, 1);
     let reviewed = vulnbell::engine::scan(&profile, &path, true).unwrap();
     assert!(reviewed.coverage.iter().any(|row| row.source == "inventory"
@@ -135,7 +135,7 @@ fn removed_inputs_are_retired_and_recreated_inputs_are_reviewed_again() {
     fs::create_dir(&nested).unwrap();
     fs::write(nested.join("dependencies.txt"), "requests==2.31.0\n").unwrap();
     let mut page = discovery::plan(&profile, &path, &store, 1).unwrap();
-    while page.workspace.is_empty() {
+    while page.codebase_files.is_empty() {
         page = discovery::plan(&profile, &path, &store, 1).unwrap();
     }
     discovery::import(&profile, &path, &mut store, review(&page, vec![package()])).unwrap();
@@ -161,12 +161,12 @@ fn removed_inputs_are_retired_and_recreated_inputs_are_reviewed_again() {
     fs::write(nested.join("dependencies.txt"), "requests==2.31.0\n").unwrap();
     let mut page = discovery::plan(&profile, &path, &store, 1).unwrap();
     for _ in 0..10 {
-        if !page.workspace.is_empty() {
+        if !page.codebase_files.is_empty() {
             break;
         }
         page = discovery::plan(&profile, &path, &store, 1).unwrap();
     }
-    assert_eq!(page.workspace.len(), 1);
+    assert_eq!(page.codebase_files.len(), 1);
     discovery::import(&profile, &path, &mut store, review(&page, vec![package()])).unwrap();
     let snapshot = vulnbell::engine::scan(&profile, &path, true).unwrap();
     assert_eq!(snapshot.instances.len(), 1);
@@ -214,8 +214,8 @@ fn explicit_opt_out_stops_general_discovery_without_disabling_native_inventory()
     fs::write(&path, serde_saphyr::to_string(&profile).unwrap()).unwrap();
     let page = discovery::plan(&profile, &path, &store, 10).unwrap();
     assert!(!page.enabled);
-    assert!(page.workspace.is_empty());
-    let batch = DiscoveryBatch::Workspace {
+    assert!(page.codebase_files.is_empty());
+    let batch = DiscoveryBatch::Codebase {
         schema_version: 1,
         project_id: page.project_id,
         scope_sha256: page.scope_sha256,
@@ -262,9 +262,9 @@ fn paginated_frontier_covers_large_directories_and_deep_projects_across_restarts
         if page.summary.complete {
             break;
         }
-        if !page.workspace.is_empty() {
+        if !page.codebase_files.is_empty() {
             let reviews = page
-                .workspace
+                .codebase_files
                 .iter()
                 .map(|chunk| FileReview {
                     file_id: chunk.file_id.clone(),
@@ -275,12 +275,12 @@ fn paginated_frontier_covers_large_directories_and_deep_projects_across_restarts
                     packages: vec![],
                 })
                 .collect::<Vec<_>>();
-            reviewed += page.workspace.len();
+            reviewed += page.codebase_files.len();
             discovery::import(
                 &profile,
                 &path,
                 &mut store,
-                DiscoveryBatch::Workspace {
+                DiscoveryBatch::Codebase {
                     schema_version: 1,
                     project_id: page.project_id,
                     scope_sha256: page.scope_sha256,
@@ -312,16 +312,16 @@ fn large_text_is_chunked_and_partial_review_never_advances_its_checkpoint() {
     )
     .unwrap();
     let page = discovery::plan(&profile, &path, &store, 1).unwrap();
-    assert_eq!(page.workspace[0].end, 65536);
+    assert_eq!(page.codebase_files[0].end, 65536);
     let mut partial = review(&page, vec![]);
-    if let DiscoveryBatch::Workspace { reviews, .. } = &mut partial {
+    if let DiscoveryBatch::Codebase { reviews, .. } = &mut partial {
         reviews[0].coverage = ReviewCoverage::Partial;
     }
     assert!(discovery::import(&profile, &path, &mut store, partial).is_err());
     assert_eq!(
         discovery::plan(&profile, &path, &store, 1)
             .unwrap()
-            .workspace[0]
+            .codebase_files[0]
             .offset,
         0
     );
@@ -329,7 +329,7 @@ fn large_text_is_chunked_and_partial_review_never_advances_its_checkpoint() {
     assert_eq!(
         discovery::plan(&profile, &path, &store, 1)
             .unwrap()
-            .workspace[0]
+            .codebase_files[0]
             .offset,
         65536
     );
@@ -362,7 +362,7 @@ fn private_files_binary_inputs_and_ssrf_are_not_silently_marked_reviewed() {
     .unwrap();
     fs::write(directory.path().join("workspace/program.bin"), [0, 1, 2, 3]).unwrap();
     let page = discovery::plan(&profile, &path, &store, 20).unwrap();
-    assert!(page.workspace.is_empty());
+    assert!(page.codebase_files.is_empty());
     assert_eq!(page.summary.files_excluded, 3);
     assert_eq!(page.summary.files_unavailable, 2);
     assert!(!page.summary.complete);
@@ -382,7 +382,7 @@ fn discovery_never_follows_workspace_symlinks() {
     )
     .unwrap();
     let page = discovery::plan(&profile, &path, &store, 20).unwrap();
-    assert!(page.workspace.is_empty());
+    assert!(page.codebase_files.is_empty());
     assert_eq!(page.summary.files_excluded, 1);
     assert!(path.exists());
     cleanup(store, &profile);
@@ -445,7 +445,7 @@ fn ignored_output_and_non_declaring_files_are_closed_with_reasons_and_reviews_su
 
     let page = discovery::plan(&profile, &path, &store, 20).unwrap();
     let mut reviewed: Vec<&str> = page
-        .workspace
+        .codebase_files
         .iter()
         .map(|chunk| chunk.path.as_str())
         .collect();
@@ -481,12 +481,12 @@ fn ignored_output_and_non_declaring_files_are_closed_with_reasons_and_reviews_su
         && !gap.path.starts_with("node_modules/")));
 
     let requirements = page
-        .workspace
+        .codebase_files
         .iter()
         .position(|chunk| chunk.path == "dependencies.txt")
         .unwrap();
     let only_requirements = discovery::DiscoveryPlan {
-        workspace: vec![page.workspace.into_iter().nth(requirements).unwrap()],
+        codebase_files: vec![page.codebase_files.into_iter().nth(requirements).unwrap()],
         ..page
     };
     discovery::import(
@@ -506,7 +506,7 @@ fn ignored_output_and_non_declaring_files_are_closed_with_reasons_and_reviews_su
     let after_edit = discovery::plan(&edited, &path, &store, 20).unwrap();
     assert!(
         after_edit
-            .workspace
+            .codebase_files
             .iter()
             .all(|chunk| chunk.path != "dependencies.txt")
     );
@@ -516,7 +516,7 @@ fn ignored_output_and_non_declaring_files_are_closed_with_reasons_and_reviews_su
     let reopened = discovery::plan(&edited, &path, &store, 20).unwrap();
     assert!(
         reopened
-            .workspace
+            .codebase_files
             .iter()
             .any(|chunk| chunk.path == "dependencies.txt")
     );
@@ -531,10 +531,15 @@ fn ignored_output_and_non_declaring_files_are_closed_with_reasons_and_reviews_su
     let changed = discovery::plan(&edited, &path, &store, 20).unwrap();
     assert!(
         changed
-            .workspace
+            .codebase_files
             .iter()
             .any(|chunk| chunk.path == "tool.py")
     );
-    assert!(changed.workspace.iter().all(|chunk| chunk.path != "app.ts"));
+    assert!(
+        changed
+            .codebase_files
+            .iter()
+            .all(|chunk| chunk.path != "app.ts")
+    );
     cleanup(store, &edited);
 }

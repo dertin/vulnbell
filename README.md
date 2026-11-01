@@ -14,11 +14,11 @@ Tell the agent what to monitor in any of these ways:
 
 A project directory is optional. Without one, VulnBell evaluates the declared software against its published versions and general exposure conditions.
 
-Native parsers extract supported lockfiles first. General discovery is enabled by default for other languages, formats and software: the agent identifies the package system, follows its official documentation, imports evidence-linked dependency observations and maps public sources. Large workspaces are reviewed through resumable pages. Ask the agent to disable this mode, or set `discovery: off` in the profile, to use only native extraction and already configured sources.
+Native parsers extract supported lockfiles first. General discovery is enabled by default for other languages, formats and software: the agent identifies the package system, follows its official documentation, imports evidence-linked dependency observations and maps public sources. Large codebases are reviewed through resumable pages. Ask the agent to disable this mode, or set `discovery: off` in the profile, to use only native extraction and already configured sources.
 
 Python `requirements.txt` declarations are inventoried locally without assuming a public package source. Recognized `requirements*.txt`/`.in` and `constraints*.txt`/`.in` files are not sent to the discovery agent; includes and uncertain sources keep generic discovery local for that monitor. Pip inputs used directly under other names are not automatically recognized. After verifying a package's public identity and authorization to disclose it, explicitly add its public PURL and version to the monitor for advisory checks.
 
-For Git workspaces, scans and reports record the reviewed branch, full commit and local-change fingerprint. A changed checkout requires a new scan before recording further review results. Private paths, ignored files, untracked dependency/build output and submodule contents are excluded from the fingerprint and require separate review when in scope. Tracked changes remain bound even inside output directories.
+For Git codebases, scans and reports record the reviewed branch, full commit and local-change fingerprint. A changed checkout requires a new scan before recording further review results. Private paths, ignored files, untracked dependency/build output and submodule contents are excluded from the fingerprint and require separate review when in scope. Tracked changes remain bound even inside output directories.
 
 VulnBell checks published advisories and CVE data, including OSV, GitHub Security Advisories, RustSec, CVE Records, NVD, and CISA KEV. Unlike a CVE-only monitor, the agent also reviews recent upstream issues, pull requests, merge requests, bug reports, fixes, and release information. This can surface credible security signals before a CVE is published. These early signals remain untrusted until the available evidence supports them.
 
@@ -66,7 +66,7 @@ The Skill uses the Agent Skills format. Its default location is `$HOME/.agents/s
 
 For the `gh`-based GitHub tracker workflow, sign in with `gh auth login`. Advisory scans can also make anonymous requests, subject to lower rate limits. VulnBell reads the active GitHub CLI credential into memory when needed; it does not print it or add it to the agent environment. An explicitly configured `GITHUB_TOKEN` takes precedence. `vulnbell doctor --json` reports whether a credential is available and its source; it does not verify network access or token permissions.
 
-The local agent reviews public upstream evidence and available project codebases. A codebase is a local source tree selected for monitoring; the VulnBell workspace is where monitor artifacts are kept. Profile and JSON fields use `workspaces` for codebase paths. The CLI keeps the inventory, evidence, impact answers, sandbox attestations, and reports as auditable local data.
+The local agent reviews public upstream evidence and available project codebases. A codebase is a local source tree selected for monitoring; the VulnBell workspace is where monitor files and reports are kept. The profile's `codebases` field lists the source paths to monitor. The CLI keeps the inventory, evidence, impact answers, sandbox attestations, and reports as auditable local data.
 
 An interactive agent may need permission to read a codebase outside its current workspace. Scheduled Codex reviews use the codebase paths configured in the monitor; if access is unavailable, the report keeps the impact open. A monitor can also track software without a local codebase.
 
@@ -126,7 +126,7 @@ vulnbell report --project vulnbell.yaml --audience cyber --pdf report.pdf > repo
 
 Use `--pdf-browser <executable>` if the browser is not found automatically. Use `--from-markdown <edited.md>` with `--pdf` to export a customized report; the PDF labels that text as user-supplied. The appendix includes registered review notes, textual sandbox output and evidence metadata, not full external responses or binary artifacts. Review it for confidential details before sharing. PDF input is limited to 16 MiB and output to 64 MiB; existing PDFs are not overwritten.
 
-With a workspace, the agent first reviews source, lockfiles, configuration, and reachable call paths without executing project code. If a dynamic check is still needed, only reviewed files are copied into Microsandbox. Without a workspace, VulnBell assesses the exact artifact and published conditions, may use a minimal isolated reproducer, and keeps project-specific deployment or reachability explicitly unknown.
+With a codebase, the agent first reviews source, lockfiles, configuration, and reachable call paths without executing project code. If a dynamic check is still needed, only reviewed files are copied into Microsandbox. Without a codebase, VulnBell assesses the exact artifact and published conditions, may use a minimal isolated reproducer, and keeps project-specific deployment or reachability explicitly unknown.
 
 ## Security tests
 

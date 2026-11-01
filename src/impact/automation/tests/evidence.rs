@@ -13,7 +13,7 @@ fn changed_attestation_recalculates_impact_without_losing_human_answers() {
         .unwrap();
     let attestation = serde_json::json!({
         "schema_version":2,"project_id":project,"case_id":case.case_id,
-        "workspace_revisions":case.workspace_revisions,"facts_sha256":case.facts_sha256,
+        "codebase_revisions":case.codebase_revisions,"facts_sha256":case.facts_sha256,
         "instance_id":case.instances[0].id,"artifact_version":"1.0.0","runtime":"microsandbox",
         "runtime_version":"synthetic","runtime_sha256":"synthetic","test_sha256":"synthetic",
         "image_reference":"synthetic","image_manifest_digest":"synthetic","staging_sha256":"synthetic",

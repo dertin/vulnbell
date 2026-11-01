@@ -3,7 +3,7 @@ use vulnbell::store::Store;
 
 #[test]
 fn incompatible_state_is_rejected_without_conversion_or_data_changes() {
-    for version in [0_u32, 1_u32, 2_u32, 3_u32] {
+    for version in [0_u32, 1_u32, 2_u32, 3_u32, 4_u32] {
         let project = uuid::Uuid::new_v4().to_string();
         let directory = vulnbell::store::data_root().join(&project);
         fs::create_dir_all(&directory).unwrap();
@@ -25,6 +25,51 @@ fn incompatible_state_is_rejected_without_conversion_or_data_changes() {
 }
 
 #[test]
+fn incompatible_profile_fields_are_rejected_without_changing_the_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("vulnbell.yaml");
+    let contents = format!(
+        "schema: 1\nproject_id: {}\nname: fixture\nworkspaces: [source]\n",
+        uuid::Uuid::new_v4()
+    );
+    fs::write(&path, &contents).unwrap();
+    assert!(vulnbell::profile::load(&path).is_err());
+    assert_eq!(fs::read_to_string(&path).unwrap(), contents);
+}
+
+#[test]
+fn codebase_contracts_reject_previous_field_names() {
+    let old_discovery = serde_json::json!({
+        "phase": "workspace", "schema_version": 1, "project_id": "project",
+        "scope_sha256": "scope", "reviews": []
+    });
+    assert!(serde_json::from_value::<vulnbell::discovery::DiscoveryBatch>(old_discovery).is_err());
+    assert!(
+        serde_json::from_value::<vulnbell::sandbox::TestMode>(serde_json::json!("workspace_copy"))
+            .is_err()
+    );
+    assert!(
+        serde_json::from_value::<vulnbell::sandbox::TestMode>(serde_json::json!("codebase_copy"))
+            .is_ok()
+    );
+
+    let mut decision = serde_json::json!({
+        "upstream": "https://example.com/project", "key": "item", "updated_at": "2026-01-01",
+        "context_sha256": "context", "workspace_revisions": [], "assessment": "review",
+        "rationale": "review", "reviewed_instance_ids": []
+    });
+    assert!(
+        serde_json::from_value::<vulnbell::tools::draft::ItemDecision>(decision.clone()).is_err()
+    );
+    decision
+        .as_object_mut()
+        .unwrap()
+        .remove("workspace_revisions");
+    decision["codebase_revisions"] = serde_json::json!([]);
+    assert!(serde_json::from_value::<vulnbell::tools::draft::ItemDecision>(decision).is_ok());
+}
+
+#[test]
 fn persisted_review_state_requires_current_context_fields() {
     let snapshot = serde_json::json!({
         "schema_version": 1, "id": "snapshot", "project_id": "project", "profile_sha256": "hash",
@@ -32,7 +77,7 @@ fn persisted_review_state_requires_current_context_fields() {
         "cases": [], "partial": false, "alert_status": "none"
     });
     let error = serde_json::from_value::<vulnbell::model::Snapshot>(snapshot).unwrap_err();
-    assert!(error.to_string().contains("workspace_revisions"));
+    assert!(error.to_string().contains("codebase_revisions"));
 
     let impact = serde_json::json!({
         "schema_version": 1, "case_id": "case", "facts_sha256": "hash",
@@ -40,7 +85,7 @@ fn persisted_review_state_requires_current_context_fields() {
         "instances": [], "assessed_at": "now"
     });
     let error = serde_json::from_value::<vulnbell::impact::ImpactResult>(impact).unwrap_err();
-    assert!(error.to_string().contains("workspace_revisions"));
+    assert!(error.to_string().contains("codebase_revisions"));
 
     let mut event = serde_json::json!({
         "facts_sha256": "hash", "state": "reviewed", "recorded_at": "now",
@@ -48,8 +93,8 @@ fn persisted_review_state_requires_current_context_fields() {
     });
     let error =
         serde_json::from_value::<vulnbell::tools::queue::WorkEvent>(event.clone()).unwrap_err();
-    assert!(error.to_string().contains("workspace_revisions"));
-    event["workspace_revisions"] = serde_json::json!([]);
+    assert!(error.to_string().contains("codebase_revisions"));
+    event["codebase_revisions"] = serde_json::json!([]);
     let error = serde_json::from_value::<vulnbell::tools::queue::WorkEvent>(event).unwrap_err();
     assert!(error.to_string().contains("context_sha256"));
 }
@@ -62,7 +107,7 @@ fn current_database_is_initialized_once_and_reopens_without_rebuilding_tables() 
         .connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
     store.set_meta("sentinel", "retained").unwrap();
     store
         .connection

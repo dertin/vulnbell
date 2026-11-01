@@ -16,7 +16,7 @@ fn requirements_remain_local_candidates_without_inferred_public_sources() {
     .unwrap();
     let project = uuid::Uuid::new_v4().to_string();
     let path = directory.path().join("vulnbell.yaml");
-    fs::write(&path, format!("schema: 1\nproject_id: {project}\nname: python\nworkspaces: [workspace]\ndiscovery: off\n")).unwrap();
+    fs::write(&path, format!("schema: 1\nproject_id: {project}\nname: python\ncodebases: [workspace]\ndiscovery: off\n")).unwrap();
     let profile = profile::load(&path).unwrap();
     let snapshot = vulnbell::engine::scan(&profile, &path, true).unwrap();
     assert_eq!(snapshot.instances.len(), 2);
@@ -49,7 +49,7 @@ fn private_index_never_becomes_public_package_identity() {
     .unwrap();
     let project = uuid::Uuid::new_v4().to_string();
     let path = directory.path().join("vulnbell.yaml");
-    fs::write(&path, format!("schema: 1\nproject_id: {project}\nname: private-python\nworkspaces: [workspace]\ndiscovery: off\n")).unwrap();
+    fs::write(&path, format!("schema: 1\nproject_id: {project}\nname: private-python\ncodebases: [workspace]\ndiscovery: off\n")).unwrap();
     let profile = profile::load(&path).unwrap();
     let snapshot = vulnbell::engine::scan(&profile, &path, true).unwrap();
     assert_eq!(snapshot.instances.len(), 1);

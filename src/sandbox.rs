@@ -14,7 +14,7 @@ pub const MAX_TEST_INPUTS: usize = 20;
 pub fn capabilities(limits: SandboxLimits) -> serde_json::Value {
     serde_json::json!({
         "schema_version": 1,
-        "workspace_stage": {"max_files": staging::MAX_STAGED_FILES, "max_archive_bytes": staging::MAX_ARCHIVE_BYTES, "whole_directory": false},
+        "codebase_stage": {"max_files": staging::MAX_STAGED_FILES, "max_archive_bytes": staging::MAX_ARCHIVE_BYTES, "whole_directory": false},
         "test": {"max_inputs": MAX_TEST_INPUTS, "limits": limits, "guest_disk_mib": 2048},
         "profile_caps": {"max_input_file_mib": SandboxLimits::CAP_INPUT_FILE_MIB, "max_inputs_mib": SandboxLimits::CAP_INPUTS_MIB, "max_memory_mib": SandboxLimits::CAP_MEMORY_MIB, "max_timeout_seconds": SandboxLimits::CAP_TIMEOUT_SECONDS},
         "required_network_policy": "deny_ingress_and_egress",
@@ -51,7 +51,7 @@ pub struct TestContext {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TestMode {
-    WorkspaceCopy,
+    CodebaseCopy,
     ArtifactReproducer,
 }
 /// Why a sandbox check the case needs cannot run. Missing deployment facts are not a kind: the
@@ -75,7 +75,7 @@ pub enum BlockerKind {
 pub struct VerificationBlocker {
     pub schema_version: u32,
     pub case_id: String,
-    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
+    pub codebase_revisions: Vec<crate::codebase_revision::CodebaseRevision>,
     pub facts_sha256: String,
     pub instance_id: String,
     /// Absent for failed runs; an uncategorized blocker does not settle a needed check.
@@ -96,7 +96,7 @@ pub fn record_blocker(
     reason: &str,
 ) -> Result<Case> {
     let _lock = store.lock()?;
-    store.ensure_workspace_current()?;
+    store.ensure_codebases_current()?;
     let mut case = store.case(id)?;
     let instance_ids: Vec<String> = match instance_id {
         Some(instance_id) => vec![instance_id.to_owned()],
@@ -121,7 +121,7 @@ pub fn clear_blocker(
     reason: &str,
 ) -> Result<Case> {
     let _lock = store.lock()?;
-    store.ensure_workspace_current()?;
+    store.ensure_codebases_current()?;
     let mut case = store.case(id)?;
     let ids: Vec<String> = match instance_id {
         Some(id) => vec![id.to_owned()],
@@ -158,7 +158,7 @@ fn append_blocker(
     let blocker = VerificationBlocker {
         schema_version: 1,
         case_id: case.case_id.clone(),
-        workspace_revisions: case.workspace_revisions.clone(),
+        codebase_revisions: case.codebase_revisions.clone(),
         facts_sha256: case.facts_sha256.clone(),
         instance_id: instance_id.into(),
         kind,
@@ -245,7 +245,7 @@ pub struct Attestation {
     pub schema_version: u32,
     pub project_id: String,
     pub case_id: String,
-    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
+    pub codebase_revisions: Vec<crate::codebase_revision::CodebaseRevision>,
     pub facts_sha256: String,
     pub instance_id: String,
     pub artifact_version: String,
@@ -292,9 +292,9 @@ pub fn read_attestation(
         || attestation.project_id != case.project_id
         || attestation.case_id != case.case_id
         || attestation.facts_sha256 != case.facts_sha256
-        || !crate::workspace_revision::same_revisions(
-            &attestation.workspace_revisions,
-            &case.workspace_revisions,
+        || !crate::codebase_revision::same_revisions(
+            &attestation.codebase_revisions,
+            &case.codebase_revisions,
         )
         || !case.instances.iter().any(|instance| {
             instance.id == attestation.instance_id
@@ -354,7 +354,7 @@ pub fn verify(
         );
     }
     let _lock = store.lock()?;
-    store.ensure_workspace_current()?;
+    store.ensure_codebases_current()?;
     let mut case = store.case(id)?;
     let test_bytes = crate::read_limited(spec_path, 1024 * 1024)?;
     let test: TestSpec = crate::parse_yaml(&test_bytes)?;
@@ -539,7 +539,7 @@ pub fn verify(
         schema_version: 2,
         project_id: case.project_id.clone(),
         case_id: case.case_id.clone(),
-        workspace_revisions: case.workspace_revisions.clone(),
+        codebase_revisions: case.codebase_revisions.clone(),
         facts_sha256: case.facts_sha256.clone(),
         instance_id: test.instance_id.clone(),
         artifact_version: test.artifact_version.clone(),

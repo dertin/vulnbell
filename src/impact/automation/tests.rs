@@ -42,7 +42,7 @@ fn human_fixture() -> (tempfile::TempDir, String, Store, Case, EvidenceReference
         case_id: "synthetic-case".into(),
         project_id: project.clone(),
         snapshot_id: "synthetic-snapshot".into(),
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         instances: vec![instance.clone()],
         claims: Vec::new(),
         upstream_events: Vec::new(),
@@ -163,7 +163,14 @@ fn source_review_binds_evidence_and_rejects_wrong_lines_and_deployment_claims() 
     ]);
     let project = uuid::Uuid::new_v4().to_string();
     let path = directory.path().join("vulnbell.yaml");
-    fs::write(&path, format!("schema: 1\nproject_id: {project}\nname: fixture\nworkspaces:\n  - {}\ndiscovery: off\n", root.display())).unwrap();
+    fs::write(
+        &path,
+        format!(
+            "schema: 1\nproject_id: {project}\nname: fixture\ncodebases:\n  - {}\ndiscovery: off\n",
+            root.display()
+        ),
+    )
+    .unwrap();
     let profile = crate::profile::load(&path).unwrap();
     let snapshot = crate::engine::scan(&profile, &path, true).unwrap();
     let mut store = Store::open(&project).unwrap();
@@ -179,7 +186,7 @@ fn source_review_binds_evidence_and_rejects_wrong_lines_and_deployment_claims() 
         case_id: "SIG-source-fixture".into(),
         project_id: project.clone(),
         snapshot_id: snapshot.id,
-        workspace_revisions: snapshot.workspace_revisions,
+        codebase_revisions: snapshot.codebase_revisions,
         instances: vec![instance.clone()],
         claims: Vec::new(),
         upstream_events: Vec::new(),
@@ -582,7 +589,7 @@ fn source_review_binds_evidence_and_rejects_wrong_lines_and_deployment_claims() 
     let context = source_review_context(&current, &store).unwrap();
     let key = source_review_key(&context, &instance.id, question).unwrap();
     let mut changed = current.clone();
-    changed.workspace_revisions[0].observed_at = "2030-01-01T00:00:00Z".into();
+    changed.codebase_revisions[0].observed_at = "2030-01-01T00:00:00Z".into();
     changed.snapshot_id = "different-snapshot".into();
     assert_eq!(
         source_review_key(
@@ -604,7 +611,7 @@ fn source_review_binds_evidence_and_rejects_wrong_lines_and_deployment_claims() 
         key
     );
     changed = current.clone();
-    changed.workspace_revisions[0].commit = Some("new-commit".into());
+    changed.codebase_revisions[0].commit = Some("new-commit".into());
     assert_ne!(
         source_review_key(
             &source_review_context(&changed, &store).unwrap(),
@@ -614,7 +621,7 @@ fn source_review_binds_evidence_and_rejects_wrong_lines_and_deployment_claims() 
         .unwrap(),
         key
     );
-    changed.workspace_revisions[0].state = crate::workspace_revision::RepositoryState::NotGit;
+    changed.codebase_revisions[0].state = crate::codebase_revision::RepositoryState::NotGit;
     let volatile_key = source_review_key(
         &source_review_context(&changed, &store).unwrap(),
         &instance.id,
@@ -669,7 +676,7 @@ fn source_review_binds_evidence_and_rejects_wrong_lines_and_deployment_claims() 
         .unwrap();
     let attestation = serde_json::json!({
         "schema_version":2, "project_id":project, "case_id":case.case_id,
-        "workspace_revisions":case.workspace_revisions, "facts_sha256":case.facts_sha256,
+        "codebase_revisions":case.codebase_revisions, "facts_sha256":case.facts_sha256,
         "instance_id":instance.id, "artifact_version":"1.0.0", "runtime":"microsandbox",
         "runtime_version":"fixture", "runtime_sha256":hash, "test_sha256":hash,
         "image_reference":"fixture", "image_manifest_digest":hash, "staging_sha256":hash,

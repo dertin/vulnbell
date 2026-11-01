@@ -59,11 +59,11 @@ fn visible(entry: &DirEntry) -> bool {
 }
 
 pub(crate) fn preflight(store: &Store) -> Result<()> {
-    store.ensure_workspace_current()?;
+    store.ensure_codebases_current()?;
     let started = Instant::now();
     let mut remaining = 1024 * 1024_u64;
-    for revision in store.latest()?.workspace_revisions {
-        let root = Path::new(&revision.workspace);
+    for revision in store.latest()?.codebase_revisions {
+        let root = Path::new(&revision.codebase);
         let mut walk = WalkBuilder::new(root);
         walk.hidden(false)
             .follow_links(false)
@@ -91,7 +91,7 @@ pub(crate) fn preflight(store: &Store) -> Result<()> {
                 .to_str()
                 .context("requirements path is not UTF-8")?;
             let mut bytes = Vec::new();
-            let mut file = discovery::open_file(&revision.workspace, relative)?;
+            let mut file = discovery::open_file(&revision.codebase, relative)?;
             let before = file.metadata()?;
             std::io::Read::by_ref(&mut file)
                 .take(remaining.saturating_add(1))
@@ -112,7 +112,7 @@ pub(crate) fn preflight(store: &Store) -> Result<()> {
             }
         }
     }
-    store.ensure_workspace_current()?;
+    store.ensure_codebases_current()?;
     Ok(())
 }
 
@@ -215,7 +215,7 @@ pub(crate) fn ensure_visible_batch(
     store: &Store,
     citations: &[crate::tools::citations::Citation],
 ) -> Result<()> {
-    store.ensure_workspace_current()?;
+    store.ensure_codebases_current()?;
     let snapshot = store.latest()?;
     let mut checked = std::collections::HashSet::new();
     for citation in citations {
@@ -223,27 +223,27 @@ pub(crate) fn ensure_visible_batch(
             continue;
         }
         let root = &snapshot
-            .workspace_revisions
+            .codebase_revisions
             .get(citation.codebase)
             .context("codebase is outside the monitor")?
-            .workspace;
+            .codebase;
         let (files, complete) = paths(Path::new(root), Some(&citation.path))?;
         if !complete || !files.iter().any(|file| file == &citation.path) {
             bail!("citation refers to an excluded or unavailable source file");
         }
         file_text(root, &citation.path)?;
     }
-    store.ensure_workspace_current()?;
+    store.ensure_codebases_current()?;
     Ok(())
 }
 
 fn execute(store: &Store, roots: &[String], name: &str, args: Arguments) -> Result<Value> {
-    store.ensure_workspace_current()?;
+    store.ensure_codebases_current()?;
     let volatile = store
         .latest()?
-        .workspace_revisions
+        .codebase_revisions
         .iter()
-        .any(|revision| revision.state != crate::workspace_revision::RepositoryState::Git);
+        .any(|revision| revision.state != crate::codebase_revision::RepositoryState::Git);
     if volatile {
         preflight(store)?;
     }
@@ -331,7 +331,7 @@ fn execute(store: &Store, roots: &[String], name: &str, args: Arguments) -> Resu
     if volatile {
         preflight(store)?;
     }
-    store.ensure_workspace_current()?;
+    store.ensure_codebases_current()?;
     Ok(result)
 }
 
@@ -352,9 +352,9 @@ pub fn serve_codebase(project: &Path, receipt: Option<&Path>) -> Result<()> {
     }
     let roots: Vec<String> = store
         .latest()?
-        .workspace_revisions
+        .codebase_revisions
         .into_iter()
-        .map(|revision| revision.workspace)
+        .map(|revision| revision.codebase)
         .collect();
     let schema = json!({"type":"object","properties":{"codebase":{"type":"integer","minimum":0},"path":{"type":"string"},"query":{"type":"string"},"offset":{"type":"integer","minimum":0},"start_line":{"type":"integer","minimum":1},"line_count":{"type":"integer","minimum":1,"maximum":100}},"required":["codebase"],"additionalProperties":false});
     let tool = |name, description| json!({"name":name,"description":description,"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false},"inputSchema":schema});

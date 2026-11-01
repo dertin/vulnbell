@@ -664,8 +664,8 @@ pub fn parse_lock(filename: &str, bytes: &[u8]) -> Result<Vec<LockedPackage>> {
 }
 /// Coverage detail for manifests without a native parser; general discovery can cover them.
 pub const UNSUPPORTED_MANIFEST: &str = "detected ecosystem lock/manifest is not implemented; provide a supported SBOM or explicit components";
-/// Coverage detail for workspaces without native lockfiles; general discovery can cover them.
-pub const NO_NATIVE_INVENTORY: &str = "no supported lockfile/SBOM found; this workspace was not evaluated for exact dependency versions";
+/// Coverage detail for codebases without native lockfiles; general discovery can cover them.
+pub const NO_NATIVE_INVENTORY: &str = "no supported lockfile/SBOM found; this codebase was not evaluated for exact dependency versions";
 /// Lockfiles and SBOMs read by `parse_lock`; their parse failures are reported as inventory coverage.
 pub fn native_inventory_file(name: &str) -> bool {
     [
@@ -682,7 +682,7 @@ pub fn native_inventory_file(name: &str) -> bool {
         || name.ends_with(".spdx.json")
 }
 pub fn discover(
-    workspaces: &[String],
+    codebases: &[String],
     profile_path: &Path,
     store: &crate::store::Store,
     instance_budget: usize,
@@ -692,24 +692,24 @@ pub fn discover(
     let mut visited = std::collections::HashSet::new();
     let mut file_count = 0;
     let mut total_bytes: usize = 0;
-    'workspaces: for workspace in workspaces {
-        let root = base.join(workspace);
+    'codebases: for codebase in codebases {
+        let root = base.join(codebase);
         let root: PathBuf = match root.canonicalize() {
             Ok(root) if root.is_dir() && !root.starts_with(crate::store::data_root()) => root,
             _ => {
                 inventory.coverage.push(Coverage::new(
-                    "workspace",
-                    workspace,
+                    "codebase",
+                    codebase,
                     CoverageState::Unavailable,
-                    "workspace missing or not a directory",
+                    "codebase missing or not a directory",
                 ));
                 continue;
             }
         };
         if excluded_path(&root) {
             inventory.coverage.push(Coverage::new(
-                "workspace",
-                workspace,
+                "codebase",
+                codebase,
                 CoverageState::Unavailable,
                 "dependency or build output cannot be an inventory codebase",
             ));
@@ -729,27 +729,27 @@ pub fn discover(
             if total_bytes > 128 * 1024 * 1024 {
                 inventory.coverage.push(Coverage::new(
                     "inventory",
-                    workspace,
+                    codebase,
                     CoverageState::Partial,
                     "aggregate inventory byte budget exhausted; remaining files were not read",
                 ));
-                break 'workspaces;
+                break 'codebases;
             }
             if inventory.instances.len() >= instance_budget {
                 inventory.coverage.push(Coverage::new(
                     "inventory",
-                    workspace,
+                    codebase,
                     CoverageState::Partial,
                     "shared instance budget exhausted; remaining files were not reviewed",
                 ));
-                break 'workspaces;
+                break 'codebases;
             }
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(_) => {
                     inventory.coverage.push(Coverage::new(
-                        "workspace",
-                        workspace,
+                        "codebase",
+                        codebase,
                         CoverageState::Partial,
                         "directory traversal failed",
                     ));
@@ -759,12 +759,12 @@ pub fn discover(
             file_count += 1;
             if file_count > 100_000 {
                 inventory.coverage.push(Coverage::new(
-                    "workspace",
-                    workspace,
+                    "codebase",
+                    codebase,
                     CoverageState::Partial,
                     "100000 entry discovery limit",
                 ));
-                break 'workspaces;
+                break 'codebases;
             }
             if !entry.file_type().is_some_and(|kind| kind.is_file()) {
                 continue;
@@ -880,7 +880,7 @@ pub fn discover(
                                 CoverageState::Partial,
                                 "shared instance budget exhausted inside lockfile",
                             ));
-                            break 'workspaces;
+                            break 'codebases;
                         }
                         let (namespace, package_name) = match package.name.rsplit_once('/') {
                             Some((namespace, name)) => (Some(namespace), name),
@@ -942,8 +942,8 @@ pub fn discover(
                                 path: Some(relative.clone()),
                                 sha256: hash.clone(),
                                 observed_at: crate::now(),
-                                workspace: Some(workspace.clone()),
-                                workspace_context_sha256: None,
+                                codebase: Some(codebase.clone()),
+                                codebase_context_sha256: None,
                                 direct: package.direct,
                                 resolution: package.resolution,
                                 artifact_integrity: package.artifact_integrity,
@@ -982,7 +982,7 @@ pub fn discover(
         if supported_files == 0 {
             inventory.coverage.push(Coverage::new(
                 "inventory",
-                workspace,
+                codebase,
                 CoverageState::Partial,
                 NO_NATIVE_INVENTORY,
             ));

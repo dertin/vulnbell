@@ -436,7 +436,7 @@ fn scoped_event_stays_current_until_a_reviewed_candidate_changes() {
     let target = &plan.targets[0];
     let selected = target.instance_ids[0].clone();
     let event = ResearchEvent {
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         upstream: target.upstream.clone(),
         instance_ids: vec![selected.clone()],
         reviewed_instance_ids: target.instance_ids.clone(),
@@ -567,7 +567,7 @@ fn shared_upstream_event_opens_one_case_and_not_applicable_needs_a_reason() {
     let target = &plan.targets[0];
     assert_eq!(target.instance_ids.len(), 2);
     let event = |url: &str, assessment, reason| ResearchEvent {
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         upstream: target.upstream.clone(),
         instance_ids: target.instance_ids.clone(),
         reviewed_instance_ids: target.instance_ids.clone(),
@@ -697,7 +697,7 @@ fn research_case_reopens_against_the_current_version_after_an_upgrade() {
     let plan = vulnbell::research::plan_page(&store, "", 20).unwrap();
     let target = &plan.targets[0];
     let event = ResearchEvent {
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         upstream: target.upstream.clone(),
         instance_ids: target.instance_ids.clone(),
         reviewed_instance_ids: target.instance_ids.clone(),
@@ -803,7 +803,7 @@ fn agent_reviews_github_gitlab_launchpad_with_dedupe_and_failure_safe_checkpoint
     .into_iter()
     .enumerate()
     .map(|(index, (provider, url, kind))| ResearchEvent {
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         upstream: target.upstream.clone(),
         instance_ids: target.instance_ids.clone(),
         reviewed_instance_ids: target.instance_ids.clone(),

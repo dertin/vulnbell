@@ -37,7 +37,7 @@ fn mapped_sources_require_acquired_evidence_and_every_category() {
     let instance = Instance::declared(&profile.components[0]);
     store
         .save_snapshot(&crate::model::Snapshot {
-            workspace_revisions: Vec::new(),
+            codebase_revisions: Vec::new(),
             schema_version: 1,
             id: uuid::Uuid::new_v4().to_string(),
             project_id: project.clone(),
@@ -322,7 +322,7 @@ fn research_pages_reach_every_researched_category_and_resume_a_pinned_partial_wi
 }
 
 #[test]
-fn workspace_root_poms_mark_their_own_artifacts_as_first_party() {
+fn reactor_root_poms_mark_their_own_artifacts_as_first_party() {
     let provider = tempfile::tempdir().unwrap();
     std::fs::write(
         provider.path().join("pom.xml"),

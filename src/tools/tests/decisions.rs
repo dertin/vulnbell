@@ -8,7 +8,7 @@ fn decisions_with_the_same_key_are_scoped_to_the_upstream() {
         project_id: "0de0a8e7-f1a4-4bdc-a198-422b90bbbd84".into(),
         recheck: false,
         snapshot_id: "snapshot".into(),
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         targets: [github, gitlab]
             .into_iter()
             .map(|upstream| {
@@ -40,7 +40,7 @@ fn decisions_with_the_same_key_are_scoped_to_the_upstream() {
         recheck: false,
         decisions: vec![ItemDecision {
             reviewed_instance_ids: vec!["instance-1".into()],
-            workspace_revisions: Vec::new(),
+            codebase_revisions: Vec::new(),
             upstream: github.into(),
             key: "example/project#1".into(),
             updated_at: "2026-10-20T10:00:00+00:00".into(),
@@ -142,10 +142,10 @@ fn truncated_seen_item_requires_a_review_decision() {
 }
 
 #[test]
-fn decision_workspace_metadata_must_match_the_review_packet() {
-    use crate::workspace_revision::{RepositoryState, WorkspaceRevision};
-    let revision = WorkspaceRevision {
-        workspace: "/example/project".into(),
+fn decision_codebase_metadata_must_match_the_review_packet() {
+    use crate::codebase_revision::{CodebaseRevision, RepositoryState};
+    let revision = CodebaseRevision {
+        codebase: "/example/project".into(),
         state: RepositoryState::Git,
         repository: Some("/example/project".into()),
         branch: Some("main".into()),
@@ -162,7 +162,7 @@ fn decision_workspace_metadata_must_match_the_review_packet() {
         key: reviewed.key.clone(),
         updated_at: reviewed.updated_at.clone(),
         context_sha256: "a".repeat(64),
-        workspace_revisions: vec![revision.clone()],
+        codebase_revisions: vec![revision.clone()],
         assessment: Assessment::Review,
         not_applicable_reason: None,
         rationale: "Review the issue.".into(),
@@ -193,7 +193,7 @@ fn decision_workspace_metadata_must_match_the_review_packet() {
         decisions.lookup(&reviewed, &source, &[]),
         DecisionLookup::Stale(_)
     ));
-    let mut not_git = decisions.decisions[0].workspace_revisions[0].clone();
+    let mut not_git = decisions.decisions[0].codebase_revisions[0].clone();
     not_git.state = RepositoryState::NotGit;
     not_git.repository = None;
     not_git.branch = None;
@@ -201,7 +201,7 @@ fn decision_workspace_metadata_must_match_the_review_packet() {
     not_git.dirty = None;
     not_git.worktree_status_sha256 = None;
     let mut without_revision = decisions.clone();
-    without_revision.decisions[0].workspace_revisions.clear();
+    without_revision.decisions[0].codebase_revisions.clear();
     assert!(matches!(
         without_revision.lookup(&reviewed, &source, &[not_git]),
         DecisionLookup::Stale(_)
@@ -210,6 +210,6 @@ fn decision_workspace_metadata_must_match_the_review_packet() {
     serialized
         .as_object_mut()
         .unwrap()
-        .remove("workspace_revisions");
+        .remove("codebase_revisions");
     assert!(serde_json::from_value::<ItemDecision>(serialized).is_err());
 }

@@ -59,7 +59,7 @@ fn unavailable_codebase_keeps_scheduled_research_incomplete() {
         fs::create_dir(&workspace).unwrap();
         let project = uuid::Uuid::new_v4().to_string();
         let path = directory.path().join("vulnbell.yaml");
-        fs::write(&path, format!("schema: 1\nproject_id: {project}\nname: fixture\n{discovery}workspaces:\n  - {}\ncomponents:\n  - ref: example\n    version: '1.0.0'\n    upstream: https://github.com/example/example\n", workspace.display())).unwrap();
+        fs::write(&path, format!("schema: 1\nproject_id: {project}\nname: fixture\n{discovery}codebases:\n  - {}\ncomponents:\n  - ref: example\n    version: '1.0.0'\n    upstream: https://github.com/example/example\n", workspace.display())).unwrap();
         let profile = profile::load(&path).unwrap();
         crate::engine::scan(&profile, &path, true).unwrap();
         let mut store = Store::open(&project).unwrap();

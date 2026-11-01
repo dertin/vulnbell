@@ -1,5 +1,5 @@
 //! Bounded, read-only checks of explicit source references.
-use crate::{store::Store, workspace_revision};
+use crate::{codebase_revision, store::Store};
 use anyhow::{Context, Result, bail};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -17,7 +17,7 @@ pub struct CitationBatch {
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Citation {
-    /// Zero-based index in the scan's workspace_revisions array.
+    /// Zero-based index in the scan's codebase_revisions array.
     pub codebase: usize,
     pub path: String,
     /// One-based line; its SHA-256 excludes the line ending.
@@ -48,7 +48,7 @@ pub struct CitationReport {
     pub case_id: String,
     pub facts_sha256: String,
     pub snapshot_id: String,
-    pub workspace_revisions: Vec<workspace_revision::WorkspaceRevision>,
+    pub codebase_revisions: Vec<codebase_revision::CodebaseRevision>,
     pub complete: bool,
     pub citations: Vec<CitationResult>,
     pub limitations: &'static str,
@@ -58,7 +58,7 @@ pub fn check(store: &Store, case_id: &str, batch: CitationBatch) -> Result<Citat
     if batch.schema_version != 1 || !(1..=100).contains(&batch.citations.len()) {
         bail!("use schema_version 1 and 1..100 citations");
     }
-    store.ensure_workspace_current()?;
+    store.ensure_codebases_current()?;
     let snapshot = store.latest()?;
     let active: bool = store.connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM cases WHERE id=?1)",
@@ -69,10 +69,10 @@ pub fn check(store: &Store, case_id: &str, batch: CitationBatch) -> Result<Citat
         bail!("citation checks require an active case");
     }
     let case = store.case(case_id)?;
-    if snapshot.workspace_revisions.is_empty()
-        || !workspace_revision::same_revisions(
-            &snapshot.workspace_revisions,
-            &case.workspace_revisions,
+    if snapshot.codebase_revisions.is_empty()
+        || !codebase_revision::same_revisions(
+            &snapshot.codebase_revisions,
+            &case.codebase_revisions,
         )
     {
         bail!("case has no current codebase context; rescan before checking citations");
@@ -88,10 +88,10 @@ pub fn check(store: &Store, case_id: &str, batch: CitationBatch) -> Result<Citat
             bail!("line_sha256 must be a SHA-256 hex digest");
         }
         let root = snapshot
-            .workspace_revisions
+            .codebase_revisions
             .get(citation.codebase)
             .context("codebase index is outside the scan scope")?;
-        let actual = line_hash(&root.workspace, &citation.path, citation.line).ok();
+        let actual = line_hash(&root.codebase, &citation.path, citation.line).ok();
         let status = match (&actual, &citation.line_sha256) {
             (None, _) => CitationStatus::Unavailable,
             (Some(_), None) => CitationStatus::LinePresent,
@@ -106,13 +106,10 @@ pub fn check(store: &Store, case_id: &str, batch: CitationBatch) -> Result<Citat
             actual_line_sha256: actual,
         });
     }
-    store.ensure_workspace_current()?;
+    store.ensure_codebases_current()?;
     let current = store.case(case_id)?;
     if current.facts_sha256 != case.facts_sha256
-        || !workspace_revision::same_revisions(
-            &current.workspace_revisions,
-            &case.workspace_revisions,
-        )
+        || !codebase_revision::same_revisions(&current.codebase_revisions, &case.codebase_revisions)
     {
         bail!("case changed while checking citations; retry with current facts");
     }
@@ -127,7 +124,7 @@ pub fn check(store: &Store, case_id: &str, batch: CitationBatch) -> Result<Citat
         case_id: case.case_id,
         facts_sha256: case.facts_sha256,
         snapshot_id: snapshot.id,
-        workspace_revisions: snapshot.workspace_revisions,
+        codebase_revisions: snapshot.codebase_revisions,
         complete,
         citations: results,
         limitations: "Checks current file and line existence and optional line hash only; it does not verify meaning, reachability or deployment. Ignored files, private paths, untracked dependency/build output and non-Git trees are not bound by the Git fingerprint. Output directories are excluded from citation checks.",

@@ -3,15 +3,15 @@
 | Area | Support |
 |---|---|
 | Manual inventory | Products, binaries, PURL/CPE, exact versions, and explicitly requested `latest` |
-| Native workspace parsers | Cargo.lock through v4; npm v1–v3; Composer; pnpm 6/9; Yarn classic v1; Python `requirements.txt` declarations |
-| General discovery | Enabled by default; paginated workspace extraction and source mapping through the agent, including formats without a native parser |
+| Native codebase parsers | Cargo.lock through v4; npm v1–v3; Composer; pnpm 6/9; Yarn classic v1; Python `requirements.txt` declarations |
+| General discovery | Enabled by default; paginated codebase extraction and source mapping through the agent, including formats without a native parser |
 | SBOM | CycloneDX JSON 1.4–1.6 and SPDX JSON 2.2/2.3 |
 | Advisories | OSV, GHSA, published GitHub repository advisories, RustSec, CVE Records, NVD, and CISA KEV |
 | Vendor feeds | CSAF 2.0 and OpenVEX 0.2.0 with exact identity matching; limited signature and complex relationship checks |
 | Public sources | Issues, proposed changes, discussions, docs, changelogs, releases and advisories on mapped public sites, with independent review windows |
 | Reports | Local Markdown/JSON for manager, cyber, and audit audiences; PDF export with an evidence appendix |
 | Project status | Registered profiles, scan results, schedule health, skipped runs, agent failures, and latest reports |
-| Project impact | Guided evidence-bound questions, static workspace review, saved rationales, and update urgency |
+| Project impact | Guided evidence-bound questions, static codebase review, saved rationales, and update urgency |
 | Scheduled agents | Local runner registry with validated Codex and OpenCode adapters |
 | Scheduler | Built-in user-level systemd installation on Linux; launchd and Task Scheduler can invoke `vulnbell run` with a manually saved schedule configuration |
 | Sandbox | Microsandbox 0.7.11; real execution tested on Linux x86_64/KVM |
@@ -27,7 +27,7 @@
 - Some Python version and advisory ranges cannot be ordered by the native advisory matcher; those matches remain unknown rather than being excluded.
 - npm v1 lockfiles do not identify direct root dependencies: hoisted packages have unknown depth and are excluded from default tracker research. Advisory scanning still covers supported packages; select specific dependencies with `research.follow` when needed.
 - A hidden npm workspace matched by a wildcard has unknown depth when the lockfile alone cannot establish npm's workspace selection.
-- Git workspace identity is unavailable when tracked non-private files have `assume-unchanged` or `skip-worktree` flags, including sparse checkouts. Clear those flags or review a full checkout to bind decisions to the current files.
+- Git codebase identity is unavailable when tracked non-private files have `assume-unchanged` or `skip-worktree` flags, including sparse checkouts. Clear those flags or review a full checkout to bind decisions to the current files.
 - Untracked dependency/build output is outside the Git worktree fingerprint; tracked changes remain bound. Source citation checks exclude output directories. A separate review is needed if excluded content matters to an assessment.
 - A declared version does not prove deployment or exposure. Unclear matches stay in review.
 - Scan coverage and upstream research are tracked separately. An open research window makes the report incomplete; a completed review does not erase unrelated scan gaps.
@@ -40,4 +40,4 @@
 
 ## Tests
 
-The suite checks every generated schema against its published file. It also covers inventory and advisory fixtures, duplicate handling, artifact changes, impact decisions, project status, history, schedule windows, agent failures, and reports. Real sandbox tests cover host/network isolation, job status, positive controls, outdated attestations, timeouts, staged workspace files, and cleanup.
+The suite checks every generated schema against its published file. It also covers inventory and advisory fixtures, duplicate handling, artifact changes, impact decisions, project status, history, schedule windows, agent failures, and reports. Real sandbox tests cover host/network isolation, job status, positive controls, outdated attestations, timeouts, staged codebase files, and cleanup.

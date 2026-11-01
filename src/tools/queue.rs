@@ -22,7 +22,7 @@ pub enum WorkState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkEvent {
     pub facts_sha256: String,
-    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
+    pub codebase_revisions: Vec<crate::codebase_revision::CodebaseRevision>,
     /// Fingerprint of case evidence and outcome when the interval was recorded.
     pub context_sha256: String,
     pub state: WorkState,
@@ -217,7 +217,7 @@ pub fn record(
     next_step: Option<&str>,
 ) -> Result<WorkEvent> {
     let _lock = store.lock()?;
-    store.ensure_workspace_current()?;
+    store.ensure_codebases_current()?;
     let active: bool = store.connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM cases WHERE id=?1)",
         [case_id],
@@ -236,9 +236,9 @@ pub fn record(
         if events.last().is_some_and(|e| {
             e.state == WorkState::InProgress
                 && e.facts_sha256 == case.facts_sha256
-                && crate::workspace_revision::same_revisions(
-                    &e.workspace_revisions,
-                    &case.workspace_revisions,
+                && crate::codebase_revision::same_revisions(
+                    &e.codebase_revisions,
+                    &case.codebase_revisions,
                 )
         }) {
             bail!("review is already in progress for these facts");
@@ -257,9 +257,9 @@ pub fn record(
             .context("start this case before recording progress")?;
         if previous.state != WorkState::InProgress
             || previous.facts_sha256 != case.facts_sha256
-            || !crate::workspace_revision::same_revisions(
-                &previous.workspace_revisions,
-                &case.workspace_revisions,
+            || !crate::codebase_revision::same_revisions(
+                &previous.codebase_revisions,
+                &case.codebase_revisions,
             )
         {
             bail!("no current started review for these case facts");
@@ -270,7 +270,7 @@ pub fn record(
     let elapsed_seconds = (now - start).num_seconds().max(0) as u64;
     let event = WorkEvent {
         facts_sha256: case.facts_sha256.clone(),
-        workspace_revisions: case.workspace_revisions.clone(),
+        codebase_revisions: case.codebase_revisions.clone(),
         context_sha256: context_hash(&case)?,
         state,
         recorded_at: now.to_rfc3339(),
@@ -295,9 +295,9 @@ fn item(
     let context = context_hash(case)?;
     let is_current = |e: &&WorkEvent| {
         e.facts_sha256 == case.facts_sha256
-            && crate::workspace_revision::same_revisions(
-                &e.workspace_revisions,
-                &case.workspace_revisions,
+            && crate::codebase_revision::same_revisions(
+                &e.codebase_revisions,
+                &case.codebase_revisions,
             )
             && (e.state == WorkState::InProgress || e.context_sha256 == context)
     };
@@ -308,9 +308,9 @@ fn item(
         .filter(|e| {
             e.facts_sha256 == case.facts_sha256
                 && e.state != WorkState::InProgress
-                && crate::workspace_revision::same_revisions(
-                    &e.workspace_revisions,
-                    &case.workspace_revisions,
+                && crate::codebase_revision::same_revisions(
+                    &e.codebase_revisions,
+                    &case.codebase_revisions,
                 )
         })
         .fold(0_u64, |total, e| total.saturating_add(e.elapsed_seconds));

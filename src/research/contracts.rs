@@ -77,9 +77,9 @@ pub enum EventKind {
 #[serde(deny_unknown_fields)]
 pub struct ResearchEvent {
     pub upstream: String,
-    /// Workspace revisions recorded by the CLI at import time.
+    /// Codebase revisions recorded by the CLI at import time.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
+    pub codebase_revisions: Vec<crate::codebase_revision::CodebaseRevision>,
     pub instance_ids: Vec<String>,
     /// Candidate instances examined when choosing the case scope.
     pub reviewed_instance_ids: Vec<String>,
@@ -158,7 +158,7 @@ pub struct ResearchPlan {
     pub schema_version: u32,
     pub project_id: String,
     pub snapshot_id: String,
-    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
+    pub codebase_revisions: Vec<crate::codebase_revision::CodebaseRevision>,
     pub targets: Vec<ResearchTarget>,
     /// Inventory instances outside tracker exploration; advisories are still scanned separately.
     pub tracker_scope: crate::profile::TrackerScope,
@@ -166,8 +166,8 @@ pub struct ResearchPlan {
     pub deferred_unknown_instances: usize,
     /// Observations no longer valid for the current discovery context; rescan before research.
     pub stale_observations: usize,
-    /// Current workspace observations cannot be checked while a codebase is unavailable.
-    pub workspace_unavailable: bool,
+    /// Current codebase observations cannot be checked while a codebase is unavailable.
+    pub codebase_unavailable: bool,
     /// No inventory instance was selected for tracker research.
     pub scope_unselected: bool,
     /// Evidence-backed candidates for focused investigation; these do not change the scope.

@@ -72,7 +72,7 @@ pub struct ImpactTarget {
 pub struct ImpactPlan {
     pub schema_version: u32,
     pub case_id: String,
-    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
+    pub codebase_revisions: Vec<crate::codebase_revision::CodebaseRevision>,
     pub facts_sha256: String,
     pub affected_version_confirmed: bool,
     pub targets: Vec<ImpactTarget>,
@@ -111,7 +111,7 @@ pub struct InstanceImpact {
 pub struct ImpactResult {
     pub schema_version: u32,
     pub case_id: String,
-    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
+    pub codebase_revisions: Vec<crate::codebase_revision::CodebaseRevision>,
     pub facts_sha256: String,
     pub verdict: ImpactVerdict,
     pub confidence: ImpactConfidence,
@@ -138,7 +138,7 @@ pub(crate) fn plan_selected(
     ImpactPlan {
         schema_version: 1,
         case_id: case.case_id.clone(),
-        workspace_revisions: case.workspace_revisions.clone(),
+        codebase_revisions: case.codebase_revisions.clone(),
         facts_sha256: case.facts_sha256.clone(),
         affected_version_confirmed: case
             .instances
@@ -180,7 +180,7 @@ fn assess_checked(
     new_evidence: Vec<Evidence>,
 ) -> Result<ImpactResult> {
     let _lock = store.lock()?;
-    store.ensure_workspace_current()?;
+    store.ensure_codebases_current()?;
     let mut case = store.case(id)?;
     if let Some(expected) = expected_case {
         let latest_impact = |case: &Case| {
@@ -195,9 +195,9 @@ fn assess_checked(
             || case.decision != expected.decision
             || case.verification != expected.verification
             || valid_attestations(&case, store) != valid_attestations(expected, store)
-            || !crate::workspace_revision::same_revisions(
-                &case.workspace_revisions,
-                &expected.workspace_revisions,
+            || !crate::codebase_revision::same_revisions(
+                &case.codebase_revisions,
+                &expected.codebase_revisions,
             )
         {
             bail!("impact assessment changed during source review; retry with the latest answers");
@@ -222,7 +222,7 @@ fn assess_checked(
     let result = ImpactResult {
         schema_version: 1,
         case_id: case.case_id.clone(),
-        workspace_revisions: case.workspace_revisions.clone(),
+        codebase_revisions: case.codebase_revisions.clone(),
         facts_sha256: case.facts_sha256.clone(),
         verdict: aggregate_verdict(&instances),
         confidence: aggregate_confidence(&instances),
@@ -297,7 +297,7 @@ pub(crate) fn questions() -> Vec<ImpactQuestion> {
         ImpactQuestion {
             id: ImpactQuestionId::AffectedFeatureUsed,
             prompt: "Does the project call or enable the affected function, module, or protocol?".into(),
-            evidence_needed: "Source location, configuration, call path, or a workspace-copy sandbox result.".into(),
+            evidence_needed: "Source location, configuration, call path, or a codebase-copy sandbox result.".into(),
         },
         ImpactQuestion {
             id: ImpactQuestionId::UntrustedInputReachesFeature,
@@ -675,9 +675,9 @@ fn read_result(case: &Case, store: &Store, evidence: &Evidence) -> Result<Option
         bail!("invalid or mismatched impact assessment");
     }
     if result.facts_sha256 != case.facts_sha256
-        || !crate::workspace_revision::same_revisions(
-            &result.workspace_revisions,
-            &case.workspace_revisions,
+        || !crate::codebase_revision::same_revisions(
+            &result.codebase_revisions,
+            &case.codebase_revisions,
         )
     {
         return Ok(None);

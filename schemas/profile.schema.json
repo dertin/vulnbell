@@ -227,6 +227,12 @@
       "$ref": "#/$defs/Alerts",
       "default": {}
     },
+    "codebases": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "components": {
       "items": {
         "$ref": "#/$defs/Component"
@@ -276,12 +282,6 @@
     },
     "schema": {
       "const": 1
-    },
-    "workspaces": {
-      "items": {
-        "type": "string"
-      },
-      "type": "array"
     }
   },
   "required": [

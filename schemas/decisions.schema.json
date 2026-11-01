@@ -10,6 +10,57 @@
       ],
       "type": "string"
     },
+    "CodebaseRevision": {
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "codebase": {
+          "type": "string"
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dirty": {
+          "description": "Changes excluding private paths, ignored files, generated untracked files and submodules.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "repository": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/RepositoryState"
+        },
+        "worktree_status_sha256": {
+          "description": "Hash of Git's status entries and changed files, without retaining names or contents.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "codebase",
+        "state",
+        "observed_at"
+      ],
+      "type": "object"
+    },
     "ItemDecision": {
       "additionalProperties": false,
       "properties": {
@@ -20,6 +71,13 @@
         },
         "assessment": {
           "$ref": "#/$defs/Assessment"
+        },
+        "codebase_revisions": {
+          "description": "Codebase revisions reported by `tools hits` for this reading.",
+          "items": {
+            "$ref": "#/$defs/CodebaseRevision"
+          },
+          "type": "array"
         },
         "context_sha256": {
           "description": "Context fingerprint returned by tools hits for the exact reviewed target.",
@@ -76,13 +134,6 @@
         "upstream": {
           "description": "Upstream reported by `tools hits`.",
           "type": "string"
-        },
-        "workspace_revisions": {
-          "description": "Workspace revisions reported by `tools hits` for this reading.",
-          "items": {
-            "$ref": "#/$defs/WorkspaceRevision"
-          },
-          "type": "array"
         }
       },
       "required": [
@@ -90,7 +141,7 @@
         "key",
         "updated_at",
         "context_sha256",
-        "workspace_revisions",
+        "codebase_revisions",
         "assessment",
         "rationale",
         "reviewed_instance_ids"
@@ -157,57 +208,6 @@
           "type": "string"
         }
       },
-      "type": "object"
-    },
-    "WorkspaceRevision": {
-      "properties": {
-        "branch": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "commit": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "dirty": {
-          "description": "Changes excluding private paths, ignored files, generated untracked files and submodules.",
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "observed_at": {
-          "type": "string"
-        },
-        "repository": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "state": {
-          "$ref": "#/$defs/RepositoryState"
-        },
-        "workspace": {
-          "type": "string"
-        },
-        "worktree_status_sha256": {
-          "description": "Hash of Git's status entries and changed files, without retaining names or contents.",
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "workspace",
-        "state",
-        "observed_at"
-      ],
       "type": "object"
     }
   },

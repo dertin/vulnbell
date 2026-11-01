@@ -41,7 +41,7 @@ fn codebase_tool_receipts_require_a_successful_scoped_source_read() {
     fs::write(
         &project,
         format!(
-            "schema: 1\nproject_id: {id}\nname: fixture\nworkspaces:\n  - {}\ndiscovery: off\n",
+            "schema: 1\nproject_id: {id}\nname: fixture\ncodebases:\n  - {}\ndiscovery: off\n",
             root.display()
         ),
     )

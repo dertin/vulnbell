@@ -88,7 +88,7 @@ pub fn open(case: &Case, store: &Store) -> Vec<OpenChallenge> {
 
 pub fn record(store: &mut Store, challenge: Challenge) -> Result<RecordedChallenge> {
     let _lock = store.lock()?;
-    store.ensure_workspace_current()?;
+    store.ensure_codebases_current()?;
     let mut case = store.case(&challenge.case_id)?;
     let active: bool = store.connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM cases WHERE id=?1)",

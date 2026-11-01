@@ -78,6 +78,77 @@
         }
       ]
     },
+    "CodebaseComparison": {
+      "properties": {
+        "current": {
+          "$ref": "#/$defs/CodebaseRevision"
+        },
+        "matches": {
+          "description": "The recorded Git identity and available changed-file fingerprint match.",
+          "type": "boolean"
+        },
+        "reviewed": {
+          "$ref": "#/$defs/CodebaseRevision"
+        }
+      },
+      "required": [
+        "reviewed",
+        "current",
+        "matches"
+      ],
+      "type": "object"
+    },
+    "CodebaseRevision": {
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "codebase": {
+          "type": "string"
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dirty": {
+          "description": "Changes excluding private paths, ignored files, generated untracked files and submodules.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "repository": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/RepositoryState"
+        },
+        "worktree_status_sha256": {
+          "description": "Hash of Git's status entries and changed files, without retaining names or contents.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "codebase",
+        "state",
+        "observed_at"
+      ],
+      "type": "object"
+    },
     "Coverage": {
       "properties": {
         "detail": {
@@ -344,7 +415,7 @@
           "type": "array"
         },
         "provenance": {
-          "description": "Where each component version was read: `workspace/path:line`, or the profile.",
+          "description": "Where each component version was read: `codebase/path:line`, or the profile.",
           "items": {
             "type": "string"
           },
@@ -504,6 +575,12 @@
         "case_id": {
           "type": "string"
         },
+        "codebase_revisions": {
+          "items": {
+            "$ref": "#/$defs/CodebaseRevision"
+          },
+          "type": "array"
+        },
         "confidence": {
           "$ref": "#/$defs/ImpactConfidence"
         },
@@ -523,18 +600,12 @@
         },
         "verdict": {
           "$ref": "#/$defs/ImpactVerdict"
-        },
-        "workspace_revisions": {
-          "items": {
-            "$ref": "#/$defs/WorkspaceRevision"
-          },
-          "type": "array"
         }
       },
       "required": [
         "schema_version",
         "case_id",
-        "workspace_revisions",
+        "codebase_revisions",
         "facts_sha256",
         "verdict",
         "confidence",
@@ -691,6 +762,12 @@
     },
     "MonitoredComponent": {
       "properties": {
+        "codebase": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "instance_id": {
           "type": "string"
         },
@@ -727,12 +804,6 @@
           ]
         },
         "upstream": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "workspace": {
           "type": [
             "string",
             "null"
@@ -978,7 +1049,7 @@
     },
     "TestMode": {
       "enum": [
-        "workspace_copy",
+        "codebase_copy",
         "artifact_reproducer"
       ],
       "type": "string"
@@ -992,77 +1063,6 @@
         "disproven"
       ],
       "type": "string"
-    },
-    "WorkspaceComparison": {
-      "properties": {
-        "current": {
-          "$ref": "#/$defs/WorkspaceRevision"
-        },
-        "matches": {
-          "description": "The recorded Git identity and available changed-file fingerprint match.",
-          "type": "boolean"
-        },
-        "reviewed": {
-          "$ref": "#/$defs/WorkspaceRevision"
-        }
-      },
-      "required": [
-        "reviewed",
-        "current",
-        "matches"
-      ],
-      "type": "object"
-    },
-    "WorkspaceRevision": {
-      "properties": {
-        "branch": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "commit": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "dirty": {
-          "description": "Changes excluding private paths, ignored files, generated untracked files and submodules.",
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "observed_at": {
-          "type": "string"
-        },
-        "repository": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "state": {
-          "$ref": "#/$defs/RepositoryState"
-        },
-        "workspace": {
-          "type": "string"
-        },
-        "worktree_status_sha256": {
-          "description": "Hash of Git's status entries and changed files, without retaining names or contents.",
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "workspace",
-        "state",
-        "observed_at"
-      ],
-      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1075,6 +1075,19 @@
     },
     "audience": {
       "type": "string"
+    },
+    "codebase_context_unrecorded": {
+      "type": "boolean"
+    },
+    "codebase_revisions": {
+      "description": "Git identities recorded by the scan and the codebase state at report time.",
+      "items": {
+        "$ref": "#/$defs/CodebaseComparison"
+      },
+      "type": "array"
+    },
+    "codebase_scope_changed": {
+      "type": "boolean"
     },
     "coverage_gaps": {
       "items": {
@@ -1182,19 +1195,6 @@
         "$ref": "#/$defs/PendingVerification"
       },
       "type": "array"
-    },
-    "workspace_context_unrecorded": {
-      "type": "boolean"
-    },
-    "workspace_revisions": {
-      "description": "Git identities recorded by the scan and the workspace state at report time.",
-      "items": {
-        "$ref": "#/$defs/WorkspaceComparison"
-      },
-      "type": "array"
-    },
-    "workspace_scope_changed": {
-      "type": "boolean"
     }
   },
   "required": [
@@ -1205,9 +1205,9 @@
     "project_name",
     "generated_at",
     "last_scan",
-    "workspace_revisions",
-    "workspace_context_unrecorded",
-    "workspace_scope_changed",
+    "codebase_revisions",
+    "codebase_context_unrecorded",
+    "codebase_scope_changed",
     "inventory",
     "actionable",
     "needs_review",

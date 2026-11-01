@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const DATABASE_SCHEMA: u32 = 4;
+const DATABASE_SCHEMA: u32 = 5;
 /// Default wait for another command on the same project (override: VULNBELL_LOCK_WAIT_SECONDS).
 const LOCK_WAIT_SECONDS: u64 = 120;
 
@@ -238,7 +238,7 @@ impl Store {
                 })?;
         Ok(serde_json::from_str(&body)?)
     }
-    pub fn ensure_workspace_current(&self) -> Result<()> {
+    pub fn ensure_codebases_current(&self) -> Result<()> {
         let Some(_) = self.meta("last_snapshot")? else {
             return Ok(());
         };
@@ -246,21 +246,21 @@ impl Store {
         if let Some(path) = self.meta("profile_path")? {
             let path = Path::new(&path);
             let profile = crate::profile::load(path)?;
-            if !crate::workspace_revision::configured_paths_match(
-                &snapshot.workspace_revisions,
+            if !crate::codebase_revision::configured_paths_match(
+                &snapshot.codebase_revisions,
                 &profile,
                 path,
             ) {
-                bail!("workspace configuration changed; rescan before recording review results");
+                bail!("codebase configuration changed; rescan before recording review results");
             }
         }
-        if snapshot.workspace_revisions.is_empty() {
+        if snapshot.codebase_revisions.is_empty() {
             return Ok(());
         }
-        crate::workspace_revision::ensure_current(&snapshot.workspace_revisions)
+        crate::codebase_revision::ensure_current(&snapshot.codebase_revisions)
     }
     pub fn save_case(&mut self, case: &Case) -> Result<()> {
-        self.ensure_workspace_current()?;
+        self.ensure_codebases_current()?;
         let body = serde_json::to_string(case)?;
         let current_snapshot = self.meta("last_snapshot")?;
         let active = current_snapshot

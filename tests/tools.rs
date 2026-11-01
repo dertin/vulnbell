@@ -152,7 +152,7 @@ fn recheck_resumes_across_limited_batches() {
         }
         let decisions: Vec<_> = items.iter().map(|item| serde_json::json!({
             "upstream": item["upstream"], "key": item["key"], "updated_at": item["updated_at"],
-            "context_sha256": item["context_sha256"], "workspace_revisions": packet["workspace_revisions"],
+            "context_sha256": item["context_sha256"], "codebase_revisions": packet["codebase_revisions"],
             "reviewed_instance_ids": item["instance_ids"], "assessment": "review", "rationale": "Review the synthetic claim."
         })).collect();
         fs::write(&input_path, serde_json::to_vec(&serde_json::json!({"schema_version":1,"project_id":project,"recheck":true,"decisions":decisions})).unwrap()).unwrap();

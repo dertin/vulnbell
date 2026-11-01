@@ -520,7 +520,7 @@ mod tests {
     #[test]
     fn attestation_summary_includes_oracle_and_positive_control() {
         let mut attestation: crate::sandbox::Attestation = serde_json::from_value(serde_json::json!({
-            "schema_version":2,"project_id":"project","case_id":"case","workspace_revisions":[],
+            "schema_version":2,"project_id":"project","case_id":"case","codebase_revisions":[],
             "facts_sha256":"facts","instance_id":"instance","artifact_version":"1.0",
             "runtime":"microsandbox","runtime_version":"0.7","runtime_sha256":"runtime",
             "test_sha256":"test","image_reference":"image","image_manifest_digest":"imagehash",
@@ -587,7 +587,7 @@ mod tests {
             case_id: "case".into(),
             project_id: project.clone(),
             snapshot_id: "snapshot".into(),
-            workspace_revisions: vec![],
+            codebase_revisions: vec![],
             instances: vec![instance],
             claims: vec![],
             upstream_events: vec![],
@@ -616,8 +616,8 @@ mod tests {
         assert!(appendix.contains("oracle_matched=true"));
         assert!(appendix.contains("controlinput"));
         let changed = tempfile::tempdir().unwrap();
-        case.workspace_revisions
-            .push(crate::workspace_revision::capture_path(changed.path()));
+        case.codebase_revisions
+            .push(crate::codebase_revision::capture_path(changed.path()));
         let stale =
             pdf_markdown("# Report", &[case], &store, crate::profile::Language::En).unwrap();
         assert!(stale.contains("Attestation unavailable or invalid"));
@@ -683,7 +683,7 @@ mod tests {
             case_id: "SIG-test".into(),
             project_id: project.clone(),
             snapshot_id: "snapshot".into(),
-            workspace_revisions: vec![],
+            codebase_revisions: vec![],
             instances: vec![],
             claims: vec![],
             upstream_events: vec![],

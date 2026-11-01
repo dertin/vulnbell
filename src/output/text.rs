@@ -619,10 +619,10 @@ pub(crate) fn blocker_kind(language: Language, kind: BlockerKind) -> &'static st
 
 pub(crate) fn test_mode(language: Language, mode: Option<TestMode>) -> &'static str {
     match (language, mode) {
-        (Language::En, Some(TestMode::WorkspaceCopy)) => "workspace copy",
+        (Language::En, Some(TestMode::CodebaseCopy)) => "codebase copy",
         (Language::En, Some(TestMode::ArtifactReproducer)) => "minimal project with the artifact",
         (Language::En, None) => "scope not recorded",
-        (Language::Es, Some(TestMode::WorkspaceCopy)) => "copia de workspace",
+        (Language::Es, Some(TestMode::CodebaseCopy)) => "copia de codebase",
         (Language::Es, Some(TestMode::ArtifactReproducer)) => "proyecto mínimo con artefacto",
         (Language::Es, None) => "alcance no registrado",
     }
@@ -642,7 +642,7 @@ pub(crate) fn source_label(language: Language, key: &str) -> String {
         (_, "nvd") => "NVD",
         (_, "cisa_kev") => "CISA KEV",
         (_, "rustsec_native") => "RustSec",
-        (_, "workspace") => "Workspace",
+        (_, "codebase") => "Codebase",
         (_, "issue") => "Issue",
         (_, "pullrequest" | "pull_request") => "PR",
         (_, "mergerequest" | "merge_request") => "Merge request",

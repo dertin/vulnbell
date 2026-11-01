@@ -18,7 +18,7 @@ fn affected_verdict_requires_intact_claim_even_when_its_cited_note_is_intact() {
         profile_sha256: "synthetic".into(),
         started_at: vulnbell::now(),
         finished_at: vulnbell::now(),
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         instances: vec![instance.clone()],
         coverage: Vec::new(),
         cases: Vec::new(),
@@ -53,7 +53,7 @@ fn affected_verdict_requires_intact_claim_even_when_its_cited_note_is_intact() {
         case_id: "SIG-corrupt-advisory".into(),
         project_id: project.clone(),
         snapshot_id: snapshot.id,
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         instances: vec![instance],
         claims: vec![claim.clone()],
         upstream_events: Vec::new(),
@@ -75,7 +75,7 @@ fn affected_verdict_requires_intact_claim_even_when_its_cited_note_is_intact() {
     let verdict = |verification| Verdict {
         schema_version: 1,
         case_id: case.case_id.clone(),
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         facts_sha256: case.facts_sha256.clone(),
         applicability: Applicability::Affected,
         verification,
@@ -158,7 +158,7 @@ fn closed_cases_with_invalid_recorded_verdicts_return_to_review() {
         profile_sha256: "synthetic".into(),
         started_at: vulnbell::now(),
         finished_at: vulnbell::now(),
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         instances: vec![instance.clone()],
         coverage: Vec::new(),
         cases: Vec::new(),
@@ -171,7 +171,7 @@ fn closed_cases_with_invalid_recorded_verdicts_return_to_review() {
         case_id: id,
         project_id: project.clone(),
         snapshot_id: snapshot.id.clone(),
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         instances: vec![instance.clone()],
         claims: Vec::new(),
         upstream_events: Vec::new(),
@@ -216,7 +216,7 @@ fn closed_cases_with_invalid_recorded_verdicts_return_to_review() {
                 Verdict {
                     schema_version: 1,
                     case_id: id.clone(),
-                    workspace_revisions: Vec::new(),
+                    codebase_revisions: Vec::new(),
                     facts_sha256: item.facts_sha256,
                     applicability: Applicability::NotAffected,
                     verification: Verification::Inconclusive,
@@ -297,7 +297,7 @@ fn contained_advisories_collapse_into_one_row_and_exposed_cases_keep_their_card(
             )
             .unwrap();
         let case = Case {
-            workspace_revisions: Vec::new(),
+            codebase_revisions: Vec::new(),
             schema_version: 1,
             case_id: case_id.into(),
             project_id: project.clone(),
@@ -368,7 +368,7 @@ fn contained_advisories_collapse_into_one_row_and_exposed_cases_keep_their_card(
         cases.push(store.case(case_id).unwrap());
     }
     let snapshot = Snapshot {
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         schema_version: 1,
         id: "snapshot".into(),
         project_id: project.clone(),
@@ -450,7 +450,7 @@ fn unconfirmed_versions_need_a_review_disposition_without_requiring_a_test() {
         ),
     ] {
         let case = Case {
-            workspace_revisions: Vec::new(),
+            codebase_revisions: Vec::new(),
             schema_version: 1,
             case_id: case_id.into(),
             project_id: project.clone(),
@@ -508,7 +508,7 @@ fn unconfirmed_versions_need_a_review_disposition_without_requiring_a_test() {
         cases.push(store.case(case_id).unwrap());
     }
     let mut snapshot = Snapshot {
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         schema_version: 1,
         id: "snapshot".into(),
         project_id: project.clone(),
@@ -557,7 +557,7 @@ fn unconfirmed_versions_need_a_review_disposition_without_requiring_a_test() {
             &serde_json::to_vec(&json!({
                 "schema_version": 1,
                 "case_id": "SIG-issue",
-                "workspace_revisions": [],
+                "codebase_revisions": [],
                 "facts_sha256": "facts",
                 "instance_id": instance.id,
                 "reason": "Deployment configuration is unavailable.",

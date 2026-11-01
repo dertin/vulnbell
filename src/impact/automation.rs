@@ -86,13 +86,13 @@ fn source_plan(case: &Case, store: &Store, context: &str) -> Result<Option<Sourc
 
 fn source_review_context(case: &Case, store: &Store) -> Result<String> {
     let volatile = case
-        .workspace_revisions
+        .codebase_revisions
         .iter()
-        .any(|revision| revision.state != crate::workspace_revision::RepositoryState::Git);
+        .any(|revision| revision.state != crate::codebase_revision::RepositoryState::Git);
     let context = (
         &case.case_id,
         &case.facts_sha256,
-        crate::workspace_revision::fingerprint(&case.workspace_revisions),
+        crate::codebase_revision::fingerprint(&case.codebase_revisions),
         volatile.then_some(&case.snapshot_id),
         super::valid_attestations(case, store),
     );
@@ -136,7 +136,7 @@ pub(crate) fn run(
     directory: &Path,
     deadline: DateTime<Utc>,
 ) -> Result<()> {
-    if store.latest()?.workspace_revisions.is_empty() {
+    if store.latest()?.codebase_revisions.is_empty() {
         return Ok(());
     }
     let work = directory.join("work");
@@ -240,13 +240,13 @@ fn apply(store: &mut Store, case: &Case, review: SourceReview, directory: &Path)
     {
         bail!("source review is empty, oversized or refers to stale case facts");
     }
-    store.ensure_workspace_current()?;
+    store.ensure_codebases_current()?;
     let current = store.case(&case.case_id)?;
     if current.facts_sha256 != case.facts_sha256
         || current.snapshot_id != case.snapshot_id
-        || !crate::workspace_revision::same_revisions(
-            &current.workspace_revisions,
-            &case.workspace_revisions,
+        || !crate::codebase_revision::same_revisions(
+            &current.codebase_revisions,
+            &case.codebase_revisions,
         )
     {
         bail!("case changed during source review");

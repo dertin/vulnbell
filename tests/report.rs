@@ -13,7 +13,7 @@ fn delivery_status_distinguishes_partial_coverage_from_complete_reports() {
         stale_observations: 0,
         discovery_open: None,
         tracker_scope_unresolved: false,
-        workspace_context_changed: false,
+        codebase_context_changed: false,
     };
     let render = |pending: &_, partial| {
         vulnbell::output::delivery_status_markdown(
@@ -37,7 +37,7 @@ fn coverage_groups_keep_the_first_seen_order_and_scope_labels() {
     let project = uuid::Uuid::new_v4().to_string();
     let store = Store::open(&project).unwrap();
     let snapshot = Snapshot {
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         schema_version: 1,
         id: "snapshot".into(),
         project_id: project.clone(),
@@ -114,7 +114,7 @@ fn report_explains_the_matched_package_without_recommending_another_packages_fix
         });
     }
     let mut case = Case {
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         schema_version: 1,
         case_id: "SIG-synthetic-report".into(),
         project_id: project.clone(),
@@ -168,7 +168,7 @@ fn report_explains_the_matched_package_without_recommending_another_packages_fix
     .unwrap();
     case = store.case(&case.case_id).unwrap();
     let snapshot = Snapshot {
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         schema_version: 1,
         id: "synthetic".into(),
         project_id: project.clone(),
@@ -346,7 +346,7 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
         feeds: Vec::new(),
     });
     let mut case = Case {
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         schema_version: 1,
         case_id: "SIG-review".into(),
         project_id: project.clone(),
@@ -398,7 +398,7 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
         updated_at: vulnbell::now(),
     };
     let mut snapshot = Snapshot {
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         schema_version: 1,
         id: "snapshot".into(),
         project_id: project.clone(),
@@ -471,7 +471,7 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
     let verdict = Verdict {
         schema_version: 1,
         case_id: case.case_id.clone(),
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         facts_sha256: case.facts_sha256.clone(),
         applicability: Applicability::Unknown,
         verification: Verification::Inconclusive,
@@ -537,8 +537,8 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
     let mut stale_blocker = blocked.clone();
     let changed = tempfile::tempdir().unwrap();
     stale_blocker
-        .workspace_revisions
-        .push(vulnbell::workspace_revision::capture_path(changed.path()));
+        .codebase_revisions
+        .push(vulnbell::codebase_revision::capture_path(changed.path()));
     snapshot.cases = vec![stale_blocker];
     let stale_report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
     assert_ne!(
@@ -616,14 +616,14 @@ fn cards_cite_the_lockfile_line_and_the_inventory_is_summarized_per_lockfile() {
         feeds: Vec::new(),
     });
     locked.origin = Origin::Locked;
-    locked.provenance.workspace = Some("../service".into());
+    locked.provenance.codebase = Some("../service".into());
     locked.provenance.path = Some("Cargo.lock".into());
     locked.provenance.line = rustls.line;
     let mut sibling = locked.clone();
     sibling.id = "sibling".into();
     sibling.reference = "pkg:cargo/other".into();
     let case = Case {
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         schema_version: 1,
         case_id: "SIG-provenance".into(),
         project_id: project.clone(),
@@ -646,7 +646,7 @@ fn cards_cite_the_lockfile_line_and_the_inventory_is_summarized_per_lockfile() {
         updated_at: vulnbell::now(),
     };
     let snapshot = Snapshot {
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         schema_version: 1,
         id: "snapshot".into(),
         project_id: project.clone(),

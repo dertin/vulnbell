@@ -28,7 +28,7 @@ pub fn add_research_coverage(
     if !pending.research_open.is_empty()
         || pending.tracker_scope_unresolved
         || pending.stale_observations > 0
-        || pending.workspace_context_changed
+        || pending.codebase_context_changed
     {
         let detail = match report.language {
             Language::Es => format!(
@@ -40,7 +40,7 @@ pub fn add_research_coverage(
                 } else {
                     "no"
                 },
-                if pending.workspace_context_changed {
+                if pending.codebase_context_changed {
                     "sí"
                 } else {
                     "no"
@@ -55,7 +55,7 @@ pub fn add_research_coverage(
                 } else {
                     "no"
                 },
-                if pending.workspace_context_changed {
+                if pending.codebase_context_changed {
                     "yes"
                 } else {
                     "no"
@@ -94,7 +94,7 @@ pub fn delivery_status_markdown(
             } else {
                 "no"
             },
-            if pending.workspace_context_changed {
+            if pending.codebase_context_changed {
                 "sí"
             } else {
                 "no"
@@ -113,7 +113,7 @@ pub fn delivery_status_markdown(
             } else {
                 "no"
             },
-            if pending.workspace_context_changed {
+            if pending.codebase_context_changed {
                 "yes"
             } else {
                 "no"
@@ -202,8 +202,8 @@ pub fn markdown(snapshot: &Snapshot) -> String {
         snapshot.instances.len(),
         snapshot.cases.len()
     );
-    report.push_str(&markdown::workspace_revisions_markdown(
-        &crate::workspace_revision::compare(&snapshot.workspace_revisions),
+    report.push_str(&markdown::codebase_revisions_markdown(
+        &crate::codebase_revision::compare(&snapshot.codebase_revisions),
         false,
         Language::En,
     ));
@@ -241,10 +241,10 @@ pub struct MorningReport {
     pub last_successful_scan: Option<String>,
     pub last_agent_review: Option<String>,
     pub scheduler_id: Option<String>,
-    /// Git identities recorded by the scan and the workspace state at report time.
-    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceComparison>,
-    pub workspace_context_unrecorded: bool,
-    pub workspace_scope_changed: bool,
+    /// Git identities recorded by the scan and the codebase state at report time.
+    pub codebase_revisions: Vec<crate::codebase_revision::CodebaseComparison>,
+    pub codebase_context_unrecorded: bool,
+    pub codebase_scope_changed: bool,
     pub inventory: Vec<MonitoredComponent>,
     pub actionable: Vec<HandoffItem>,
     pub needs_review: Vec<HandoffItem>,
@@ -330,7 +330,7 @@ pub struct MonitoredComponent {
     pub requested_version: Option<String>,
     pub resolved_version: Option<String>,
     pub origin: crate::model::Origin,
-    pub workspace: Option<String>,
+    pub codebase: Option<String>,
     pub path: Option<String>,
     pub line: Option<usize>,
     pub upstream: Option<String>,
@@ -339,7 +339,7 @@ pub struct MonitoredComponent {
 pub struct HandoffItem {
     pub case_id: String,
     pub components: Vec<String>,
-    /// Where each component version was read: `workspace/path:line`, or the profile.
+    /// Where each component version was read: `codebase/path:line`, or the profile.
     pub provenance: Vec<String>,
     pub origin: Vec<crate::model::Origin>,
     /// Latest recorded agent verdict (`decision: rationale`), when one exists.
@@ -372,14 +372,14 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
         }
         None => (None, Vec::new(), Language::default()),
     };
-    let workspace_revisions = crate::workspace_revision::compare(&snapshot.workspace_revisions);
-    let workspace_scope_changed = if !snapshot.workspace_revisions.is_empty() {
+    let codebase_revisions = crate::codebase_revision::compare(&snapshot.codebase_revisions);
+    let codebase_scope_changed = if !snapshot.codebase_revisions.is_empty() {
         store
             .meta("profile_path")?
             .and_then(|path| {
                 let profile = crate::profile::load(std::path::Path::new(&path)).ok()?;
-                Some(!crate::workspace_revision::configured_paths_match(
-                    &snapshot.workspace_revisions,
+                Some(!crate::codebase_revision::configured_paths_match(
+                    &snapshot.codebase_revisions,
                     &profile,
                     std::path::Path::new(&path),
                 ))
@@ -388,12 +388,12 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
     } else {
         false
     };
-    let workspace_context_unrecorded = if snapshot.workspace_revisions.is_empty() {
+    let codebase_context_unrecorded = if snapshot.codebase_revisions.is_empty() {
         store
             .meta("profile_path")?
             .and_then(|path| {
                 let profile = crate::profile::load(std::path::Path::new(&path)).ok()?;
-                Some(!profile.workspaces.is_empty())
+                Some(!profile.codebases.is_empty())
             })
             .unwrap_or(false)
     } else {
@@ -546,9 +546,9 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
         last_successful_scan: store.meta("last_successful_scan")?,
         last_agent_review: store.meta("last_agent_review")?,
         scheduler_id: store.meta("scheduler_id")?,
-        workspace_revisions,
-        workspace_context_unrecorded,
-        workspace_scope_changed,
+        codebase_revisions,
+        codebase_context_unrecorded,
+        codebase_scope_changed,
         inventory: snapshot
             .instances
             .iter()
@@ -558,7 +558,7 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
                 requested_version: instance.requested_version.clone(),
                 resolved_version: instance.resolved_version.clone(),
                 origin: instance.origin,
-                workspace: instance.provenance.workspace.clone(),
+                codebase: instance.provenance.codebase.clone(),
                 path: instance.provenance.path.clone(),
                 line: instance.provenance.line,
                 upstream: instance.upstream.clone(),
@@ -617,10 +617,10 @@ fn provenance_label(instance: &crate::model::Instance, language: Language) -> St
         .resolved_version
         .as_deref()
         .unwrap_or(words.unresolved);
-    let location = match (&instance.provenance.workspace, &instance.provenance.path) {
-        (workspace, Some(path)) => {
-            let file = match workspace {
-                Some(workspace) => format!("{}/{path}", workspace.trim_end_matches('/')),
+    let location = match (&instance.provenance.codebase, &instance.provenance.path) {
+        (codebase, Some(path)) => {
+            let file = match codebase {
+                Some(codebase) => format!("{}/{path}", codebase.trim_end_matches('/')),
                 None => path.clone(),
             };
             match instance.provenance.line {

@@ -46,7 +46,7 @@ pub struct HandoffBatch {
 #[serde(deny_unknown_fields)]
 struct RecordedHandoff {
     schema_version: u32,
-    workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
+    codebase_revisions: Vec<crate::codebase_revision::CodebaseRevision>,
     handoff: ReviewHandoff,
     impact_sha256: String,
     verdict_sha256: String,
@@ -111,7 +111,7 @@ fn handoff_case(
     base: &Path,
 ) -> Result<serde_json::Value> {
     let _lock = store.lock()?;
-    store.ensure_workspace_current()?;
+    store.ensure_codebases_current()?;
     let mut case = store.case(&entry.case_id)?;
     if case.facts_sha256 != entry.facts_sha256 || case.decision != Decision::Review {
         bail!("handoff requires a review case with current facts");
@@ -137,7 +137,7 @@ fn handoff_case(
         current_review_hashes(&case).context("missing current review evidence")?;
     let record = RecordedHandoff {
         schema_version: 1,
-        workspace_revisions: case.workspace_revisions.clone(),
+        codebase_revisions: case.codebase_revisions.clone(),
         handoff: entry.clone(),
         impact_sha256,
         verdict_sha256,
@@ -224,7 +224,7 @@ pub fn apply_scope(store: &mut Store, batch: &ScopeBatch, base: &Path) -> Vec<Ca
 
 fn scope_case(store: &mut Store, entry: &CaseScope, base: &Path) -> Result<serde_json::Value> {
     let _lock = store.lock()?;
-    store.ensure_workspace_current()?;
+    store.ensure_codebases_current()?;
     let mut case = store.case(&entry.case_id)?;
     if case.facts_sha256 != entry.facts_sha256 {
         bail!("case facts changed; inspect the current case before narrowing scope");
@@ -481,7 +481,7 @@ fn case_verdict(store: &mut Store, entry: &BatchVerdict, base: &Path) -> Result<
             .collect();
     }
     let verdict = Verdict {
-        workspace_revisions: case.workspace_revisions.clone(),
+        codebase_revisions: case.codebase_revisions.clone(),
         schema_version: 1,
         case_id: case.case_id.clone(),
         facts_sha256: case.facts_sha256.clone(),
@@ -506,7 +506,7 @@ pub(crate) fn register_note(
     case_id: &str,
     path: &Path,
 ) -> Result<EvidenceReference> {
-    store.ensure_workspace_current()?;
+    store.ensure_codebases_current()?;
     let _lock = store.lock()?;
     let bytes = crate::read_limited(path, NOTE_LIMIT)
         .with_context(|| format!("cannot read note {}", path.display()))?;
@@ -555,7 +555,7 @@ pub struct PendingReport {
     /// Inventory exists, but no product or dependency was selected for tracker research.
     pub tracker_scope_unresolved: bool,
     /// The current checkout differs from the one bound to the scan, or was not recorded.
-    pub workspace_context_changed: bool,
+    pub codebase_context_changed: bool,
 }
 
 /// Unavailable files and components recorded without a repository are dispositions, not open
@@ -606,7 +606,7 @@ pub fn pending(store: &Store) -> Result<PendingReport> {
     let plan = crate::research::full_plan(store)?;
     let tracker_scope_unresolved = plan.scope_unselected;
     let stale_observations = plan.stale_observations;
-    let workspace_unavailable = plan.workspace_unavailable;
+    let codebase_unavailable = plan.codebase_unavailable;
     let research_open: Vec<ResearchOpen> = plan
         .targets
         .into_iter()
@@ -648,11 +648,11 @@ pub fn pending(store: &Store) -> Result<PendingReport> {
         .filter(|open| {
             open.directories_pending > 0 || open.files_pending > 0 || open.components_unmapped > 0
         });
-    let workspace_context_changed = workspace_unavailable
-        || report.workspace_context_unrecorded
-        || report.workspace_scope_changed
+    let codebase_context_changed = codebase_unavailable
+        || report.codebase_context_unrecorded
+        || report.codebase_scope_changed
         || report
-            .workspace_revisions
+            .codebase_revisions
             .iter()
             .any(|revision| !revision.matches);
     let challenge_open: Vec<String> = report
@@ -669,7 +669,7 @@ pub fn pending(store: &Store) -> Result<PendingReport> {
             && research_open.is_empty()
             && stale_observations == 0
             && !tracker_scope_unresolved
-            && !workspace_context_changed
+            && !codebase_context_changed
             && discovery_open.is_none(),
         verification_pending: report.verification_pending,
         verdict_missing,
@@ -678,7 +678,7 @@ pub fn pending(store: &Store) -> Result<PendingReport> {
         stale_observations,
         discovery_open,
         tracker_scope_unresolved,
-        workspace_context_changed,
+        codebase_context_changed,
     })
 }
 

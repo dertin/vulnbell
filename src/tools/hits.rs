@@ -31,7 +31,7 @@ pub struct Prepared {
     pub project_id: String,
     pub snapshot_id: String,
     pub recheck: bool,
-    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
+    pub codebase_revisions: Vec<crate::codebase_revision::CodebaseRevision>,
     pub targets: Vec<PreparedTarget>,
     pub resolutions: BTreeMap<String, Resolution>,
 }
@@ -100,7 +100,7 @@ pub fn prepare_for_upstream(
     recheck: bool,
     upstream: Option<&str>,
 ) -> Result<Prepared> {
-    store.ensure_workspace_current()?;
+    store.ensure_codebases_current()?;
     let plan = crate::research::full_plan(store)?;
     if upstream.is_some_and(|url| !plan.targets.iter().any(|target| target.upstream == url)) {
         anyhow::bail!("upstream is outside the current research plan");
@@ -222,7 +222,7 @@ pub fn prepare_for_upstream(
         project_id: plan.project_id,
         snapshot_id: plan.snapshot_id,
         recheck,
-        workspace_revisions: plan.workspace_revisions,
+        codebase_revisions: plan.codebase_revisions,
         targets,
         resolutions,
     })
@@ -484,7 +484,7 @@ pub struct ReviewPacket {
     pub project_id: String,
     pub snapshot_id: String,
     pub recheck: bool,
-    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
+    pub codebase_revisions: Vec<crate::codebase_revision::CodebaseRevision>,
     pub summary: PacketSummary,
     /// Responses still to fetch; rerun `tools hits` after writing them.
     pub missing: Vec<MissingFetch>,
@@ -666,7 +666,7 @@ pub fn packet_with_recheck(
                 decisions.lookup(
                     &entry.item,
                     &prepared_target.target,
-                    &prepared.workspace_revisions,
+                    &prepared.codebase_revisions,
                 )
             });
             let unpublished: &[String] = match &entry.disposition {
@@ -757,7 +757,7 @@ pub fn packet_with_recheck(
         project_id: prepared.project_id.clone(),
         snapshot_id: prepared.snapshot_id.clone(),
         recheck,
-        workspace_revisions: prepared.workspace_revisions.clone(),
+        codebase_revisions: prepared.codebase_revisions.clone(),
         summary,
         missing,
         errors,

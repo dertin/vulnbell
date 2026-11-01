@@ -39,9 +39,9 @@ For a local project, first verify that a representative offline test is practica
 vulnbell sandbox stage --source /path/to/project --file package-lock.json --file src/affected.ts --directory /private/test
 ```
 
-Static source review happens before sandboxing and does not execute project code. Use `stage` only when a dynamic check is necessary. The command creates a deterministic archive and manifest from an explicit reviewed file list. It rejects symlinks, traversal, common secret files, oversized input, and an existing destination. It never runs project hooks or build tools. Record `context.mode: workspace_copy` for this path.
+Static source review happens before sandboxing and does not execute project code. Use `stage` only when a dynamic check is necessary. The command creates a deterministic archive and manifest from an explicit reviewed file list. It rejects symlinks, traversal, common secret files, oversized input, and an existing destination. It never runs project hooks or build tools. Record `context.mode: codebase_copy` for this path.
 
-Without a workspace, assess the advisory, affected source, fix, and exact artifact in general terms. If execution would resolve a material uncertainty, build a minimal project from checksummed official artifacts and record `context.mode: artifact_reproducer`. This can validate behavior under the tested conditions, but it cannot establish how an unavailable project uses the component.
+Without a codebase, assess the advisory, affected source, fix, and exact artifact in general terms. If execution would resolve a material uncertainty, build a minimal project from checksummed official artifacts and record `context.mode: artifact_reproducer`. This can validate behavior under the tested conditions, but it cannot establish how an unavailable project uses the component.
 
 If a test needs Node, PHP, Rust, or other tools, prepare an official image with `sandbox prepare --image <reference>`. Use `docker.io/library/...@sha256:<64 hex>`; mutable tags are rejected. The image and tools must fit the private 2 GiB disk and memory/time limits. Not every build will fit. Preparing an image does not prove it matches the installed binary. Tool downloads are a separate HTTPS step; the test itself has no network access.
 
@@ -60,7 +60,7 @@ If a test needs Node, PHP, Rust, or other tools, prepare an official image with 
     max_timeout_seconds: 300  # cap 600
   ```
 
-  `sandbox stage` keeps its 16 MiB archive limit: a workspace copy holds reviewed source files, not distributions.
+  `sandbox stage` keeps its 16 MiB archive limit: a codebase copy holds reviewed source files, not distributions.
 - Traffic is denied in both directions. There are no network exceptions, published ports, secrets, host certificates, or external mounts. `--no-net` keeps a network device with a deny policy; it does not remove the device. The runtime checks that policy before running the test.
 - Test specifications accept only the script and inputs. They cannot add runtime flags, mounts, secrets, or network settings. The **active** policy returned by the runtime is checked before execution.
 - Tests use managed Microsandbox jobs. Job identity and final status come from control JSON. Workload logs are fetched separately. Stdout/stderr cannot set the trusted exit code or timeout. Log capture and host processes have their own limits.

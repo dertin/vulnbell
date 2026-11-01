@@ -38,7 +38,7 @@ fn fixture() -> (String, Store, Case, EvidenceReference) {
         )
         .unwrap();
     let case = Case {
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         schema_version: 1,
         case_id: "SIG-impact".into(),
         project_id: project.clone(),
@@ -129,7 +129,7 @@ fn corrupt_attestation_or_runtime_blob_reopens_impact_and_report() {
             .unwrap();
         let attestation = serde_json::json!({
             "schema_version":2,"project_id":project,"case_id":case.case_id,
-            "workspace_revisions":case.workspace_revisions,"facts_sha256":case.facts_sha256,
+            "codebase_revisions":case.codebase_revisions,"facts_sha256":case.facts_sha256,
             "instance_id":case.instances[0].id,"artifact_version":"1.0.0","runtime":"microsandbox",
             "runtime_version":"synthetic","runtime_sha256":"synthetic","test_sha256":"synthetic",
             "image_reference":"synthetic","image_manifest_digest":"synthetic","staging_sha256":"synthetic",
@@ -183,7 +183,7 @@ fn corrupt_attestation_or_runtime_blob_reopens_impact_and_report() {
             profile_sha256: "synthetic".into(),
             started_at: vulnbell::now(),
             finished_at: vulnbell::now(),
-            workspace_revisions: Vec::new(),
+            codebase_revisions: Vec::new(),
             instances: case.instances.clone(),
             coverage: Vec::new(),
             cases: vec![case],
@@ -393,8 +393,8 @@ fn impact_assessment_is_stale_when_codebase_revision_changes() {
     assert!(vulnbell::impact::latest(&recorded, &store).is_some());
     let other = tempfile::tempdir().unwrap();
     recorded
-        .workspace_revisions
-        .push(vulnbell::workspace_revision::capture_path(other.path()));
+        .codebase_revisions
+        .push(vulnbell::codebase_revision::capture_path(other.path()));
     assert!(vulnbell::impact::latest(&recorded, &store).is_none());
     drop(store);
     std::fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();

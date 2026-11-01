@@ -13,7 +13,7 @@
 - Exclude dependency and build output directories consistently from native and agent discovery.
 - Detect rapid same-size edits when recording a Git codebase's state.
 - Strengthen evidence checks for consequential impact assessments.
-- Distinguish monitored codebases from VulnBell workspaces and require project context for confirmed shipment or deployment.
+- Configure monitored source paths as codebases, retain their reviewed revisions, and require project context for confirmed shipment or deployment.
 - Check source citations without exposing code, group advisory aliases as duplicate candidates, and measure screening recall for labelled high-priority signals.
 - Record evidence-bound second assessments and reopen disputed or inconclusive verdicts.
 - Screen phishing claims, and evaluate linked tracker metadata and false-positive keys.

@@ -4,7 +4,7 @@
       "additionalProperties": false,
       "properties": {
         "codebase": {
-          "description": "Zero-based index in the scan's workspace_revisions array.",
+          "description": "Zero-based index in the scan's codebase_revisions array.",
           "format": "uint",
           "minimum": 0,
           "type": "integer"
