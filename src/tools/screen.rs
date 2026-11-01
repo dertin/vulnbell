@@ -11,13 +11,13 @@ mod tests;
 
 static STRONG: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)\b(CVE-\d{4}-\d+|GHSA(?:-[0-9a-z]{4}){3}|RUSTSEC-\d{4}-\d+|vulnerab\w*|security (?:issue|fix|flaw|bug|vulnerabilit\w*|advisory|report|impact|implications?|concern|risk)|attacker\w*|exploit\w*|bypass\w*|privilege escalation|unauthori[sz]ed access|denial[- ]of[- ]service|remote code execution|account takeover|session fixation|open redirect)",
+        r"(?i)\b(CVE-\d{4}-\d+|GHSA(?:-[0-9a-z]{4}){3}|RUSTSEC-\d{4}-\d+|vulnerab\w*|security (?:issue|fix|flaw|bug|vulnerabilit\w*|advisory|report|impact|implications?|concern|risk)|attacker\w*|exploit\w*|bypass\w*|privilege escalation|unauthori[sz]ed access|denial[- ]of[- ]service|remote code execution|account takeover|session fixation|open redirect|phish\w*|(?:leak\w*|expos\w*|disclos\w*).{0,40}\b(?:cookies?|tokens?|credentials?|secrets?)\b|(?:cookies?|tokens?|credentials?|secrets?).{0,40}\b(?:leak\w*|expos\w*|disclos\w*)\b)",
     )
     .expect("static strong-signal pattern")
 });
 static TITLE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)\b(CVE-\d{4}-\d+|GHSA-|RUSTSEC-|security|vulnerab|XSS|CSRF|SSRF|injection|bypass|privilege escalation|deserializ|denial of service|DoS\b|leak|disclos|takeover|open redirect|traversal|smuggl|RCE\b|remote code|out-of-bounds|overflow|unbounded|exhaust|unsound|undefined behavio|use[- ]after[- ]free|double[- ]free|uninitiali[sz]ed|data race|panic|crash|infinite loop|timing (?:attack|leak|side)|side[- ]channel|spoof|forger(?:y|ies)|forged|impersonat|escalat|unauthori[sz]ed)",
+        r"(?i)\b(CVE-\d{4}-\d+|GHSA-|RUSTSEC-|security|vulnerab|XSS|CSRF|SSRF|injection|bypass|privilege escalation|(?:untrusted|unsafe|insecure|arbitrary|uncontrolled|unrestricted|unvalidated|malicious).{0,50}deserializ|deserializ.{0,50}(?:untrusted|unsafe|insecure|arbitrary|uncontrolled|unrestricted|unvalidated|malicious)|denial of service|DoS\b|leak|disclos|takeover|open redirect|traversal|smuggl|RCE\b|remote code|out-of-bounds|overflow|unbounded|exhaust|unsound|undefined behavio|use[- ]after[- ]free|double[- ]free|uninitiali[sz]ed|data race|panic|crash|infinite loop|timing (?:attack|leak|side)|side[- ]channel|spoof|forger(?:y|ies)|forged|impersonat|escalat|unauthori[sz]ed)",
     )
     .expect("static title pattern")
 });
@@ -106,7 +106,7 @@ pub(super) struct LinkedSignals {
 }
 
 impl LinkedSignals {
-    fn add_text(&mut self, text: &str) {
+    pub(super) fn add_text(&mut self, text: &str) {
         self.strong |= STRONG.is_match(text);
         self.bug |= BODY_BUG.is_match(text);
         self.context |= BODY_CONTEXT.is_match(text);

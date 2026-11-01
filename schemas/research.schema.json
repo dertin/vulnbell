@@ -10,6 +10,57 @@
       ],
       "type": "string"
     },
+    "CodebaseRevision": {
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "codebase": {
+          "type": "string"
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dirty": {
+          "description": "Changes excluding private paths, ignored files, generated untracked files and submodules.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "repository": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/RepositoryState"
+        },
+        "worktree_status_sha256": {
+          "description": "Hash of Git's status entries and changed files, without retaining names or contents.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "codebase",
+        "state",
+        "observed_at"
+      ],
+      "type": "object"
+    },
     "EventKind": {
       "enum": [
         "issue",
@@ -60,6 +111,13 @@
       "properties": {
         "assessment": {
           "$ref": "#/$defs/Assessment"
+        },
+        "codebase_revisions": {
+          "description": "Codebase revisions recorded by the CLI at import time.",
+          "items": {
+            "$ref": "#/$defs/CodebaseRevision"
+          },
+          "type": "array"
         },
         "excerpt": {
           "type": "string"
@@ -124,13 +182,6 @@
         },
         "url": {
           "type": "string"
-        },
-        "workspace_revisions": {
-          "description": "Workspace revisions recorded by the CLI at import time.",
-          "items": {
-            "$ref": "#/$defs/WorkspaceRevision"
-          },
-          "type": "array"
         }
       },
       "required": [
@@ -232,6 +283,13 @@
         "from": {
           "type": "string"
         },
+        "recheck_context_sha256": {
+          "description": "Context of an explicitly reopened recheck, if applicable.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "until": {
           "type": "string"
         },
@@ -245,57 +303,6 @@
         "until",
         "coverage",
         "detail"
-      ],
-      "type": "object"
-    },
-    "WorkspaceRevision": {
-      "properties": {
-        "branch": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "commit": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "dirty": {
-          "description": "Changes excluding private paths, ignored files and submodule contents.",
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "observed_at": {
-          "type": "string"
-        },
-        "repository": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "state": {
-          "$ref": "#/$defs/RepositoryState"
-        },
-        "workspace": {
-          "type": "string"
-        },
-        "worktree_status_sha256": {
-          "description": "Hash of Git's status entries and changed files, without retaining names or contents.",
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "workspace",
-        "state",
-        "observed_at"
       ],
       "type": "object"
     }

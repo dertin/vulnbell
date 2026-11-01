@@ -8,23 +8,25 @@ use rusqlite::params;
 use std::{collections::BTreeSet, path::Path};
 
 pub(crate) mod automation;
+mod codebase;
 mod contracts;
 mod sources;
-mod workspace;
+pub(crate) use codebase::{
+    checked_path, has_untrusted_sources, open_file, private_name, requirements_file,
+};
 pub use contracts::*;
 pub use sources::{RegistryFailure, RegistryRun};
-pub(crate) use workspace::{open_file, private_name};
 
-/// Discovery state is keyed by project and workspace roots only, so editing components,
+/// Discovery state is keyed by project and codebase roots only, so editing components,
 /// research topics or schedules keeps completed file reviews.
 fn roots(profile: &Profile, path: &Path) -> Result<Vec<String>> {
     let profile_path = path.canonicalize()?;
     let base = profile_path.parent().unwrap_or(Path::new("/"));
     let mut roots: Vec<String> = profile
-        .workspaces
+        .codebases
         .iter()
-        .map(|workspace| {
-            let joined = base.join(workspace);
+        .map(|codebase| {
+            let joined = base.join(codebase);
             joined
                 .canonicalize()
                 .unwrap_or(joined)
@@ -72,6 +74,10 @@ pub fn map_registries(
     }
     let _lock = store.lock()?;
     let scope = scope(profile, path)?;
+    codebase::prepare(profile, path, store, &scope)?;
+    if !codebase::sync_include_guard(store, &scope)? {
+        bail!("finish codebase enumeration before mapping registry sources");
+    }
     let mut http = crate::network::Http::new(store, offline);
     let first_party = sources::first_party(&roots(profile, path)?);
     let run = sources::map_registries(
@@ -98,7 +104,7 @@ pub fn reopen(
         bail!("agent discovery is not enabled in this profile");
     }
     let _lock = store.lock()?;
-    workspace::reopen(store, &scope(profile, path)?, relative)?;
+    codebase::reopen(store, &scope(profile, path)?, relative)?;
     summary(profile, path, store)
 }
 
@@ -108,14 +114,16 @@ pub fn plan(profile: &Profile, path: &Path, store: &Store, limit: usize) -> Resu
     }
     let scope = scope(profile, path)?;
     if profile.discovery == DiscoveryMode::Agent {
-        workspace::prepare(profile, path, store, &scope)?;
+        codebase::prepare(profile, path, store, &scope)?;
     }
-    let workspace = if profile.discovery == DiscoveryMode::Agent {
-        workspace::page(store, &scope, limit)?
+    let ready =
+        profile.discovery == DiscoveryMode::Agent && codebase::sync_include_guard(store, &scope)?;
+    let codebase_files = if ready {
+        codebase::page(store, &scope, limit)?
     } else {
         Vec::new()
     };
-    let components = if profile.discovery == DiscoveryMode::Agent {
+    let components = if ready {
         sources::targets(
             store,
             &scope,
@@ -132,7 +140,7 @@ pub fn plan(profile: &Profile, path: &Path, store: &Store, limit: usize) -> Resu
         project_id: profile.project_id.to_string(),
         scope_sha256: scope.clone(),
         enabled: profile.discovery == DiscoveryMode::Agent,
-        workspace,
+        codebase_files,
         components,
         summary: summary(profile, path, store)?,
     })
@@ -148,10 +156,10 @@ pub fn import(
         bail!("general discovery is explicitly disabled in this profile");
     }
     let _lock = store.lock()?;
-    store.ensure_workspace_current()?;
+    store.ensure_codebases_current()?;
     let current_scope = scope(profile, path)?;
     match batch {
-        DiscoveryBatch::Workspace {
+        DiscoveryBatch::Codebase {
             schema_version,
             project_id,
             scope_sha256,
@@ -165,7 +173,8 @@ pub fn import(
                 &scope_sha256,
                 reviews.len(),
             )?;
-            workspace::import(profile, store, &current_scope, reviews)?;
+            codebase::prepare(profile, path, store, &current_scope)?;
+            codebase::import(profile, store, &current_scope, reviews)?;
         }
         DiscoveryBatch::Sources {
             schema_version,
@@ -213,7 +222,7 @@ pub fn acquire(profile: &Profile, store: &Store, url: &str) -> Result<crate::mod
 }
 
 /// Native inventory gaps that general discovery covers are replaced by the discovery row:
-/// unsupported manifests it already reviewed or excluded, and workspaces without lockfiles.
+/// unsupported manifests it already reviewed or excluded, and codebases without lockfiles.
 pub fn augment(
     profile: &Profile,
     path: &Path,
@@ -230,15 +239,18 @@ pub fn augment(
         )]);
     }
     let scope = scope(profile, path)?;
-    let preparation = workspace::prepare(profile, path, store, &scope);
-    let settled = workspace::settled_paths(store, &scope)?;
+    let preparation = codebase::prepare(profile, path, store, &scope);
+    let ready = preparation.is_ok() && codebase::sync_include_guard(store, &scope)?;
+    let settled = codebase::settled_paths(store, &scope)?;
     inventory_coverage.retain(|row| {
         row.source != "inventory"
             || row.detail != crate::inventory::NO_NATIVE_INVENTORY
                 && !(row.detail == crate::inventory::UNSUPPORTED_MANIFEST
                     && settled.contains(&row.scope))
     });
-    append_workspace_instances(store, &scope, instances)?;
+    if ready {
+        append_codebase_instances(store, &scope, instances)?;
+    }
     sources::apply(store, &scope, instances)?;
     let first_party = sources::first_party(&roots(profile, path)?);
     let summary = summary_for_instances(profile, store, &scope, &first_party, instances)?;
@@ -246,7 +258,7 @@ pub fn augment(
     if let Err(error) = preparation {
         coverage_rows.push(Coverage::new(
             "general_discovery",
-            "workspace",
+            "codebase",
             CoverageState::Unavailable,
             error.to_string(),
         ));
@@ -254,7 +266,7 @@ pub fn augment(
     Ok(coverage_rows)
 }
 
-fn append_workspace_instances(
+fn append_codebase_instances(
     store: &Store,
     scope: &str,
     instances: &mut Vec<Instance>,
@@ -266,16 +278,16 @@ fn append_workspace_instances(
                 instance.reference.clone(),
                 instance.resolved_version.clone(),
                 instance.provenance.path.clone(),
-                instance.provenance.workspace.clone(),
+                instance.provenance.codebase.clone(),
             )
         })
         .collect();
-    for discovered in workspace::instances(store, scope)? {
+    for discovered in codebase::instances(store, scope)? {
         let key = (
             discovered.reference.clone(),
             discovered.resolved_version.clone(),
             discovered.provenance.path.clone(),
-            discovered.provenance.workspace.clone(),
+            discovered.provenance.codebase.clone(),
         );
         if native_keys.insert(key) {
             instances.push(discovered);
@@ -294,7 +306,7 @@ pub fn summary(profile: &Profile, path: &Path, store: &Store) -> Result<Discover
         }
     }
     let scope = scope(profile, path)?;
-    append_workspace_instances(store, &scope, &mut instances)?;
+    append_codebase_instances(store, &scope, &mut instances)?;
     let first_party = sources::first_party(&roots(profile, path)?);
     summary_for_instances(profile, store, &scope, &first_party, &instances)
 }
@@ -325,7 +337,7 @@ fn summary_for_instances(
     let (components_unmapped, sources_unavailable) =
         sources::counts(store, scope, first_party, instances, &profile.research)?;
     let complete = enabled
-        && initialized_roots >= profile.workspaces.len()
+        && initialized_roots >= profile.codebases.len()
         && directories_pending == 0
         && directories_unavailable == 0
         && files_pending == 0
@@ -336,7 +348,7 @@ fn summary_for_instances(
         enabled,
         directories_pending: directories_pending
             + directories_unavailable
-            + profile.workspaces.len().saturating_sub(initialized_roots),
+            + profile.codebases.len().saturating_sub(initialized_roots),
         files_pending,
         files_reviewed: count("discovery_files", "done")?,
         files_excluded: count("discovery_files", "excluded")?
@@ -395,6 +407,41 @@ pub fn mapped_sources(
         return Ok(Vec::new());
     }
     sources::mapped(store, &scope(profile, path)?)
+}
+
+/// Current, locally validated agent observations; never reuse stale public identities.
+pub(crate) fn current_observation_ids(
+    profile: &Profile,
+    path: &Path,
+    store: &Store,
+) -> Result<Option<std::collections::HashSet<String>>> {
+    let unavailable = || -> Result<bool> {
+        Ok(roots(profile, path)?
+            .iter()
+            .any(|root| std::fs::read_dir(root).is_err()))
+    };
+    if unavailable()? {
+        return Ok(None);
+    }
+    if profile.discovery == DiscoveryMode::Off {
+        return Ok(Some(std::collections::HashSet::new()));
+    }
+    let scope = scope(profile, path)?;
+    if let Err(error) = codebase::prepare(profile, path, store, &scope) {
+        if unavailable()? {
+            return Ok(None);
+        }
+        return Err(error);
+    }
+    if !codebase::sync_include_guard(store, &scope)? {
+        return Ok(Some(std::collections::HashSet::new()));
+    }
+    Ok(Some(
+        codebase::instances(store, &scope)?
+            .into_iter()
+            .map(|instance| instance.id)
+            .collect(),
+    ))
 }
 
 pub fn source_map(

@@ -13,9 +13,9 @@ fn capabilities_report_profile_limits_without_starting_the_runtime() {
         .unwrap();
     assert!(output.status.success());
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["workspace_stage"]["max_files"], 1000);
+    assert_eq!(value["codebase_stage"]["max_files"], 1000);
     assert_eq!(
-        value["workspace_stage"]["max_archive_bytes"],
+        value["codebase_stage"]["max_archive_bytes"],
         16 * 1024 * 1024
     );
     assert_eq!(value["test"]["max_inputs"], 20);

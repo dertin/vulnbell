@@ -1,0 +1,57 @@
+{
+  "$defs": {
+    "Citation": {
+      "additionalProperties": false,
+      "properties": {
+        "codebase": {
+          "description": "Zero-based index in the scan's codebase_revisions array.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "line": {
+          "description": "One-based line; its SHA-256 excludes the line ending.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "line_sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "codebase",
+        "path",
+        "line"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "citations": {
+      "items": {
+        "$ref": "#/$defs/Citation"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "citations"
+  ],
+  "title": "CitationBatch",
+  "type": "object"
+}

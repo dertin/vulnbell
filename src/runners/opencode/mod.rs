@@ -1,4 +1,4 @@
-use super::{AgentAdapter, AgentRole, Request, base_command};
+use super::{AgentAdapter, AgentRole, Request, SourceAccess, base_command};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -21,10 +21,17 @@ struct Session {
     settings: Value,
     permissions: Value,
     auth: String,
+    allowed_tools: Vec<&'static str>,
 }
 
 impl Session {
-    fn new(adapter: &OpenCodeAdapter<'_>, directory: &Path, research: bool) -> Result<Self> {
+    fn new(
+        adapter: &OpenCodeAdapter<'_>,
+        directory: &Path,
+        role: AgentRole,
+        github: Option<&str>,
+        source: Option<&SourceAccess>,
+    ) -> Result<Self> {
         let (provider, _) = adapter
             .model
             .split_once('/')
@@ -53,13 +60,62 @@ impl Session {
         for name in ["home", "config", "data", "state", "cache", "work", "tmp"] {
             fs::create_dir(directory.path().join(name))?;
         }
-        let permissions = if research {
-            json!({"*":"deny", "websearch":"allow"})
-        } else {
-            json!({"*":"deny"})
-        };
+        let mut permissions = serde_json::Map::from_iter([("*".into(), json!("deny"))]);
+        let mut mcp = serde_json::Map::new();
+        let mut allowed_tools = Vec::new();
+        if matches!(role, AgentRole::PublicResearch) {
+            permissions.insert("websearch".into(), json!("allow"));
+            allowed_tools.push("websearch");
+            mcp.insert(
+                "vulnbell_web".into(),
+                json!({"type":"local","enabled":true,
+                "command":[std::env::current_exe()?,"runner-web"],"timeout":45000}),
+            );
+            permissions.insert("vulnbell_web_public_fetch".into(), json!("allow"));
+            allowed_tools.push("vulnbell_web_public_fetch");
+            if let Some(upstream) = github {
+                let mut environment = serde_json::Map::new();
+                for key in ["HOME", "USERPROFILE", "APPDATA"] {
+                    if let Some(value) = std::env::var_os(key) {
+                        environment.insert(key.into(), json!(value.to_string_lossy()));
+                    }
+                }
+                for key in ["GH_CONFIG_DIR", "XDG_CONFIG_HOME"] {
+                    let value = std::env::var_os(key).unwrap_or_default();
+                    environment.insert(key.into(), json!(value.to_string_lossy()));
+                }
+                mcp.insert(
+                    "vulnbell_github".into(),
+                    json!({"type":"local","enabled":true,
+                    "command":[std::env::current_exe()?,"runner-github","--upstream",upstream],
+                    "environment":environment,"timeout":45000}),
+                );
+                permissions.insert("vulnbell_github_github_read".into(), json!("allow"));
+                allowed_tools.push("vulnbell_github_github_read");
+            }
+        }
+        if let Some(source) = source {
+            if !matches!(role, AgentRole::CodebaseReview) {
+                bail!("source tools require the codebase review role");
+            }
+            mcp.insert("vulnbell_codebase".into(), json!({"type":"local","enabled":true,
+                "command":[std::env::current_exe()?,"runner-codebase","--project",source.project,"--receipt",source.receipt],
+                "environment":{"VULNBELL_DATA_DIR":source.data_root},"timeout":45000}));
+            for name in [
+                "vulnbell_codebase_codebase_list",
+                "vulnbell_codebase_codebase_read",
+                "vulnbell_codebase_codebase_search",
+            ] {
+                permissions.insert(name.into(), json!("allow"));
+                allowed_tools.push(name);
+            }
+        }
+        if matches!(role, AgentRole::CodebaseReview) && source.is_none() {
+            bail!("source review requires a codebase scope");
+        }
+        let permissions = Value::Object(permissions);
         let settings = json!({
-            "autoupdate":false, "snapshot":false, "plugin":[], "mcp":{},
+            "autoupdate":false, "snapshot":false, "plugin":[], "mcp":mcp,
             "permission":permissions,
             "agent":{"vulnbell":{
                 "mode":"primary", "description":"VulnBell security review",
@@ -72,6 +128,7 @@ impl Session {
             settings,
             permissions,
             auth: serde_json::to_string(&auth)?,
+            allowed_tools,
         })
     }
 
@@ -116,7 +173,7 @@ impl Session {
         Ok(command)
     }
 
-    fn preflight(&self, adapter: &OpenCodeAdapter<'_>, research: bool) -> Result<()> {
+    fn preflight(&self, adapter: &OpenCodeAdapter<'_>, role: AgentRole) -> Result<()> {
         let mut version = base_command(adapter.executable, self.directory.path());
         version.arg("--version");
         let observed = crate::process::run_bounded_agent(&mut version, 5, 4096)?;
@@ -133,7 +190,7 @@ impl Session {
         if effective.get("permission") != Some(&self.permissions)
             || effective.pointer("/agent/vulnbell/permission") != Some(&self.permissions)
             || effective.get("plugin") != Some(&json!([]))
-            || effective.get("mcp") != Some(&json!({}))
+            || effective.get("mcp") != self.settings.get("mcp")
         {
             bail!("OpenCode effective configuration differs from the required capability policy");
         }
@@ -155,7 +212,7 @@ impl Session {
             .filter(|(_, enabled)| **enabled)
             .map(|(name, _)| name.as_str())
             .collect();
-        let expected = if research {
+        let expected = if matches!(role, AgentRole::PublicResearch) {
             vec!["websearch"]
         } else {
             Vec::new()
@@ -187,7 +244,7 @@ struct ToolState {
     status: String,
 }
 
-fn final_output(bytes: &[u8], research: bool) -> Result<String> {
+fn final_output(bytes: &[u8], allowed_tools: &[&str], json_required: bool) -> Result<String> {
     let mut output = String::new();
     let mut finished = false;
     for line in bytes
@@ -217,7 +274,10 @@ fn final_output(bytes: &[u8], research: bool) -> Result<String> {
             "tool_use" => {
                 let part = event.part.context("OpenCode tool event has no body")?;
                 if part.state.is_some_and(|state| state.status == "completed")
-                    && !(research && part.tool.as_deref() == Some("websearch"))
+                    && !part
+                        .tool
+                        .as_deref()
+                        .is_some_and(|tool| allowed_tools.contains(&tool))
                 {
                     bail!("OpenCode completed a forbidden tool operation");
                 }
@@ -228,7 +288,7 @@ fn final_output(bytes: &[u8], research: bool) -> Result<String> {
     if !finished || output.trim().is_empty() || output.len() > 2 * 1024 * 1024 {
         bail!("OpenCode did not return a complete bounded final answer");
     }
-    if research {
+    if json_required {
         let _: Value =
             serde_json::from_str(&output).context("OpenCode research must be one JSON object")?;
     }
@@ -237,17 +297,29 @@ fn final_output(bytes: &[u8], research: bool) -> Result<String> {
 
 impl AgentAdapter for OpenCodeAdapter<'_> {
     fn check(&self, directory: &Path) -> Result<()> {
-        for research in [true, false] {
-            let session = Session::new(self, directory, research)?;
-            session.preflight(self, research)?;
+        for role in [AgentRole::PublicResearch, AgentRole::ToolFree] {
+            let session = Session::new(self, directory, role, None, None)?;
+            session.preflight(self, role)?;
         }
         Ok(())
     }
 
     fn execute(&self, request: Request<'_>) -> Result<()> {
-        let research = matches!(request.role, AgentRole::PublicResearch);
-        let session = Session::new(self, request.directory, research)?;
-        session.preflight(self, research)?;
+        let source = SourceAccess::for_request(&request)?;
+        let github = request.github_upstream.filter(|upstream| {
+            matches!(
+                crate::tools::raw::provider_for(upstream),
+                crate::tools::raw::Provider::GitHub { mirror: false, .. }
+            )
+        });
+        let session = Session::new(
+            self,
+            request.directory,
+            request.role,
+            github,
+            source.as_ref(),
+        )?;
+        session.preflight(self, request.role)?;
         let mut command = session.command(self)?;
         command
             .args(["run", "--format", "json", "--agent", "vulnbell", "--model"])
@@ -274,12 +346,19 @@ impl AgentAdapter for OpenCodeAdapter<'_> {
         if !result.success {
             bail!("OpenCode failed or exceeded its execution window; inspect private job logs");
         }
-        crate::atomic_write(
-            request.output,
-            final_output(&result.stdout, research)?.as_bytes(),
-        )
+        let output = final_output(
+            &result.stdout,
+            &session.allowed_tools,
+            request.schema.is_some(),
+        )?;
+        if let Some(source) = source {
+            source.verify()?;
+        }
+        crate::atomic_write(request.output, output.as_bytes())
     }
 }
 
+#[cfg(test)]
+mod acceptance;
 #[cfg(test)]
 mod tests;

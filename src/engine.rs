@@ -14,8 +14,8 @@ use std::{collections::HashSet, path::Path};
 const AGENT_EVIDENCE: [&str; 2] = ["agent_verdict", "impact_assessment"];
 
 pub fn scan(profile: &Profile, path: &Path, offline: bool) -> Result<Snapshot> {
-    if profile.workspaces.is_empty() && profile.components.is_empty() {
-        bail!("empty_scope: add components or authorized workspaces before scanning");
+    if profile.codebases.is_empty() && profile.components.is_empty() {
+        bail!("empty_scope: add components or authorized codebases before scanning");
     }
     let mut store = Store::open(&profile.project_id.to_string())?;
     store.check_schema()?;
@@ -72,21 +72,21 @@ fn scan_inner(
     store: &Store,
     start: &str,
 ) -> Result<Snapshot> {
-    let workspace_revisions = crate::workspace_revision::capture(profile, path);
+    let codebase_revisions = crate::codebase_revision::capture(profile, path);
     let snapshot_id = uuid::Uuid::new_v4().to_string();
-    let workspace_context = crate::workspace_revision::fingerprint(&workspace_revisions);
+    let codebase_context = crate::codebase_revision::fingerprint(&codebase_revisions);
     let profile_bytes = crate::read_limited(path, 1024 * 1024)?;
     let profile_hash = crate::digest(&profile_bytes);
     let mut instances: Vec<Instance> = profile.components.iter().map(Instance::declared).collect();
     let remaining = 100_000usize.saturating_sub(instances.len());
-    let inventory = crate::inventory::discover(&profile.workspaces, path, store, remaining);
+    let inventory = crate::inventory::discover(&profile.codebases, path, store, remaining);
     instances.extend(inventory.instances);
     let mut coverage = inventory.coverage;
     let discovery_coverage =
         crate::discovery::augment(profile, path, store, &mut instances, &mut coverage)?;
     coverage.extend(discovery_coverage);
     for instance in &mut instances {
-        instance.provenance.workspace_context_sha256 = workspace_context.clone();
+        instance.provenance.codebase_context_sha256 = codebase_context.clone();
     }
     let mut http = Http::new(store, offline);
     for instance in &mut instances {
@@ -120,9 +120,8 @@ fn scan_inner(
         &coverage,
     )?;
     for case in &mut cases {
-        case.workspace_revisions = workspace_revisions.clone();
+        case.codebase_revisions = codebase_revisions.clone();
     }
-    coverage.push(Coverage::new("upstream_agent", "project", CoverageState::Partial, "GitHub, GitLab, Launchpad and similar sites are reviewed by the local agent; run research to obtain windows and seen IDs, then import its evidence"));
     let mut merged_previous_ids = HashSet::new();
     for case in &mut cases {
         let related: Vec<&Case> = previous_cases
@@ -188,10 +187,20 @@ fn scan_inner(
             continue;
         };
         if previous.facts_sha256 == case.facts_sha256 {
-            case.applicability = previous.applicability;
-            case.verification = previous.verification;
-            case.decision = previous.decision;
             case.evidence = previous.evidence;
+            if crate::codebase_revision::same_revisions(
+                &previous.codebase_revisions,
+                &case.codebase_revisions,
+            ) {
+                case.applicability = previous.applicability;
+                case.verification = previous.verification;
+                case.decision = previous.decision;
+            } else {
+                case.open_questions.push(
+                    "Codebase revision changed; reassess the previous verdict and any local verification."
+                        .into(),
+                );
+            }
         } else if previous
             .evidence
             .iter()
@@ -214,7 +223,11 @@ fn scan_inner(
         {
             continue;
         }
-        let mut context_changed = reconcile_research_instances(&mut previous, &instances);
+        let mut context_changed = reconcile_research_instances(&mut previous, &instances)
+            || !crate::codebase_revision::same_revisions(
+                &previous.codebase_revisions,
+                &codebase_revisions,
+            );
         if !previous
             .instances
             .iter()
@@ -223,7 +236,7 @@ fn scan_inner(
             continue;
         }
         previous.snapshot_id = snapshot_id.clone();
-        previous.workspace_revisions = workspace_revisions.clone();
+        previous.codebase_revisions = codebase_revisions.clone();
         for old_instance in &mut previous.instances {
             if let Some(current) = instances
                 .iter()
@@ -298,21 +311,21 @@ fn scan_inner(
             http.requests, http.cache_hits, http.budget
         ),
     ));
-    if !crate::workspace_revision::unchanged_during_scan(&workspace_revisions) {
-        bail!("workspace Git context changed during scan; retry after the workspace is stable");
+    if !crate::codebase_revision::unchanged_during_scan(&codebase_revisions) {
+        bail!("codebase Git context changed during scan; retry after the codebase is stable");
     }
-    if workspace_revisions.iter().any(|revision| {
-        revision.state == crate::workspace_revision::RepositoryState::Unavailable
-            || revision.state == crate::workspace_revision::RepositoryState::Git
+    if codebase_revisions.iter().any(|revision| {
+        revision.state == crate::codebase_revision::RepositoryState::Unavailable
+            || revision.state == crate::codebase_revision::RepositoryState::Git
                 && (revision.commit.is_none()
                     || revision.dirty.is_none()
                     || revision.worktree_status_sha256.is_none())
     }) {
         coverage.push(Coverage::new(
-            "workspace_git",
+            "codebase_git",
             "project",
             CoverageState::Partial,
-            "Git workspace identity or changed-file fingerprint could not be determined safely",
+            "Git codebase identity or changed-file fingerprint could not be determined safely",
         ));
     }
     let partial = coverage
@@ -325,7 +338,7 @@ fn scan_inner(
         profile_sha256: profile_hash,
         started_at: start.into(),
         finished_at: crate::now(),
-        workspace_revisions,
+        codebase_revisions,
         instances,
         coverage,
         cases,
@@ -346,7 +359,7 @@ fn reconcile_research_instances(case: &mut Case, current: &[Instance]) -> bool {
         let mut candidates = current.iter().filter(|instance| {
             instance.reference == previous.reference
                 && instance.origin == previous.origin
-                && instance.provenance.workspace == previous.provenance.workspace
+                && instance.provenance.codebase == previous.provenance.codebase
                 && instance.provenance.path == previous.provenance.path
                 && !previous.identity_replaced(instance)
         });
@@ -529,7 +542,7 @@ pub fn cases_from_claims(
             case_id,
             project_id: profile.project_id.to_string(),
             snapshot_id: snapshot_id.into(),
-            workspace_revisions: Vec::new(),
+            codebase_revisions: Vec::new(),
             instances: vec![instance],
             claims: group,
             upstream_events: Vec::new(),
@@ -567,11 +580,87 @@ fn search_queries(instance: &Instance, profile: &Profile) -> Vec<String> {
             .unwrap_or("version unknown")
     )]
 }
+
+fn has_affected_claim(case: &Case, store: &Store) -> bool {
+    case.claims.iter().any(|claim| {
+        claim.applicability == Applicability::Affected
+            && store.evidence_exists(&claim.evidence).unwrap_or(false)
+    })
+}
+
+pub fn current_verdict(case: &Case, store: &Store) -> Option<Verdict> {
+    if crate::tools::challenge::blocks_verdict(case, store) {
+        return None;
+    }
+    let (verdict_index, evidence) = case
+        .evidence
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, item)| item.source == "agent_verdict")?;
+    if case.evidence.iter().skip(verdict_index + 1).any(|item| {
+        item.kind == EvidenceKind::Attestation
+            && crate::sandbox::read_attestation(case, store, item).is_ok()
+    }) {
+        return None;
+    }
+    if !store.evidence_exists(evidence).ok()? {
+        return None;
+    }
+    let bytes = crate::read_limited(
+        &store.directory.join("evidence").join(&evidence.sha256),
+        64 * 1024,
+    )
+    .ok()?;
+    let verdict: Verdict = serde_json::from_slice(&bytes).ok()?;
+    if verdict.schema_version != 1
+        || verdict.case_id != case.case_id
+        || verdict.facts_sha256 != case.facts_sha256
+        || !crate::codebase_revision::same_revisions(
+            &verdict.codebase_revisions,
+            &case.codebase_revisions,
+        )
+        || verdict.decision != case.decision
+        || verdict.applicability != case.applicability
+        || verdict.verification != case.verification
+        || verdict.rationale.trim().is_empty()
+        || verdict.evidence.is_empty()
+    {
+        return None;
+    }
+    let mut has_attestation = false;
+    for reference in &verdict.evidence {
+        let cited = case
+            .evidence
+            .iter()
+            .find(|item| item.id == reference.id && item.sha256 == reference.sha256)?;
+        if !store.evidence_exists(cited).ok()? {
+            return None;
+        }
+        if cited.source == "review_challenge"
+            && crate::tools::challenge::read_challenge(case, store, cited).is_none()
+        {
+            return None;
+        }
+        if cited.kind == EvidenceKind::Attestation {
+            let attestation = crate::sandbox::read_attestation(case, store, cited).ok()?;
+            has_attestation |= attestation.verification == Verification::LabReproduced;
+        }
+    }
+    if (verdict.verification == Verification::SourceConfirmed
+        || verdict.decision == Decision::Actionable && !has_attestation)
+        && !has_affected_claim(case, store)
+    {
+        return None;
+    }
+    Some(verdict)
+}
+
 pub fn triage(store: &mut Store, id: &str, mut verdict: Verdict) -> Result<Case> {
     let _lock = store.lock()?;
-    store.ensure_workspace_current()?;
+    store.ensure_codebases_current()?;
     let mut case = store.case(id)?;
-    verdict.workspace_revisions = case.workspace_revisions.clone();
+    verdict.codebase_revisions = case.codebase_revisions.clone();
     if verdict.schema_version != 1
         || verdict.case_id != id
         || verdict.facts_sha256 != case.facts_sha256
@@ -580,6 +669,16 @@ pub fn triage(store: &mut Store, id: &str, mut verdict: Verdict) -> Result<Case>
     }
     if verdict.evidence.is_empty() || verdict.rationale.trim().is_empty() {
         bail!("verdict requires rationale and registered evidence");
+    }
+    if crate::tools::challenge::unresolved_challenges(&case, store)
+        .iter()
+        .any(|challenge| {
+            !verdict.evidence.iter().any(|reference| {
+                reference.id == challenge.id && reference.sha256 == challenge.sha256
+            })
+        })
+    {
+        bail!("new verdict must address and cite the unresolved challenge");
     }
     let mut has_attestation = false;
     let mut positive_nonapplicability = false;
@@ -591,6 +690,11 @@ pub fn triage(store: &mut Store, id: &str, mut verdict: Verdict) -> Result<Case>
             .context("unknown evidence or forged attestation")?;
         if !store.evidence_exists(evidence)? {
             bail!("evidence integrity failed");
+        }
+        if evidence.source == "review_challenge"
+            && crate::tools::challenge::read_challenge(&case, store, evidence).is_none()
+        {
+            bail!("challenge evidence integrity failed");
         }
         if evidence.kind == EvidenceKind::Attestation {
             let attestation = crate::sandbox::read_attestation(&case, store, evidence)?;
@@ -617,36 +721,30 @@ pub fn triage(store: &mut Store, id: &str, mut verdict: Verdict) -> Result<Case>
     {
         bail!("actionable requires affected applicability");
     }
-    if verdict.verification == Verification::SourceConfirmed
-        && !case
-            .claims
-            .iter()
-            .any(|claim| claim.applicability == Applicability::Affected)
+    if (verdict.verification == Verification::SourceConfirmed
+        || verdict.decision == Decision::Actionable && !has_attestation)
+        && !has_affected_claim(&case, store)
     {
-        bail!("no authoritative affected claim for source_confirmed");
-    }
-    let authoritative_affected = case
-        .claims
-        .iter()
-        .any(|claim| claim.applicability == Applicability::Affected);
-    if verdict.decision == Decision::Actionable && !(authoritative_affected || has_attestation) {
+        if verdict.verification == Verification::SourceConfirmed {
+            bail!("no authoritative affected claim with intact evidence for source_confirmed");
+        }
         bail!(
-            "actionable requires an authoritative affected claim or positive runtime attestation"
+            "actionable requires an affected claim with intact evidence or positive runtime attestation"
         );
     }
     if verdict.verification == Verification::Disproven && !positive_nonapplicability {
         bail!("disproven requires positive non-applicability evidence");
     }
+    let verdict_bytes = serde_json::to_vec(&verdict)?;
+    if verdict_bytes.len() > 64 * 1024 {
+        bail!("verdict exceeds the 64 KiB evidence limit");
+    }
     case.applicability = verdict.applicability;
     case.verification = verdict.verification;
     case.decision = verdict.decision;
     case.updated_at = crate::now();
-    let verdict_evidence = store.record_evidence(
-        &serde_json::to_vec(&verdict)?,
-        "agent_verdict",
-        None,
-        EvidenceKind::Context,
-    )?;
+    let verdict_evidence =
+        store.record_evidence(&verdict_bytes, "agent_verdict", None, EvidenceKind::Context)?;
     case.evidence.push(verdict_evidence);
     store.save_case(&case)?;
     store.set_meta("last_agent_review", &case.updated_at)?;

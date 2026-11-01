@@ -19,7 +19,7 @@ fn unavailable_guest_returns_inconclusive_without_executing_the_test_on_the_host
     };
     let instance = Instance::declared(&component);
     let case = Case {
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         schema_version: 1,
         case_id: "SIG-synthetic-unavailable".into(),
         project_id: project.clone(),
@@ -29,9 +29,9 @@ fn unavailable_guest_returns_inconclusive_without_executing_the_test_on_the_host
         upstream_events: Vec::new(),
         evidence: Vec::new(),
         coverage: Vec::new(),
-        applicability: Applicability::Unknown,
-        verification: Verification::Inconclusive,
-        decision: Decision::Review,
+        applicability: Applicability::NotAffected,
+        verification: Verification::NotReproduced,
+        decision: Decision::Informational,
         facts_sha256: "synthetic".into(),
         open_questions: Vec::new(),
         suggested_search_queries: Vec::new(),
@@ -89,6 +89,8 @@ fn unavailable_guest_returns_inconclusive_without_executing_the_test_on_the_host
         .clone();
     let result: Case = serde_json::from_slice(&result).unwrap();
     assert_eq!(result.verification, Verification::Inconclusive);
+    assert_eq!(result.decision, Decision::Review);
+    assert_eq!(result.applicability, Applicability::Unknown);
     assert!(!result.sandbox.available);
     assert!(!marker.exists());
     assert!(

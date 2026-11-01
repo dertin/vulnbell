@@ -12,6 +12,20 @@ pub(super) struct Cli {
 }
 #[derive(Subcommand)]
 pub(super) enum Commands {
+    #[command(hide = true)]
+    RunnerWeb,
+    #[command(hide = true)]
+    RunnerGithub {
+        #[arg(long)]
+        upstream: String,
+    },
+    #[command(hide = true)]
+    RunnerCodebase {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        receipt: Option<PathBuf>,
+    },
     /// Install the embedded, version-aligned Agent Skill without overwriting user changes.
     Skills {
         #[command(subcommand)]
@@ -27,14 +41,14 @@ pub(super) enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Create a valid empty project; does not require a local workspace.
+    /// Create a valid empty project; does not require a local codebase.
     Init {
         #[arg(long)]
         output: PathBuf,
     },
     /// Print a versioned JSON Schema generated from the Rust contract.
     Schema {
-        #[arg(value_parser=["profile","verdict","case","test","attestation","impact","report","research","discovery","runner","snapshot","schedule","status","decisions","impact-batch","verdict-batch","scope-batch","handoff-batch","items"])]
+        #[arg(value_parser=["profile","verdict","case","test","attestation","impact","report","research","discovery","runner","snapshot","schedule","status","decisions","impact-batch","verdict-batch","scope-batch","handoff-batch","citations","challenge","items"])]
         contract: String,
         #[arg(long)]
         json: bool,
@@ -73,7 +87,7 @@ pub(super) enum Commands {
         /// Fetch and register a public research link as context, never as an attestation.
         #[arg(long)]
         evidence_url: Option<String>,
-        /// Register a reviewed local note or result as evidence; do not include secrets or raw workspaces.
+        /// Register a reviewed local note or result as evidence; do not include secrets or raw codebases.
         #[arg(long)]
         evidence_file: Option<PathBuf>,
         /// Record why a needed sandbox check cannot run; this is context, never proof of safety.
@@ -89,42 +103,8 @@ pub(super) enum Commands {
         #[arg(long)]
         instance: Option<String>,
     },
-    /// Execute an explicitly authorized test in Microsandbox; no fallback to host execution.
-    Verify {
-        id: String,
-        #[arg(long)]
-        project: PathBuf,
-        #[arg(long = "case")]
-        test: PathBuf,
-        #[arg(long)]
-        authorize: bool,
-    },
-    /// Answer a fixed, evidence-bound questionnaire about project impact.
-    Impact {
-        id: String,
-        #[arg(long)]
-        project: PathBuf,
-        /// JSON answers matching schema impact. Without this option, prints the questions.
-        #[arg(long)]
-        from: Option<PathBuf>,
-    },
-    /// Apply a verdict against registered evidence and current case facts.
-    Triage {
-        id: String,
-        #[arg(long)]
-        project: PathBuf,
-        #[arg(long)]
-        from: PathBuf,
-    },
-    /// Export the current inventory, cases and source coverage.
-    Report {
-        #[arg(long)]
-        project: PathBuf,
-        #[arg(long)]
-        json: bool,
-        #[arg(long,default_value="manager",value_parser=["manager","cyber","audit"])]
-        audience: String,
-    },
+    #[command(flatten)]
+    Assessment(AssessmentCommands),
     /// Configure and verify local unattended agent adapters.
     Runners {
         #[command(subcommand)]
@@ -164,6 +144,9 @@ pub(super) enum Commands {
         /// RFC3339 start of the reopened review window.
         #[arg(long, requires = "reopen")]
         since: Option<String>,
+        /// Start a new recheck generation for the reopened sources.
+        #[arg(long, requires = "reopen")]
+        recheck: bool,
         #[arg(long)]
         json: bool,
     },
@@ -177,7 +160,7 @@ pub(super) enum Commands {
         evidence_url: Option<String>,
         #[arg(long,conflicts_with_all=["from","evidence_url"])]
         gaps: bool,
-        /// Reopen a reviewed workspace-relative file so its packages are reviewed again.
+        /// Reopen a reviewed codebase-relative file so its packages are reviewed again.
         #[arg(long,conflicts_with_all=["from","evidence_url","gaps"])]
         reopen: Option<String>,
         /// Map pending components from public registry records; `--limit` counts packages (1..500).
@@ -205,7 +188,72 @@ pub(super) enum Commands {
     },
 }
 #[derive(Subcommand)]
+pub(super) enum AssessmentCommands {
+    /// Execute an explicitly authorized test in Microsandbox; no fallback to host execution.
+    Verify {
+        id: String,
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long = "case")]
+        test: PathBuf,
+        #[arg(long)]
+        authorize: bool,
+    },
+    /// Answer a fixed, evidence-bound questionnaire about project impact.
+    Impact {
+        id: String,
+        #[arg(long)]
+        project: PathBuf,
+        /// JSON answers matching schema impact. Without this option, prints the questions.
+        #[arg(long)]
+        from: Option<PathBuf>,
+    },
+    /// Apply a verdict against registered evidence and current case facts.
+    Triage {
+        id: String,
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        from: PathBuf,
+    },
+    /// Export the current inventory, cases and source coverage.
+    Report {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        json: bool,
+        #[arg(long,default_value="manager",value_parser=["manager","cyber","audit"])]
+        audience: String,
+        /// Write a self-contained PDF using a local Chromium-based browser.
+        #[arg(long, conflicts_with = "json")]
+        pdf: Option<PathBuf>,
+        /// Use an edited Markdown report as the PDF's main text.
+        #[arg(long, requires = "pdf")]
+        from_markdown: Option<PathBuf>,
+        /// Chromium-based browser executable; otherwise search common names in PATH.
+        #[arg(long, requires = "pdf")]
+        pdf_browser: Option<PathBuf>,
+    },
+}
+#[derive(Subcommand)]
 pub(super) enum ToolCommands {
+    /// Record a separate evidence-backed challenge of a current case assessment.
+    Challenge {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        from: PathBuf,
+    },
+    /// Check explicit codebase file and line references without emitting source content.
+    Citations {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        case: String,
+        /// JSON file with codebase indexes and relative file/line references.
+        #[arg(long)]
+        from: PathBuf,
+    },
     /// Evaluate screening and ordering against independently labelled local items.
     Evaluate {
         #[arg(long)]
@@ -214,55 +262,28 @@ pub(super) enum ToolCommands {
         #[arg(long, default_value_t = 10)]
         top: usize,
     },
-    /// Screen the responses in a run's raw directory; list missing fetches and items to decide.
-    /// Exit 2 means responses are missing or unreadable.
-    Hits {
+    #[command(flatten)]
+    Research(ResearchTools),
+    #[command(flatten)]
+    Cases(CaseTools),
+    /// Find candidate shared upstream cases across monitors without copying project decisions.
+    Groups {
+        #[arg(long, required = true, num_args = 1)]
+        project: Vec<PathBuf>,
+    },
+    /// Suggest cases sharing an advisory identifier or alias, package and resolved version.
+    Duplicates {
         #[arg(long)]
         project: PathBuf,
-        #[arg(long)]
-        raw: PathBuf,
-        /// Decisions file; items with a current decision are not listed again.
-        #[arg(long)]
-        decisions: Option<PathBuf>,
-        /// Review packet path; stdout receives only the summary.
-        #[arg(long)]
-        output: PathBuf,
-        /// Resolve cited advisories from the local cache only.
-        #[arg(long)]
-        offline: bool,
-        /// Reconsider seen events; use a fresh decisions file for this review.
-        #[arg(long)]
-        recheck: bool,
-        /// Restrict this batch to one upstream from the research plan.
-        #[arg(long)]
-        upstream: Option<String>,
     },
-    /// Build the research batch from the screened items, the deterministic rules and the
-    /// decisions file.
-    Draft {
-        #[arg(long)]
-        project: PathBuf,
-        #[arg(long)]
-        raw: PathBuf,
-        #[arg(long)]
-        decisions: PathBuf,
-        #[arg(long)]
-        output: PathBuf,
-        /// Accept missing responses and undecided items; their sources stay partial.
-        #[arg(long)]
-        partial: bool,
-        /// Import the batch after writing it.
-        #[arg(long)]
-        import: bool,
-        #[arg(long)]
-        offline: bool,
-        /// Include seen events using the decisions supplied for this review.
-        #[arg(long)]
-        recheck: bool,
-        /// Restrict this batch to one upstream from the research plan.
-        #[arg(long)]
-        upstream: Option<String>,
+    /// Create the monitor's folders in a VulnBell workspace.
+    Workspace {
+        #[command(subcommand)]
+        command: WorkspaceCommands,
     },
+}
+#[derive(Subcommand)]
+pub(super) enum CaseTools {
     /// Apply an impact batch; note paths are relative to the batch file.
     Impact {
         #[arg(long)]
@@ -322,20 +343,75 @@ pub(super) enum ToolCommands {
         #[arg(long)]
         next_step: Option<String>,
     },
-    /// Find candidate shared upstream cases across monitors without copying project decisions.
-    Groups {
-        #[arg(long, required = true, num_args = 1)]
-        project: Vec<PathBuf>,
-    },
-    /// Suggest repeated cases with the same advisory, package and resolved version.
-    Duplicates {
+}
+#[derive(Subcommand)]
+pub(super) enum ResearchTools {
+    /// Screen the responses in a run's raw directory; list missing fetches and items to decide.
+    /// Exit 2 means responses are missing or unreadable.
+    Hits {
         #[arg(long)]
         project: PathBuf,
+        #[arg(long)]
+        raw: PathBuf,
+        /// Decisions file; items with a current decision are not listed again.
+        #[arg(long)]
+        decisions: Option<PathBuf>,
+        /// Review packet path; stdout receives only the summary.
+        #[arg(long)]
+        output: PathBuf,
+        /// Resolve cited advisories from the local cache only.
+        #[arg(long)]
+        offline: bool,
+        /// Reconsider seen events; use a fresh decisions file for this review.
+        #[arg(long)]
+        recheck: bool,
+        /// Restrict this batch to one upstream from the research plan.
+        #[arg(long)]
+        upstream: Option<String>,
+        /// Return only the first 1..1000 items; summary retains the total still needing review.
+        #[arg(long)]
+        review_limit: Option<usize>,
     },
-    /// Create the monitor's folders in a VulnBell workspace.
-    Workspace {
-        #[command(subcommand)]
-        command: WorkspaceCommands,
+    /// Atomically save 1..10 reviewed items from a current hits packet.
+    Decide {
+        #[arg(long)]
+        project: PathBuf,
+        /// Review packet written by tools hits.
+        #[arg(long)]
+        packet: PathBuf,
+        /// Decisions JSON containing 1..10 items.
+        #[arg(long)]
+        from: PathBuf,
+        /// Per-monitor decisions file to update or create.
+        #[arg(long)]
+        decisions: PathBuf,
+    },
+    /// Build the research batch from the screened items, the deterministic rules and the
+    /// decisions file.
+    Draft {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        raw: PathBuf,
+        /// Omit when no manual decisions were recorded.
+        #[arg(long)]
+        decisions: Option<PathBuf>,
+        #[arg(long)]
+        output: PathBuf,
+        /// Accept missing responses and undecided items; their sources stay partial.
+        #[arg(long)]
+        partial: bool,
+        /// Import the batch after writing it.
+        #[arg(long)]
+        import: bool,
+        #[arg(long)]
+        offline: bool,
+        /// Include seen events using the decisions supplied for this review.
+        #[arg(long)]
+        recheck: bool,
+        /// Restrict this batch to one upstream from the research plan.
+        #[arg(long)]
+        upstream: Option<String>,
     },
 }
 #[derive(Subcommand)]

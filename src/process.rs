@@ -33,6 +33,7 @@ enum ProcessKind {
     IsolatedTool,
     Agent,
     SandboxRuntime,
+    Renderer,
 }
 pub fn run_sandbox_runtime(
     command: &mut Command,
@@ -63,6 +64,9 @@ pub fn run_bounded_agent(
 ) -> Result<ProcessResult> {
     run_process(command, seconds, max_output, ProcessKind::Agent, None)
 }
+pub fn run_renderer(command: &mut Command, seconds: u64, max_output: u64) -> Result<ProcessResult> {
+    run_process(command, seconds, max_output, ProcessKind::Renderer, None)
+}
 pub fn run_agent_with_input(
     command: &mut Command,
     seconds: u64,
@@ -90,13 +94,17 @@ fn run_process(
     let agent = matches!(kind, ProcessKind::Agent);
     #[cfg(target_os = "linux")]
     let sandbox_runtime = matches!(kind, ProcessKind::SandboxRuntime);
+    #[cfg(target_os = "linux")]
+    let renderer = matches!(kind, ProcessKind::Renderer);
     let mut stdout = tempfile::tempfile()?;
     let mut stderr = tempfile::tempfile()?;
     #[cfg(target_os = "linux")]
     let mut command = {
         let mut bounded = Command::new("prlimit");
         bounded.args([
-            if agent {
+            if renderer {
+                "--as=unlimited"
+            } else if agent {
                 "--as=34359738368"
             } else if sandbox_runtime {
                 "--as=8589934592"
@@ -111,7 +119,7 @@ fn run_process(
             } else {
                 "--fsize=67108864"
             },
-            if agent {
+            if agent || renderer {
                 "--nofile=1024"
             } else if sandbox_runtime {
                 "--nofile=256"

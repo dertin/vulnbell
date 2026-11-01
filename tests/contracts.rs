@@ -639,8 +639,8 @@ fn npm_workspace_patterns_and_unresolved_dependencies_preserve_uncertainty() {
 }
 
 #[test]
-fn npm_workspace_directness_replaces_cached_inventory_for_research() {
-    use vulnbell::inventory::{LockedPackage, discover};
+fn cached_npm_workspace_inventory_preserves_directness_for_research() {
+    use vulnbell::inventory::discover;
     use vulnbell::store::Store;
 
     let directory = tempfile::tempdir().unwrap();
@@ -650,25 +650,6 @@ fn npm_workspace_directness_replaces_cached_inventory_for_research() {
     fs::write(workspace.join("package-lock.json"), lock).unwrap();
     let project = uuid::Uuid::new_v4().to_string();
     let store = Store::open(&project).unwrap();
-    let previous = LockedPackage {
-        ecosystem: "npm".into(),
-        name: "foo".into(),
-        version: "1.0.0".into(),
-        direct: Some(false),
-        resolution: Some("node_modules/foo".into()),
-        artifact_integrity: None,
-        line: None,
-    };
-    store
-        .connection
-        .execute(
-            "INSERT INTO inventory_cache VALUES (?1, ?2)",
-            rusqlite::params![
-                format!("parser-v7:package-lock.json:{}", vulnbell::digest(lock)),
-                serde_json::to_string(&vec![previous]).unwrap()
-            ],
-        )
-        .unwrap();
     let inventory = discover(
         &[workspace.to_string_lossy().into_owned()],
         &directory.path().join("vulnbell.yaml"),
@@ -678,6 +659,14 @@ fn npm_workspace_directness_replaces_cached_inventory_for_research() {
     assert_eq!(inventory.instances.len(), 1);
     assert_eq!(inventory.instances[0].provenance.direct, Some(true));
     assert!(vulnbell::profile::Research::default().tracks(&inventory.instances[0]));
+    let cached = discover(
+        &[workspace.to_string_lossy().into_owned()],
+        &directory.path().join("vulnbell.yaml"),
+        &store,
+        10,
+    );
+    assert_eq!(cached.instances[0].id, inventory.instances[0].id);
+    assert_eq!(cached.instances[0].provenance.direct, Some(true));
     let store_dir = store.directory.clone();
     drop(store);
     fs::remove_dir_all(store_dir).unwrap();
@@ -787,6 +776,18 @@ fn all_published_json_schemas_match_their_rust_contracts() {
         (
             "handoff-batch",
             serde_json::to_value(schemars::schema_for!(vulnbell::tools::cases::HandoffBatch))
+                .unwrap(),
+        ),
+        (
+            "citations",
+            serde_json::to_value(schemars::schema_for!(
+                vulnbell::tools::citations::CitationBatch
+            ))
+            .unwrap(),
+        ),
+        (
+            "challenge",
+            serde_json::to_value(schemars::schema_for!(vulnbell::tools::challenge::Challenge))
                 .unwrap(),
         ),
         (

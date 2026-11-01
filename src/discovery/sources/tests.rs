@@ -29,68 +29,6 @@ fn lockfile_hash_changes_keep_mappings_and_declaration_changes_invalidate_them()
 }
 
 #[test]
-fn maven_mappings_from_an_earlier_mapper_revision_are_mapped_again() {
-    let profile: crate::profile::Profile = serde_saphyr::from_str(
-        "schema: 1\nproject_id: 0de0a8e7-f1a4-4bdc-a198-422b90bbbd84\nname: sources\ncomponents:\n  - ref: pkg:maven/io.quarkus/quarkus-agroal\n    version: '3.40.1'\n",
-    )
-    .unwrap();
-    let instance = Instance::declared(&profile.components[0]);
-    let observation =
-        |rationale: String, state: MappingState, url: Option<&str>| IdentityObservation {
-            instance_id: instance.id.clone(),
-            fingerprint: fingerprint(&instance),
-            version: None,
-            cpe_product: None,
-            rationale,
-            sources: vec![SourceMapping {
-                kind: SourceKind::Repository,
-                state,
-                url: url.map(str::to_owned),
-                detail: "declared".into(),
-                evidence: Vec::new(),
-            }],
-        };
-    let earlier = format!(
-        "{} from https://repo1.maven.org/x.pom",
-        registry::NATIVE_RATIONALE
-    );
-    let current = format!(
-        "{} ({}) from https://repo1.maven.org/x.pom",
-        registry::NATIVE_RATIONALE,
-        registry::MAVEN_MAPPER
-    );
-    let unavailable = MappingState::Unavailable;
-    assert!(outdated_maven_mapping(
-        &instance,
-        &observation(earlier.clone(), unavailable, None)
-    ));
-    assert!(outdated_maven_mapping(
-        &instance,
-        &observation(
-            earlier.clone(),
-            MappingState::Mapped,
-            Some("https://gitbox.apache.org/repos/asf?p=${commons.repo.name}.git")
-        )
-    ));
-    assert!(outdated_maven_mapping(
-        &instance,
-        &observation(
-            earlier,
-            MappingState::Mapped,
-            Some("https://github.com/jboss/jboss-parent-pom")
-        )
-    ));
-    assert!(!outdated_maven_mapping(
-        &instance,
-        &observation(current, unavailable, None)
-    ));
-    assert!(!outdated_maven_mapping(
-        &instance,
-        &observation("Agent mapping".into(), unavailable, None)
-    ));
-}
-
-#[test]
 fn mapped_sources_require_acquired_evidence_and_every_category() {
     let directory = tempfile::tempdir().unwrap();
     let project = uuid::Uuid::new_v4().to_string();
@@ -99,7 +37,7 @@ fn mapped_sources_require_acquired_evidence_and_every_category() {
     let instance = Instance::declared(&profile.components[0]);
     store
         .save_snapshot(&crate::model::Snapshot {
-            workspace_revisions: Vec::new(),
+            codebase_revisions: Vec::new(),
             schema_version: 1,
             id: uuid::Uuid::new_v4().to_string(),
             project_id: project.clone(),
@@ -330,6 +268,7 @@ fn research_pages_reach_every_researched_category_and_resume_a_pinned_partial_wi
     let plan = crate::research::plan_page(&store, "", 1).unwrap();
     let target = &plan.targets[0];
     let review = crate::research::SourceReview {
+        recheck_context_sha256: None,
         upstream: target.upstream.clone(),
         from: target.from.clone(),
         until: target.until.clone(),
@@ -383,7 +322,7 @@ fn research_pages_reach_every_researched_category_and_resume_a_pinned_partial_wi
 }
 
 #[test]
-fn workspace_root_poms_mark_their_own_artifacts_as_first_party() {
+fn reactor_root_poms_mark_their_own_artifacts_as_first_party() {
     let provider = tempfile::tempdir().unwrap();
     std::fs::write(
         provider.path().join("pom.xml"),
@@ -410,7 +349,8 @@ fn workspace_root_poms_mark_their_own_artifacts_as_first_party() {
     )
     .unwrap();
     let instances: Vec<Instance> = profile.components.iter().map(Instance::declared).collect();
-    let store = Store::open("6f0c2c1e-7d1a-4c5e-9b1f-0a4f1f0d2e31").unwrap();
+    let project = uuid::Uuid::new_v4().to_string();
+    let store = Store::open(&project).unwrap();
     assert_eq!(
         counts(
             &store,
@@ -422,4 +362,6 @@ fn workspace_root_poms_mark_their_own_artifacts_as_first_party() {
         .unwrap(),
         (1, 0)
     );
+    drop(store);
+    std::fs::remove_dir_all(crate::store::data_root().join(project)).unwrap();
 }

@@ -1,3 +1,8 @@
+mod requirements;
+
+use self::requirements::blocked_requirement_roots;
+pub(crate) use self::requirements::has_untrusted_sources;
+pub(super) use self::requirements::sync_include_guard;
 use super::contracts::{FileReview, FileSlice};
 use crate::{
     model::{EvidenceKind, Instance, Origin},
@@ -16,26 +21,7 @@ use std::{
 const ENTRY_PAGE: usize = 256;
 const SLICE_BYTES: u64 = 64 * 1024;
 const DIRECTORIES_PER_PLAN: usize = 64;
-/// Bump when exclusion or classification rules change: walked directories are listed again so
-/// existing entries are reclassified, while unchanged reviewed files keep their review.
-const CLASSIFICATION_RULES: &str = "3";
 const GITIGNORE_BYTES: u64 = 1024 * 1024;
-const DEPENDENCY_OUTPUT: [&str; 13] = [
-    "node_modules",
-    ".venv",
-    "venv",
-    "__pycache__",
-    ".gradle",
-    ".terraform",
-    ".tox",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".next",
-    ".nuxt",
-    ".sqlx",
-];
-const BUILD_MANIFESTS: [&str; 4] = ["Cargo.toml", "pom.xml", "build.gradle", "build.gradle.kts"];
 const NATIVE_INVENTORY: &str =
     "parsed by the native lockfile/SBOM inventory; parse failures appear as inventory coverage";
 const CANNOT_DECLARE: &str = "source or documentation file type cannot declare dependency versions";
@@ -66,11 +52,24 @@ const REPOSITORY_METADATA: [&str; 4] =
     [".gitattributes", ".editorconfig", ".mailmap", "CODEOWNERS"];
 const GIT_IGNORED: &str = "git-ignored path (generated or local output, not tracked source)";
 const OUTPUT_DIRECTORY: &str = "dependency or build output directory (installed or generated)";
+const INCLUDE_GUARD: &str = "requirements sources, includes or unresolved input require local review before agent discovery";
 
 /// Returns the state and reason for files that need no agent review, or `None` to review.
 fn file_classification(parent: &str, name: &str) -> Option<(&'static str, &'static str)> {
+    if requirements_file(name) {
+        return Some((
+            "unavailable",
+            "requirements may contain private package identities or source paths; review locally",
+        ));
+    }
     if crate::inventory::native_inventory_file(name) {
         return Some(("excluded", NATIVE_INVENTORY));
+    }
+    if name == "composer.json" {
+        return Some((
+            "unavailable",
+            "Composer manifest may contain private package names or repository credentials; review locally",
+        ));
     }
     let legal = ["LICENSE", "LICENCE", "COPYING", "NOTICE", "AUTHORS"]
         .iter()
@@ -95,6 +94,12 @@ fn file_classification(parent: &str, name: &str) -> Option<(&'static str, &'stat
         | "gz" | "tgz" | "class" => Some(("unavailable", ARTIFACT)),
         _ => None,
     }
+}
+
+pub(crate) fn requirements_file(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    (name.starts_with("requirements") || name.starts_with("constraints"))
+        && (name.ends_with(".txt") || name.ends_with(".in"))
 }
 
 fn inline_markers(name: &str) -> Option<&'static [&'static str]> {
@@ -124,7 +129,7 @@ fn declares_inline(root: &str, relative: &str, markers: &[&str]) -> bool {
     markers.iter().any(|marker| text.contains(marker))
 }
 
-/// `.gitignore` rules from the workspace root down to `relative`, outermost first.
+/// `.gitignore` rules from the codebase root down to `relative`, outermost first.
 /// Unreadable rule files are skipped, which only widens the reviewed set.
 fn ignore_rules(root: &str, relative: &str) -> Vec<ignore::gitignore::Gitignore> {
     let mut rules = Vec::new();
@@ -171,14 +176,6 @@ fn git_ignored(rules: &[ignore::gitignore::Gitignore], path: &Path, is_dir: bool
             ignore::Match::Whitelist(_) => Some(false),
         })
         .unwrap_or(false)
-}
-
-fn output_directory(parent: &Path, name: &str) -> bool {
-    DEPENDENCY_OUTPUT.contains(&name)
-        || (name == "target"
-            && BUILD_MANIFESTS
-                .iter()
-                .any(|manifest| fs::symlink_metadata(parent.join(manifest)).is_ok()))
 }
 
 fn exclude_subtree(
@@ -235,7 +232,7 @@ pub(super) fn reopen(store: &Store, scope: &str, relative: &str) -> Result<usize
         .query_map(params![scope, relative], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     if ids.is_empty() {
-        bail!("no reviewed or unavailable discovery file at that workspace-relative path");
+        bail!("no reviewed or unavailable discovery file at that codebase-relative path");
     }
     for id in &ids {
         store
@@ -302,15 +299,15 @@ pub(crate) fn private_name(value: &str) -> bool {
             .any(|suffix| name.ends_with(suffix))
 }
 
-fn checked_path(root: &str, relative: &str) -> Result<PathBuf> {
+pub(crate) fn checked_path(root: &str, relative: &str) -> Result<PathBuf> {
     let root = Path::new(root);
     if root.is_symlink() || root.canonicalize()? != root {
-        bail!("workspace root changed or redirects");
+        bail!("codebase root changed or redirects");
     }
     let mut path = root.to_owned();
     for component in Path::new(relative).components() {
         let Component::Normal(name) = component else {
-            bail!("discovery path must stay inside its workspace");
+            bail!("discovery path must stay inside its codebase");
         };
         let name = name.to_str().context("discovery requires UTF-8 paths")?;
         if private_name(name) || name.chars().any(char::is_control) {
@@ -334,26 +331,21 @@ pub(super) fn prepare(
     scope: &str,
 ) -> Result<()> {
     let base = profile_path.parent().unwrap_or(Path::new("."));
-    for workspace in &profile.workspaces {
-        let path = base.join(workspace);
+    for codebase in &profile.codebases {
+        let path = base.join(codebase);
         let root = path.canonicalize()?;
         if path.is_symlink() || !root.is_dir() || root.starts_with(crate::store::data_root()) {
-            bail!("discovery workspace must be an authorized real project directory");
+            bail!("discovery codebase must be an authorized real project directory");
         }
-        let root = root.to_str().context("workspace path must be UTF-8")?;
+        if crate::inventory::excluded_path(&root) {
+            bail!("dependency or build output cannot be a discovery codebase");
+        }
+        let root = root.to_str().context("codebase path must be UTF-8")?;
         adopt_reviews(store, scope, root)?;
         store.connection.execute(
             "INSERT OR IGNORE INTO discovery_walk VALUES (?1,?2,'','','','pending')",
             params![scope, root],
         )?;
-    }
-    let rules = format!("discovery_rules:{scope}");
-    if store.meta(&rules)?.as_deref() != Some(CLASSIFICATION_RULES) {
-        store.connection.execute(
-            "UPDATE discovery_walk SET state='pending',cursor='' WHERE scope=?1 AND state='done'",
-            [scope],
-        )?;
-        store.set_meta(&rules, CLASSIFICATION_RULES)?;
     }
     let mut query = store
         .connection
@@ -364,7 +356,7 @@ pub(super) fn prepare(
     for (root, relative, previous) in directories {
         let current = checked_path(&root, &relative).and_then(|path| stamp(&path));
         if !relative.is_empty() && current.as_ref().err().is_some_and(missing) {
-            store.connection.execute("UPDATE discovery_walk SET state='removed',stamp='removed from workspace' WHERE scope=?1 AND root=?2 AND path=?3", params![scope,root,relative])?;
+            store.connection.execute("UPDATE discovery_walk SET state='removed',stamp='removed from codebase' WHERE scope=?1 AND root=?2 AND path=?3", params![scope,root,relative])?;
             continue;
         }
         if current.as_ref().ok() != Some(&previous) {
@@ -388,7 +380,7 @@ pub(super) fn prepare(
     for (id, root, relative, previous, state) in files {
         let current = checked_path(&root, &relative).and_then(|path| stamp(&path));
         if current.as_ref().err().is_some_and(missing) {
-            store.connection.execute("UPDATE discovery_files SET state='removed',reason='removed from workspace' WHERE id=?1", [&id])?;
+            store.connection.execute("UPDATE discovery_files SET state='removed',reason='removed from codebase' WHERE id=?1", [&id])?;
             store
                 .connection
                 .execute("DELETE FROM discovery_packages WHERE file_id=?1", [&id])?;
@@ -426,7 +418,7 @@ pub(super) fn prepare(
     Ok(())
 }
 
-/// Adding or removing a workspace changes the scope. A root without reviewed files in this scope
+/// Adding or removing a codebase changes the scope. A root without reviewed files in this scope
 /// takes over the walk, file reviews and packages recorded for it under the earlier scope with the
 /// most reviews; the stamp checks in `prepare` then reopen only what changed on disk.
 fn adopt_reviews(store: &Store, scope: &str, root: &str) -> Result<()> {
@@ -484,10 +476,6 @@ fn adopt_reviews(store: &Store, scope: &str, root: &str) -> Result<()> {
         params![scope, previous, root],
     )?;
     transaction.execute(
-        "DELETE FROM meta WHERE key=?1",
-        [format!("discovery_rules:{scope}")],
-    )?;
-    transaction.execute(
         "INSERT OR IGNORE INTO discovery_sources SELECT ?1,instance_id,fingerprint,checked_at,body FROM discovery_sources WHERE scope=?2",
         params![scope, previous],
     )?;
@@ -531,7 +519,7 @@ fn expand(store: &Store, scope: &str) -> Result<bool> {
             if metadata.is_dir() && !private {
                 let skipped = if ignored {
                     Some(GIT_IGNORED)
-                } else if output_directory(&path, &name) {
+                } else if crate::inventory::excluded_directory(&name) {
                     Some(OUTPUT_DIRECTORY)
                 } else {
                     None
@@ -593,14 +581,31 @@ pub(super) fn slice(store: &Store, scope: &str, id: &str) -> Result<FileSlice> {
 }
 
 fn read_slice(root: &str, relative: &str, id: &str, offset: u64) -> Result<FileSlice> {
+    if Path::new(relative)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(requirements_file)
+    {
+        bail!(
+            "requirements may contain private package identities or source paths; review locally"
+        );
+    }
+    if Path::new(relative)
+        .file_name()
+        .is_some_and(|name| name == "composer.json")
+    {
+        bail!(
+            "Composer manifest may contain private package names or repository credentials; review locally"
+        );
+    }
     let path = checked_path(root, relative)?;
     let before = stamp(&path)?;
     let mut file = open_file(root, relative)?;
     if !file.metadata()?.is_file() {
         bail!("discovery input must be a regular file");
     }
-    file.seek(SeekFrom::Start(offset))?;
     let mut bytes = Vec::new();
+    file.seek(SeekFrom::Start(offset))?;
     file.take(SLICE_BYTES).read_to_end(&mut bytes)?;
     if bytes.contains(&0) {
         bail!("binary file excluded from text discovery");
@@ -639,7 +644,7 @@ pub(crate) fn open_file(root: &str, relative: &str) -> Result<fs::File> {
     let mut components = Path::new(relative).components().peekable();
     while let Some(component) = components.next() {
         let Component::Normal(name) = component else {
-            bail!("invalid workspace path component");
+            bail!("invalid codebase path component");
         };
         let final_component = components.peek().is_none();
         let child_flags = if final_component {
@@ -653,7 +658,7 @@ pub(crate) fn open_file(root: &str, relative: &str) -> Result<fs::File> {
         }
         directory = descriptor;
     }
-    bail!("select a file below the workspace root")
+    bail!("select a file below the codebase root")
 }
 
 #[cfg(not(unix))]
@@ -687,6 +692,15 @@ pub(super) fn import(
     scope: &str,
     reviews: Vec<FileReview>,
 ) -> Result<()> {
+    let unfinished: bool = store.connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM discovery_walk WHERE scope=?1 AND state='pending')",
+        [scope],
+        |row| row.get(0),
+    )?;
+    if unfinished {
+        bail!("codebase discovery must finish enumerating before importing a review");
+    }
+    let blocked_roots = blocked_requirement_roots(store, scope)?;
     let mut prepared = Vec::new();
     let mut seen = BTreeSet::new();
     for review in reviews {
@@ -697,15 +711,18 @@ pub(super) fn import(
         {
             bail!("duplicate file review, excessive packages or missing bounded rationale");
         }
-        let chunk = slice(store, scope, &review.file_id)?;
-        if review.offset != chunk.offset || review.sha256 != chunk.sha256 {
-            bail!("stale discovery chunk; reread current page");
-        }
         let (root, relative): (String, String) = store.connection.query_row(
             "SELECT root,path FROM discovery_files WHERE id=?1",
             [&review.file_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
+        if blocked_roots.contains(&root) {
+            bail!(INCLUDE_GUARD);
+        }
+        let chunk = slice(store, scope, &review.file_id)?;
+        if review.offset != chunk.offset || review.sha256 != chunk.sha256 {
+            bail!("stale discovery chunk; reread current page");
+        }
         let mut packages = Vec::new();
         for observation in &review.packages {
             if observation.direct.is_some() {
@@ -742,7 +759,7 @@ pub(super) fn import(
                 || !observation.component.feeds.is_empty()
             {
                 bail!(
-                    "workspace observations cannot grant deployment, upstream identity or feed access"
+                    "codebase observations cannot grant deployment, upstream identity or feed access"
                 );
             }
             if observation.excerpt.trim().is_empty()
@@ -779,7 +796,7 @@ pub(super) fn import(
                             || version_source.contains(&format!("{operator} {version}"))
                     }))
             {
-                bail!("workspace discovery requires a literal exact version or unknown");
+                bail!("codebase discovery requires a literal exact version or unknown");
             }
             let name = if component.reference.starts_with("pkg:") {
                 let purl: packageurl::PackageUrl<'_> = component.reference.parse()?;
@@ -804,13 +821,13 @@ pub(super) fn import(
             );
             instance.origin = Origin::AgentObserved;
             instance.provenance.path = Some(relative.clone());
-            instance.provenance.workspace = Some(root.clone());
+            instance.provenance.codebase = Some(root.clone());
             instance.provenance.sha256 = chunk.sha256.clone();
             instance.provenance.direct = observation.direct;
             instance.provenance.line = excerpt_line(&root, &relative, &chunk, &observation.excerpt);
             instance.identity_evidence.push(store.record_evidence(
                 &serde_json::to_vec(observation)?,
-                "agent_workspace_observation",
+                "agent_codebase_observation",
                 None,
                 EvidenceKind::Context,
             )?);
@@ -837,7 +854,7 @@ pub(super) fn import(
     }
     let transaction = store.connection.transaction()?;
     for (id, chunk, packages, finished, current_stamp, body) in prepared {
-        transaction.execute("INSERT INTO discovery_history(scope,phase,body,recorded_at) VALUES (?1,'workspace',?2,?3)",params![scope,body,crate::now()])?;
+        transaction.execute("INSERT INTO discovery_history(scope,phase,body,recorded_at) VALUES (?1,'codebase',?2,?3)",params![scope,body,crate::now()])?;
         for instance in packages {
             transaction.execute(
                 "INSERT OR REPLACE INTO discovery_packages VALUES (?1,?2,?3,?4,?5,?6,?7)",
@@ -866,7 +883,7 @@ pub(super) fn import(
     Ok(())
 }
 
-/// Workspace-relative files that discovery reviewed or excluded with a recorded reason.
+/// Codebase-relative files that discovery reviewed or excluded with a recorded reason.
 pub(super) fn settled_paths(
     store: &Store,
     scope: &str,
@@ -881,7 +898,7 @@ pub(super) fn settled_paths(
 }
 
 pub(super) fn instances(store: &Store, scope: &str) -> Result<Vec<Instance>> {
-    let mut query = store.connection.prepare("SELECT p.body,f.root,f.path,p.start,p.sha256 FROM discovery_packages p JOIN discovery_files f ON p.file_id=f.id WHERE p.scope=?1")?;
+    let mut query = store.connection.prepare("SELECT p.body,f.root,f.path,p.start,p.sha256 FROM discovery_packages p JOIN discovery_files f ON p.file_id=f.id WHERE p.scope=?1 AND f.state IN ('pending','done')")?;
     let rows: Vec<(String, String, String, u64, String)> = query
         .query_map([scope], |row| {
             Ok((

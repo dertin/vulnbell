@@ -47,3 +47,47 @@ fn live_probe_requires_the_fetched_title_and_reports_disabled_tools() {
     assert!(probe_result(br#"{"reachable":true,"title":"Guessed","detail":""}"#).is_err());
     assert!(probe_result(b"not json").is_err());
 }
+
+#[test]
+fn source_access_requires_a_receipt_for_the_current_project() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("vulnbell.yaml");
+    let project_id = uuid::Uuid::new_v4().to_string();
+    std::fs::write(
+        &project,
+        format!("schema: 1\nproject_id: {project_id}\nname: fixture\ndiscovery: off\n"),
+    )
+    .unwrap();
+    let source = SourceAccess {
+        project,
+        project_id: project_id.clone(),
+        data_root: directory.path().into(),
+        receipt: directory.path().join("receipt.json"),
+    };
+    assert!(source.verify().is_err());
+    for value in [
+        serde_json::json!({"schema_version":1,"project_id":project_id,"source_read":false}),
+        serde_json::json!({"schema_version":1,"project_id":uuid::Uuid::new_v4().to_string(),"source_read":true}),
+    ] {
+        std::fs::write(&source.receipt, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(source.verify().is_err());
+    }
+    std::fs::write(
+        &source.receipt,
+        serde_json::to_vec(
+            &serde_json::json!({"schema_version":1,"project_id":project_id,"source_read":true}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(source.verify().is_ok());
+    std::fs::write(
+        &source.project,
+        format!(
+            "schema: 1\nproject_id: {}\nname: fixture\ndiscovery: off\n",
+            uuid::Uuid::new_v4()
+        ),
+    )
+    .unwrap();
+    assert!(source.verify().is_err());
+}

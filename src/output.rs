@@ -11,12 +11,118 @@ use text::fill;
 mod details;
 mod discovery;
 mod markdown;
+mod pdf;
+pub(crate) use pdf::browser_path;
 pub(crate) mod text;
 mod verification;
 pub use details::AdvisoryDetail;
 pub use discovery::discovery_markdown;
 use markdown::inline;
 pub use markdown::{morning_markdown, verification_markdown};
+
+/// Report research coverage from current checkpoints, separately from the scan snapshot.
+pub fn add_research_coverage(
+    report: &mut MorningReport,
+    pending: &crate::tools::cases::PendingReport,
+) {
+    if !pending.research_open.is_empty()
+        || pending.tracker_scope_unresolved
+        || pending.stale_observations > 0
+        || pending.codebase_context_changed
+    {
+        let detail = match report.language {
+            Language::Es => format!(
+                "{} ventanas upstream pendientes; {} observaciones desactualizadas requieren un nuevo scan; alcance de fuentes sin resolver: {}; codebase cambiada o no disponible: {}",
+                pending.research_open.len(),
+                pending.stale_observations,
+                if pending.tracker_scope_unresolved {
+                    "sí"
+                } else {
+                    "no"
+                },
+                if pending.codebase_context_changed {
+                    "sí"
+                } else {
+                    "no"
+                }
+            ),
+            Language::En => format!(
+                "{} upstream windows pending; {} stale observations require a new scan; tracker scope unresolved: {}; codebase changed or unavailable: {}",
+                pending.research_open.len(),
+                pending.stale_observations,
+                if pending.tracker_scope_unresolved {
+                    "yes"
+                } else {
+                    "no"
+                },
+                if pending.codebase_context_changed {
+                    "yes"
+                } else {
+                    "no"
+                }
+            ),
+        };
+        report.coverage_gaps.push(crate::model::Coverage::new(
+            "research_web",
+            "project",
+            crate::model::CoverageState::Partial,
+            &detail,
+        ));
+    }
+}
+
+/// Summarize the actual delivery gate without hiding unresolved work.
+pub fn delivery_status_markdown(
+    pending: &crate::tools::cases::PendingReport,
+    scan_partial: bool,
+    language: crate::profile::Language,
+) -> String {
+    if pending.deliverable && !scan_partial {
+        return String::new();
+    }
+    let discovery = pending.discovery_open.is_some();
+    match language {
+        crate::profile::Language::Es => format!(
+            "> **Cobertura o revisión incompleta:** verificaciones pendientes: {}; veredictos pendientes: {}; ventanas upstream pendientes: {}; observaciones desactualizadas: {}; descubrimiento pendiente: {}; alcance de fuentes sin resolver: {}; codebase cambiada o sin identificar: {}; scan parcial: {}. Consulte `vulnbell tools pending` para el detalle.\n\n",
+            pending.verification_pending.len(),
+            pending.verdict_missing.len(),
+            pending.research_open.len(),
+            pending.stale_observations,
+            if discovery { "sí" } else { "no" },
+            if pending.tracker_scope_unresolved {
+                "sí"
+            } else {
+                "no"
+            },
+            if pending.codebase_context_changed {
+                "sí"
+            } else {
+                "no"
+            },
+            if scan_partial { "sí" } else { "no" },
+        ),
+        crate::profile::Language::En => format!(
+            "> **Incomplete coverage or review:** {} pending verifications, {} verdicts, {} upstream windows and {} stale observations; discovery pending: {}; tracker scope unresolved: {}; codebase changed or unidentified: {}; partial scan: {}. See `vulnbell tools pending` for details.\n\n",
+            pending.verification_pending.len(),
+            pending.verdict_missing.len(),
+            pending.research_open.len(),
+            pending.stale_observations,
+            if discovery { "yes" } else { "no" },
+            if pending.tracker_scope_unresolved {
+                "yes"
+            } else {
+                "no"
+            },
+            if pending.codebase_context_changed {
+                "yes"
+            } else {
+                "no"
+            },
+            if scan_partial { "yes" } else { "no" },
+        ),
+    }
+}
+pub use pdf::{pdf_markdown, report_body as pdf_report_body, write_pdf};
 pub use text::report_language;
 pub use verification::{FindingCheck, FindingReference, LocalCheck, LocalResult};
 
@@ -96,8 +202,8 @@ pub fn markdown(snapshot: &Snapshot) -> String {
         snapshot.instances.len(),
         snapshot.cases.len()
     );
-    report.push_str(&markdown::workspace_revisions_markdown(
-        &crate::workspace_revision::compare(&snapshot.workspace_revisions),
+    report.push_str(&markdown::codebase_revisions_markdown(
+        &crate::codebase_revision::compare(&snapshot.codebase_revisions),
         false,
         Language::En,
     ));
@@ -135,10 +241,10 @@ pub struct MorningReport {
     pub last_successful_scan: Option<String>,
     pub last_agent_review: Option<String>,
     pub scheduler_id: Option<String>,
-    /// Git identities recorded by the scan and the workspace state at report time.
-    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceComparison>,
-    pub workspace_context_unrecorded: bool,
-    pub workspace_scope_changed: bool,
+    /// Git identities recorded by the scan and the codebase state at report time.
+    pub codebase_revisions: Vec<crate::codebase_revision::CodebaseComparison>,
+    pub codebase_context_unrecorded: bool,
+    pub codebase_scope_changed: bool,
     pub inventory: Vec<MonitoredComponent>,
     pub actionable: Vec<HandoffItem>,
     pub needs_review: Vec<HandoffItem>,
@@ -224,7 +330,7 @@ pub struct MonitoredComponent {
     pub requested_version: Option<String>,
     pub resolved_version: Option<String>,
     pub origin: crate::model::Origin,
-    pub workspace: Option<String>,
+    pub codebase: Option<String>,
     pub path: Option<String>,
     pub line: Option<usize>,
     pub upstream: Option<String>,
@@ -233,7 +339,7 @@ pub struct MonitoredComponent {
 pub struct HandoffItem {
     pub case_id: String,
     pub components: Vec<String>,
-    /// Where each component version was read: `workspace/path:line`, or the profile.
+    /// Where each component version was read: `codebase/path:line`, or the profile.
     pub provenance: Vec<String>,
     pub origin: Vec<crate::model::Origin>,
     /// Latest recorded agent verdict (`decision: rationale`), when one exists.
@@ -266,14 +372,14 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
         }
         None => (None, Vec::new(), Language::default()),
     };
-    let workspace_revisions = crate::workspace_revision::compare(&snapshot.workspace_revisions);
-    let workspace_scope_changed = if !snapshot.workspace_revisions.is_empty() {
+    let codebase_revisions = crate::codebase_revision::compare(&snapshot.codebase_revisions);
+    let codebase_scope_changed = if !snapshot.codebase_revisions.is_empty() {
         store
             .meta("profile_path")?
             .and_then(|path| {
                 let profile = crate::profile::load(std::path::Path::new(&path)).ok()?;
-                Some(!crate::workspace_revision::configured_paths_match(
-                    &snapshot.workspace_revisions,
+                Some(!crate::codebase_revision::configured_paths_match(
+                    &snapshot.codebase_revisions,
                     &profile,
                     std::path::Path::new(&path),
                 ))
@@ -282,18 +388,12 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
     } else {
         false
     };
-    let workspace_context_unrecorded = if snapshot.workspace_revisions.is_empty() {
+    let codebase_context_unrecorded = if snapshot.codebase_revisions.is_empty() {
         store
             .meta("profile_path")?
             .and_then(|path| {
                 let profile = crate::profile::load(std::path::Path::new(&path)).ok()?;
-                Some(
-                    crate::workspace_revision::capture(&profile, std::path::Path::new(&path))
-                        .iter()
-                        .any(|revision| {
-                            revision.state != crate::workspace_revision::RepositoryState::NotGit
-                        }),
-                )
+                Some(!profile.codebases.is_empty())
             })
             .unwrap_or(false)
     } else {
@@ -318,6 +418,8 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
             continue;
         }
         match case.decision {
+            Decision::Informational | Decision::Dismissed
+                if crate::tools::cases::verdict_missing(case, store) => {}
             Decision::Informational => {
                 informational_count += 1;
                 continue;
@@ -444,9 +546,9 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
         last_successful_scan: store.meta("last_successful_scan")?,
         last_agent_review: store.meta("last_agent_review")?,
         scheduler_id: store.meta("scheduler_id")?,
-        workspace_revisions,
-        workspace_context_unrecorded,
-        workspace_scope_changed,
+        codebase_revisions,
+        codebase_context_unrecorded,
+        codebase_scope_changed,
         inventory: snapshot
             .instances
             .iter()
@@ -456,7 +558,7 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
                 requested_version: instance.requested_version.clone(),
                 resolved_version: instance.resolved_version.clone(),
                 origin: instance.origin,
-                workspace: instance.provenance.workspace.clone(),
+                codebase: instance.provenance.codebase.clone(),
                 path: instance.provenance.path.clone(),
                 line: instance.provenance.line,
                 upstream: instance.upstream.clone(),
@@ -515,10 +617,10 @@ fn provenance_label(instance: &crate::model::Instance, language: Language) -> St
         .resolved_version
         .as_deref()
         .unwrap_or(words.unresolved);
-    let location = match (&instance.provenance.workspace, &instance.provenance.path) {
-        (workspace, Some(path)) => {
-            let file = match workspace {
-                Some(workspace) => format!("{}/{path}", workspace.trim_end_matches('/')),
+    let location = match (&instance.provenance.codebase, &instance.provenance.path) {
+        (codebase, Some(path)) => {
+            let file = match codebase {
+                Some(codebase) => format!("{}/{path}", codebase.trim_end_matches('/')),
                 None => path.clone(),
             };
             match instance.provenance.line {
@@ -536,23 +638,7 @@ fn recorded_verdict(
     store: &Store,
     language: Language,
 ) -> Option<String> {
-    let evidence = case
-        .evidence
-        .iter()
-        .rev()
-        .find(|evidence| evidence.source == "agent_verdict")?;
-    if !store.evidence_exists(evidence).ok()? {
-        return None;
-    }
-    let bytes = crate::read_limited(
-        &store.directory.join("evidence").join(&evidence.sha256),
-        64 * 1024,
-    )
-    .ok()?;
-    let verdict: crate::model::Verdict = serde_json::from_slice(&bytes).ok()?;
-    if verdict.facts_sha256 != case.facts_sha256 {
-        return None;
-    }
+    let verdict = crate::engine::current_verdict(case, store)?;
     Some(format!(
         "{}: {}",
         text::decision(language, verdict.decision),

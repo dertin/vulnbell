@@ -6,20 +6,22 @@ import sys
 
 args = sys.argv[1:]
 if "--version" in args:
-    print("codex-cli 0.164.0")
+    print("codex-cli 0.166.0")
 elif "mcp" in args:
     print("[]")
 else:
     prompt = sys.stdin.read()
     output = Path(args[args.index("--output-last-message") + 1])
-    if prompt.startswith("Extract software dependencies"):
+    if prompt.startswith("Connectivity probe."):
+        value = {"reachable": False, "title": "", "detail": "Synthetic web tool unavailable"}
+    elif prompt.startswith("Extract software dependencies"):
         assert 'web_search="disabled"' in args
         task = json.loads(prompt.split("\n\nInput:\n", 1)[1])
-        chunk = task["workspace"][0]
+        chunk = task["codebase_files"][0]
         packages = []
         if "example-tool==1.0.0" in chunk["content"]:
             packages.append({"component": {"ref": "example-tool", "version": "1.0.0"}, "excerpt": "example-tool==1.0.0"})
-        value = {"phase": "workspace", "schema_version": 1, "project_id": task["project_id"], "scope_sha256": task["scope_sha256"], "reviews": [{"file_id": chunk["file_id"], "offset": chunk["offset"], "sha256": chunk["sha256"], "coverage": "complete", "rationale": "Synthetic read-only extraction", "packages": packages}]}
+        value = {"phase": "codebase", "schema_version": 1, "project_id": task["project_id"], "scope_sha256": task["scope_sha256"], "reviews": [{"file_id": chunk["file_id"], "offset": chunk["offset"], "sha256": chunk["sha256"], "coverage": "complete", "rationale": "Synthetic read-only extraction", "packages": packages}]}
     elif prompt.startswith("Discover official public sources"):
         assert 'web_search="live"' in args
         task = json.loads(prompt.split("\n\nPublic targets:\n", 1)[1])

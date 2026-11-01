@@ -31,6 +31,8 @@ pub struct FindingCheck {
     pub review_handoff: Option<crate::tools::cases::ReviewHandoff>,
     /// A prior disposition is no longer current or its evidence cannot be validated.
     pub review_handoff_stale: bool,
+    /// Challenges awaiting a new verdict; reviewer independence is not verified.
+    pub open_challenges: Vec<crate::tools::challenge::OpenChallenge>,
 }
 #[derive(Serialize, JsonSchema, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -111,7 +113,10 @@ pub(super) fn finding_check(case: &Case, store: &Store, language: Language) -> F
     let affected_claims: HashSet<&str> = case
         .claims
         .iter()
-        .filter(|claim| claim.applicability == crate::model::Applicability::Affected)
+        .filter(|claim| {
+            claim.applicability == crate::model::Applicability::Affected
+                && store.evidence_exists(&claim.evidence).unwrap_or(false)
+        })
         .map(|claim| claim.instance_id.as_str())
         .collect();
     let mut reproduced = HashSet::new();
@@ -142,7 +147,6 @@ pub(super) fn finding_check(case: &Case, store: &Store, language: Language) -> F
             artifact_version: instance.resolved_version.clone(),
             sandbox_candidate: needs_evidence
                 && !affected_claims.contains(instance.id.as_str())
-                && !(case.instances.len() == 1 && case.verification == Verification::LabReproduced)
                 && !reproduced.contains(&instance.id),
             sandbox_needed: review_handoff.as_ref().is_some_and(|handoff| {
                 handoff.sandbox_required && handoff.sandbox_instance_ids.contains(&instance.id)
@@ -181,6 +185,10 @@ pub(super) fn finding_check(case: &Case, store: &Store, language: Language) -> F
                         if blocker.schema_version == 1
                             && blocker.case_id == case.case_id
                             && blocker.facts_sha256 == case.facts_sha256
+                            && crate::codebase_revision::same_revisions(
+                                &blocker.codebase_revisions,
+                                &case.codebase_revisions,
+                            )
                             && blocker.instance_id == instance.id =>
                     {
                         if blocker.cleared {
@@ -279,6 +287,7 @@ pub(super) fn finding_check(case: &Case, store: &Store, language: Language) -> F
         impact,
         review_handoff,
         review_handoff_stale,
+        open_challenges: crate::tools::challenge::open(case, store),
     }
 }
 

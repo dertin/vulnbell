@@ -4,6 +4,8 @@
 //! They never fetch issue trackers; advisory lookups reuse the CLI's advisory integrations.
 pub mod advisories;
 pub mod cases;
+pub mod challenge;
+pub mod citations;
 pub mod draft;
 pub mod evaluate;
 pub mod hits;

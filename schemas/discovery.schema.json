@@ -268,7 +268,7 @@
       "additionalProperties": false,
       "properties": {
         "phase": {
-          "const": "workspace",
+          "const": "codebase",
           "type": "string"
         },
         "project_id": {

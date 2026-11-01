@@ -52,6 +52,57 @@
       ],
       "type": "object"
     },
+    "CodebaseRevision": {
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "codebase": {
+          "type": "string"
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dirty": {
+          "description": "Changes excluding private paths, ignored files, generated untracked files and submodules.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "repository": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/RepositoryState"
+        },
+        "worktree_status_sha256": {
+          "description": "Hash of Git's status entries and changed files, without retaining names or contents.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "codebase",
+        "state",
+        "observed_at"
+      ],
+      "type": "object"
+    },
     "Coverage": {
       "properties": {
         "detail": {
@@ -227,6 +278,19 @@
             "null"
           ]
         },
+        "codebase": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "codebase_context_sha256": {
+          "description": "Fingerprint of the Git codebases reviewed with this inventory.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "direct": {
           "type": [
             "boolean",
@@ -259,19 +323,6 @@
         },
         "sha256": {
           "type": "string"
-        },
-        "workspace": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "workspace_context_sha256": {
-          "description": "Fingerprint of the Git workspaces reviewed with this inventory.",
-          "type": [
-            "string",
-            "null"
-          ]
         }
       },
       "required": [
@@ -406,57 +457,6 @@
         "disproven"
       ],
       "type": "string"
-    },
-    "WorkspaceRevision": {
-      "properties": {
-        "branch": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "commit": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "dirty": {
-          "description": "Changes excluding private paths, ignored files and submodule contents.",
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "observed_at": {
-          "type": "string"
-        },
-        "repository": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "state": {
-          "$ref": "#/$defs/RepositoryState"
-        },
-        "workspace": {
-          "type": "string"
-        },
-        "worktree_status_sha256": {
-          "description": "Hash of Git's status entries and changed files, without retaining names or contents.",
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "workspace",
-        "state",
-        "observed_at"
-      ],
-      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -470,6 +470,13 @@
     "claims": {
       "items": {
         "$ref": "#/$defs/Claim"
+      },
+      "type": "array"
+    },
+    "codebase_revisions": {
+      "description": "Git codebases that bound the facts and review for this case.",
+      "items": {
+        "$ref": "#/$defs/CodebaseRevision"
       },
       "type": "array"
     },
@@ -534,14 +541,6 @@
     },
     "verification": {
       "$ref": "#/$defs/Verification"
-    },
-    "workspace_revisions": {
-      "default": [],
-      "description": "Git workspaces that bound the facts and review for this case.",
-      "items": {
-        "$ref": "#/$defs/WorkspaceRevision"
-      },
-      "type": "array"
     }
   },
   "required": [
@@ -549,6 +548,7 @@
     "case_id",
     "project_id",
     "snapshot_id",
+    "codebase_revisions",
     "instances",
     "claims",
     "upstream_events",

@@ -17,6 +17,40 @@ fn issue(title: &str, body: &str) -> Item {
 }
 
 #[test]
+fn deserialization_requires_a_security_signal() {
+    for title in [
+        "Deserialize a struct from a nested path",
+        "Add support for deserialization of optional fields",
+    ] {
+        assert!(screen(&issue(title, "Ordinary behavior change."), "").is_none());
+    }
+    for title in [
+        "Unsafe deserialization of objects",
+        "Deserialization of untrusted data",
+    ] {
+        assert!(screen(&issue(title, ""), "").is_some());
+    }
+    assert!(screen(&issue("Deserialize a struct", "CVE-2026-12345"), "").is_some());
+}
+
+#[test]
+fn sensitive_data_exposure_is_a_signal_without_making_all_leaks_relevant() {
+    for body in [
+        "This can leak or poison cookies across domains.",
+        "A bearer token could be exposed to another host.",
+    ] {
+        assert!(screen(&issue("Unexpected behavior", body), "").is_some());
+    }
+    assert!(
+        screen(
+            &issue("Unexpected behavior", "A memory leak in the cache."),
+            ""
+        )
+        .is_none()
+    );
+}
+
+#[test]
 fn linked_summaries_preserve_selection_and_identifiers() {
     let first = issue("Parser issue", "A parser crashes on input; CVE-2026-1234.");
     let second = issue("SSRF", "A security issue concerns CVE-2026-1235.");

@@ -20,15 +20,6 @@ fn repository_unavailable(observation: &IdentityObservation) -> bool {
     })
 }
 
-/// Native Maven mappings from an earlier POM resolution revision are mapped again.
-fn outdated_maven_mapping(instance: &Instance, observation: &IdentityObservation) -> bool {
-    instance.reference.starts_with("pkg:maven/")
-        && observation
-            .rationale
-            .starts_with(registry::NATIVE_RATIONALE)
-        && !observation.rationale.contains(registry::MAVEN_MAPPER)
-}
-
 /// A lockfile or SBOM hash changes with unrelated packages; the instance id already carries the
 /// locked name, version and path, so only declared and observed provenance invalidates a mapping.
 pub(super) fn fingerprint(instance: &Instance) -> String {
@@ -45,7 +36,7 @@ pub(super) fn fingerprint(instance: &Instance) -> String {
     )
 }
 
-/// Maven artifacts that a workspace root `pom.xml` builds; their source is the monitored workspace,
+/// Maven artifacts that a Maven reactor root `pom.xml` builds; their source is the monitored codebase,
 /// so they need no public source mapping.
 pub(super) fn first_party(roots: &[String]) -> BTreeSet<String> {
     roots
@@ -80,8 +71,17 @@ pub(super) fn targets(
         return Ok(Vec::new());
     }
     let snapshot = store.latest()?;
+    let current_observations: HashSet<String> = super::codebase::instances(store, scope)?
+        .into_iter()
+        .map(|instance| instance.id)
+        .collect();
     let mut targets = Vec::new();
     for instance in &snapshot.instances {
+        if instance.origin == crate::model::Origin::AgentObserved
+            && !current_observations.contains(&instance.id)
+        {
+            continue;
+        }
         if first_party.contains(&instance.reference) || !research.tracks(instance) {
             continue;
         }
@@ -101,7 +101,6 @@ pub(super) fn targets(
                 (chrono::Utc::now() - chrono::Duration::days(INCOMPLETE_RETRY_DAYS)).to_rfc3339();
             let refresh = (latest && checked_at < snapshot.started_at)
                 || (repository_unavailable(&observation) && checked_at < retry_after)
-                || outdated_maven_mapping(instance, &observation)
                 || (mapper == Mapper::Agent
                     && repository_unavailable(&observation)
                     && observation

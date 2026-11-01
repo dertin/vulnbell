@@ -94,7 +94,7 @@
     },
     "TestMode": {
       "enum": [
-        "workspace_copy",
+        "codebase_copy",
         "artifact_reproducer"
       ],
       "type": "string"

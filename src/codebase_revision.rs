@@ -1,4 +1,4 @@
-//! Read-only identity of the workspaces included in a scan.
+//! Read-only identity of the codebases included in a scan.
 use crate::profile::Profile;
 use anyhow::{Result, bail};
 use schemars::JsonSchema;
@@ -24,13 +24,13 @@ pub enum RepositoryState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct WorkspaceRevision {
-    pub workspace: String,
+pub struct CodebaseRevision {
+    pub codebase: String,
     pub state: RepositoryState,
     pub repository: Option<String>,
     pub branch: Option<String>,
     pub commit: Option<String>,
-    /// Changes excluding private paths, ignored files and submodule contents.
+    /// Changes excluding private paths, ignored files, generated untracked files and submodules.
     pub dirty: Option<bool>,
     /// Hash of Git's status entries and changed files, without retaining names or contents.
     pub worktree_status_sha256: Option<String>,
@@ -38,8 +38,8 @@ pub struct WorkspaceRevision {
 }
 
 #[derive(Serialize, PartialEq, Eq)]
-struct WorkspaceIdentity<'a> {
-    workspace: &'a str,
+struct CodebaseIdentity<'a> {
+    codebase: &'a str,
     state: &'a RepositoryState,
     repository: Option<&'a str>,
     branch: Option<&'a str>,
@@ -48,10 +48,10 @@ struct WorkspaceIdentity<'a> {
     worktree_status_sha256: Option<&'a str>,
 }
 
-impl WorkspaceRevision {
-    fn identity(&self) -> WorkspaceIdentity<'_> {
-        WorkspaceIdentity {
-            workspace: &self.workspace,
+impl CodebaseRevision {
+    fn identity(&self) -> CodebaseIdentity<'_> {
+        CodebaseIdentity {
+            codebase: &self.codebase,
             state: &self.state,
             repository: self.repository.as_deref(),
             branch: self.branch.as_deref(),
@@ -124,17 +124,17 @@ fn checked_relative(value: &str) -> Result<&Path> {
     Ok(Path::new(value))
 }
 
-fn git_path(workspace: &Path, name: &str) -> Result<PathBuf> {
+fn git_path(codebase: &Path, name: &str) -> Result<PathBuf> {
     let output = git(
-        workspace,
+        codebase,
         &["rev-parse", "--path-format=absolute", "--git-path", name],
     )?;
     let value = text(&output).ok_or_else(|| anyhow::anyhow!("Git metadata is unavailable"))?;
     Ok(PathBuf::from(value))
 }
 
-fn git_worktree_config(workspace: &Path) -> Result<Vec<(&'static str, String)>> {
-    let output = git_command(workspace)
+fn git_worktree_config(codebase: &Path) -> Result<Vec<(&'static str, String)>> {
+    let output = git_command(codebase)
         .env_remove("GIT_CONFIG_NOSYSTEM")
         .env_remove("GIT_CONFIG_GLOBAL")
         .args([
@@ -186,12 +186,25 @@ fn git_worktree_config(workspace: &Path) -> Result<Vec<(&'static str, String)>> 
     Ok(values.into_iter().collect())
 }
 
-fn git_status(workspace: &Path, repository: &Path, commit: &str) -> Result<Vec<u8>> {
+fn copy_shadow_index(source: &Path, destination: &Path) -> Result<()> {
+    let before = fs::metadata(source)?;
+    let bytes = crate::read_limited(source, 64 * 1024 * 1024)?;
+    let after = fs::metadata(source)?;
+    if before.len() != after.len() || before.modified()? != after.modified()? {
+        bail!("Git index changed during codebase capture");
+    }
+    fs::write(destination, bytes)?;
+    let file = fs::OpenOptions::new().write(true).open(destination)?;
+    file.set_times(fs::FileTimes::new().set_modified(before.modified()?))?;
+    Ok(())
+}
+
+fn git_status(codebase: &Path, repository: &Path, commit: &str) -> Result<Vec<u8>> {
     if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         bail!("invalid Git commit");
     }
-    let index = crate::read_limited(&git_path(workspace, "index")?, 64 * 1024 * 1024)?;
-    let objects = git_path(workspace, "objects")?;
+    let index = git_path(codebase, "index")?;
+    let objects = git_path(codebase, "objects")?;
     let shadow = tempfile::tempdir()?;
     fs::create_dir(shadow.path().join("refs"))?;
     fs::create_dir(shadow.path().join("objects"))?;
@@ -209,17 +222,21 @@ fn git_status(workspace: &Path, repository: &Path, commit: &str) -> Result<Vec<u
             usize::from(commit.len() == 64)
         ),
     )?;
-    fs::write(shadow.path().join("index"), index)?;
-    let exclude = git_path(workspace, "info/exclude")?;
+    copy_shadow_index(&index, &shadow.path().join("index"))?;
+    let exclude = git_path(codebase, "info/exclude")?;
     if exclude.exists() {
         fs::write(
             shadow.path().join("info/exclude"),
             crate::read_limited(&exclude, 1024 * 1024)?,
         )?;
     }
-    let worktree_config = git_worktree_config(workspace)?;
+    let worktree_config = git_worktree_config(codebase)?;
+    let output_paths: Vec<String> = crate::inventory::EXCLUDED_DIRECTORIES
+        .iter()
+        .map(|name| format!(":(exclude,glob)**/{name}/**"))
+        .collect();
     let shadow_command = || {
-        let mut command = git_command(workspace);
+        let mut command = git_command(codebase);
         for (name, value) in &worktree_config {
             command.args(["-c", &format!("{name}={value}")]);
         }
@@ -237,6 +254,7 @@ fn git_status(workspace: &Path, repository: &Path, commit: &str) -> Result<Vec<u
     if !flags.status.success() {
         bail!("Git index flags are unavailable");
     }
+    let mut excluded = Vec::new();
     for entry in flags
         .stdout
         .split(|byte| *byte == 0)
@@ -246,7 +264,12 @@ fn git_status(workspace: &Path, repository: &Path, commit: &str) -> Result<Vec<u
             bail!("invalid Git index entry");
         }
         let path = std::str::from_utf8(&entry[2..])?;
-        if !private_path(path)? && (entry[0] == b'S' || entry[0].is_ascii_lowercase()) {
+        if private_path(path)? {
+            excluded.push(format!(":(top,exclude,literal){path}"));
+            if excluded.len() > MAX_CHANGED_FILES {
+                bail!("too many excluded paths");
+            }
+        } else if entry[0] == b'S' || entry[0].is_ascii_lowercase() {
             bail!("Git index hides working-tree changes");
         }
     }
@@ -255,12 +278,12 @@ fn git_status(workspace: &Path, repository: &Path, commit: &str) -> Result<Vec<u
             "ls-files",
             "--full-name",
             "-z",
-            "--cached",
             "--others",
             "--exclude-standard",
             "--",
             ".",
         ])
+        .args(&output_paths)
         .output()?;
     if !paths.status.success() {
         bail!(
@@ -268,18 +291,17 @@ fn git_status(workspace: &Path, repository: &Path, commit: &str) -> Result<Vec<u
             String::from_utf8_lossy(&paths.stderr).trim()
         );
     }
-    let mut excluded = Vec::new();
+    let mut untracked = Vec::new();
     for path in paths
         .stdout
         .split(|byte| *byte == 0)
         .filter(|path| !path.is_empty())
     {
         let value = std::str::from_utf8(path)?;
-        if private_path(value)? {
-            excluded.push(format!(":(top,exclude,literal){value}"));
-            if excluded.len() > MAX_CHANGED_FILES {
-                bail!("too many excluded paths");
-            }
+        if !private_path(value)? {
+            untracked.extend_from_slice(b"?? ");
+            untracked.extend_from_slice(path);
+            untracked.push(0);
         }
     }
     let output = shadow_command()
@@ -287,7 +309,7 @@ fn git_status(workspace: &Path, repository: &Path, commit: &str) -> Result<Vec<u
             "status",
             "--porcelain=v1",
             "-z",
-            "--untracked-files=all",
+            "--untracked-files=no",
             "--ignore-submodules=all",
             "--",
             ".",
@@ -300,10 +322,12 @@ fn git_status(workspace: &Path, repository: &Path, commit: &str) -> Result<Vec<u
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    Ok(output.stdout)
+    let mut status = output.stdout;
+    status.extend_from_slice(&untracked);
+    Ok(status)
 }
 
-fn worktree_digest(workspace: &Path, repository: &Path, status: &[u8]) -> Result<String> {
+fn worktree_digest(codebase: &Path, repository: &Path, status: &[u8]) -> Result<String> {
     let mut hash = Sha256::new();
     hash.update(status);
     let mut entries = status.split(|byte| *byte == 0);
@@ -329,8 +353,8 @@ fn worktree_digest(workspace: &Path, repository: &Path, status: &[u8]) -> Result
             checked_relative(std::str::from_utf8(original)?)?;
         }
         let full = repository.join(path);
-        let within = full.strip_prefix(workspace)?;
-        let relative_workspace = within
+        let within = full.strip_prefix(codebase)?;
+        let relative_codebase = within
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("invalid path encoding"))?;
         match std::fs::symlink_metadata(&full) {
@@ -344,10 +368,10 @@ fn worktree_digest(workspace: &Path, repository: &Path, status: &[u8]) -> Result
                 if total > MAX_CHANGED_BYTES {
                     bail!("changed files exceed size limit");
                 }
-                let root = workspace
+                let root = codebase
                     .to_str()
-                    .ok_or_else(|| anyhow::anyhow!("invalid workspace encoding"))?;
-                let mut file = crate::discovery::open_file(root, relative_workspace)?;
+                    .ok_or_else(|| anyhow::anyhow!("invalid codebase encoding"))?;
+                let mut file = crate::discovery::open_file(root, relative_codebase)?;
                 let before = file.metadata()?;
                 if !before.is_file() || before.len() != metadata.len() {
                     bail!("changed file is not stable");
@@ -392,10 +416,10 @@ fn worktree_digest(workspace: &Path, repository: &Path, status: &[u8]) -> Result
     Ok(hex::encode(hash.finalize()))
 }
 
-pub fn capture_path(path: &Path) -> WorkspaceRevision {
-    let workspace = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let mut revision = WorkspaceRevision {
-        workspace: workspace.to_string_lossy().into_owned(),
+pub fn capture_path(path: &Path) -> CodebaseRevision {
+    let codebase = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let mut revision = CodebaseRevision {
+        codebase: codebase.to_string_lossy().into_owned(),
         state: RepositoryState::Unavailable,
         repository: None,
         branch: None,
@@ -404,10 +428,13 @@ pub fn capture_path(path: &Path) -> WorkspaceRevision {
         worktree_status_sha256: None,
         observed_at: crate::now(),
     };
-    if !workspace.is_dir() {
+    if crate::inventory::excluded_path(&codebase) {
         return revision;
     }
-    let Ok(root) = git(&workspace, &["rev-parse", "--show-toplevel"]) else {
+    if !codebase.is_dir() {
+        return revision;
+    }
+    let Ok(root) = git(&codebase, &["rev-parse", "--show-toplevel"]) else {
         return revision;
     };
     let Some(repository) = text(&root) else {
@@ -418,7 +445,7 @@ pub fn capture_path(path: &Path) -> WorkspaceRevision {
     };
     revision.state = RepositoryState::Git;
     revision.repository = Some(repository.clone());
-    match git(&workspace, &["symbolic-ref", "--quiet", "--short", "HEAD"]) {
+    match git(&codebase, &["symbolic-ref", "--quiet", "--short", "HEAD"]) {
         Ok(output) if output.status.success() => revision.branch = text(&output),
         Ok(output) if output.status.code() == Some(1) => {}
         _ => {
@@ -426,37 +453,37 @@ pub fn capture_path(path: &Path) -> WorkspaceRevision {
             return revision;
         }
     }
-    revision.commit = git(&workspace, &["rev-parse", "--verify", "HEAD^{commit}"])
+    revision.commit = git(&codebase, &["rev-parse", "--verify", "HEAD^{commit}"])
         .ok()
         .and_then(|out| text(&out));
     if let Some(commit) = revision.commit.as_deref()
-        && let Ok(status) = git_status(&workspace, Path::new(&repository), commit)
+        && let Ok(status) = git_status(&codebase, Path::new(&repository), commit)
     {
         revision.dirty = Some(!status.is_empty());
         revision.worktree_status_sha256 = std::fs::canonicalize(&repository)
             .ok()
-            .and_then(|root| worktree_digest(&workspace, &root, &status).ok());
+            .and_then(|root| worktree_digest(&codebase, &root, &status).ok());
     }
     revision
 }
 
-pub fn capture(profile: &Profile, profile_path: &Path) -> Vec<WorkspaceRevision> {
+pub fn capture(profile: &Profile, profile_path: &Path) -> Vec<CodebaseRevision> {
     let base = profile_path.parent().unwrap_or(Path::new("."));
     profile
-        .workspaces
+        .codebases
         .iter()
         .map(|path| capture_path(&base.join(path)))
         .collect()
 }
 
 pub fn configured_paths_match(
-    revisions: &[WorkspaceRevision],
+    revisions: &[CodebaseRevision],
     profile: &Profile,
     profile_path: &Path,
 ) -> bool {
     let base = profile_path.parent().unwrap_or(Path::new("."));
     let current: Vec<_> = profile
-        .workspaces
+        .codebases
         .iter()
         .map(|path| {
             let path = base.join(path);
@@ -468,25 +495,25 @@ pub fn configured_paths_match(
         .collect();
     let reviewed: Vec<_> = revisions
         .iter()
-        .map(|revision| revision.workspace.clone())
+        .map(|revision| revision.codebase.clone())
         .collect();
     current == reviewed
 }
 
-pub fn fingerprint(revisions: &[WorkspaceRevision]) -> Option<String> {
+pub fn fingerprint(revisions: &[CodebaseRevision]) -> Option<String> {
     if revisions
         .iter()
         .all(|revision| revision.state == RepositoryState::NotGit)
     {
         return None;
     }
-    let identities: Vec<_> = revisions.iter().map(WorkspaceRevision::identity).collect();
+    let identities: Vec<_> = revisions.iter().map(CodebaseRevision::identity).collect();
     Some(crate::digest(
-        &serde_json::to_vec(&identities).expect("workspace revisions serialize"),
+        &serde_json::to_vec(&identities).expect("codebase revisions serialize"),
     ))
 }
 
-pub fn same_revisions(left: &[WorkspaceRevision], right: &[WorkspaceRevision]) -> bool {
+pub fn same_revisions(left: &[CodebaseRevision], right: &[CodebaseRevision]) -> bool {
     left.len() == right.len()
         && left
             .iter()
@@ -495,25 +522,25 @@ pub fn same_revisions(left: &[WorkspaceRevision], right: &[WorkspaceRevision]) -
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct WorkspaceComparison {
-    pub reviewed: WorkspaceRevision,
-    pub current: WorkspaceRevision,
+pub struct CodebaseComparison {
+    pub reviewed: CodebaseRevision,
+    pub current: CodebaseRevision,
     /// The recorded Git identity and available changed-file fingerprint match.
     pub matches: bool,
 }
 
-pub fn compare(revisions: &[WorkspaceRevision]) -> Vec<WorkspaceComparison> {
+pub fn compare(revisions: &[CodebaseRevision]) -> Vec<CodebaseComparison> {
     revisions
         .iter()
         .map(|reviewed| {
-            let current = capture_path(Path::new(&reviewed.workspace));
+            let current = capture_path(Path::new(&reviewed.codebase));
             let matches = reviewed.identity() == current.identity()
                 && current.state != RepositoryState::Unavailable
                 && (current.state != RepositoryState::Git
                     || (current.commit.is_some()
                         && current.dirty.is_some()
                         && current.worktree_status_sha256.is_some()));
-            WorkspaceComparison {
+            CodebaseComparison {
                 reviewed: reviewed.clone(),
                 current,
                 matches,
@@ -522,13 +549,13 @@ pub fn compare(revisions: &[WorkspaceRevision]) -> Vec<WorkspaceComparison> {
         .collect()
 }
 
-pub fn unchanged_during_scan(revisions: &[WorkspaceRevision]) -> bool {
+pub fn unchanged_during_scan(revisions: &[CodebaseRevision]) -> bool {
     revisions.iter().all(|reviewed| {
-        capture_path(Path::new(&reviewed.workspace)).identity() == reviewed.identity()
+        capture_path(Path::new(&reviewed.codebase)).identity() == reviewed.identity()
     })
 }
 
-pub fn ensure_current(revisions: &[WorkspaceRevision]) -> Result<()> {
+pub fn ensure_current(revisions: &[CodebaseRevision]) -> Result<()> {
     if compare(revisions).iter().any(|item| {
         !item.matches
             || item.current.state == RepositoryState::Unavailable
@@ -536,7 +563,7 @@ pub fn ensure_current(revisions: &[WorkspaceRevision]) -> Result<()> {
                 && (item.current.commit.is_none() || item.current.dirty.is_none())
     }) {
         bail!(
-            "workspace Git context changed or is unavailable; rescan before recording review results"
+            "codebase Git context changed or is unavailable; rescan before recording review results"
         );
     }
     Ok(())
@@ -545,6 +572,27 @@ pub fn ensure_current(revisions: &[WorkspaceRevision]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shadow_index_preserves_original_modification_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("index");
+        let destination = dir.path().join("shadow-index");
+        fs::write(&source, b"index data").unwrap();
+        let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&source)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(time))
+            .unwrap();
+        copy_shadow_index(&source, &destination).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"index data");
+        assert_eq!(
+            fs::metadata(&source).unwrap().modified().unwrap(),
+            fs::metadata(&destination).unwrap().modified().unwrap()
+        );
+    }
 
     #[test]
     fn status_reads_a_fresh_repository() {

@@ -82,9 +82,10 @@ fn multi_component_review_requires_an_explicit_scope() {
         );
         let screen = screen::screen(&issue, "").unwrap();
         super::hits::Prepared {
-            project_id: "project".into(),
+            project_id: "0de0a8e7-f1a4-4bdc-a198-422b90bbbd84".into(),
+            recheck: false,
             snapshot_id: "snapshot".into(),
-            workspace_revisions: Vec::new(),
+            codebase_revisions: Vec::new(),
             targets: vec![super::hits::PreparedTarget {
                 target,
                 collected: empty_collected(upstream),
@@ -102,8 +103,11 @@ fn multi_component_review_requires_an_explicit_scope() {
     };
     let mut decisions = ResearchDecisions {
         schema_version: 1,
+        project_id: "0de0a8e7-f1a4-4bdc-a198-422b90bbbd84".into(),
+        recheck: false,
         decisions: vec![ItemDecision {
-            workspace_revisions: Vec::new(),
+            reviewed_instance_ids: vec!["instance-1".into()],
+            codebase_revisions: Vec::new(),
             upstream: upstream.into(),
             key: "example/project#1".into(),
             updated_at: "2026-10-20T10:00:00+00:00".into(),
@@ -119,6 +123,14 @@ fn multi_component_review_requires_an_explicit_scope() {
     let packet = super::hits::packet(&make_prepared(), Some(&decisions));
     assert_eq!(packet.review.len(), 1);
     assert!(packet.review[0].scope_required);
+    assert_eq!(
+        packet.review[0]
+            .previous_decision
+            .as_ref()
+            .unwrap()
+            .reviewed_instance_ids,
+        vec!["instance-1"]
+    );
     assert!(super::draft::draft(make_prepared(), &decisions, false).is_err());
 
     let mut ruled = make_prepared();
@@ -135,8 +147,16 @@ fn multi_component_review_requires_an_explicit_scope() {
     assert!(super::draft::draft(ruled, &decisions, false).is_err());
 
     decisions.decisions[0].instance_ids = vec!["instance-2".into()];
+    assert!(super::draft::draft(make_prepared(), &decisions, false).is_err());
+    decisions.decisions[0]
+        .reviewed_instance_ids
+        .push("instance-2".into());
     let (batch, _) = super::draft::draft(make_prepared(), &decisions, false).unwrap();
     assert_eq!(batch.events[0].instance_ids, vec!["instance-2"]);
+    assert_eq!(
+        batch.events[0].reviewed_instance_ids,
+        vec!["instance-1", "instance-2"]
+    );
 
     decisions.decisions[0].instance_ids.clear();
     decisions.decisions[0].all_instances = true;
@@ -149,6 +169,73 @@ fn multi_component_review_requires_an_explicit_scope() {
     decisions.decisions[0].instance_ids = vec!["outside".into()];
     decisions.decisions[0].all_instances = false;
     assert!(super::draft::draft(make_prepared(), &decisions, false).is_err());
+}
+
+#[test]
+fn recheck_skips_decisions_from_the_current_pass() {
+    let upstream = "https://github.com/example/project";
+    let target = target(upstream);
+    let entries = (0..12)
+        .map(|index| {
+            let mut item = item(ItemKind::Issue, "Security issue", "A synthetic claim.");
+            item.key = format!("example/project#{index:02}");
+            let screen = screen::screen(&item, "").unwrap();
+            Entry {
+                item,
+                screen,
+                disposition: Disposition::Review {
+                    unpublished: vec![],
+                },
+            }
+        })
+        .collect();
+    let prepared = super::hits::Prepared {
+        project_id: "0de0a8e7-f1a4-4bdc-a198-422b90bbbd84".into(),
+        snapshot_id: "snapshot".into(),
+        recheck: true,
+        codebase_revisions: vec![],
+        targets: vec![super::hits::PreparedTarget {
+            target,
+            collected: empty_collected(upstream),
+            not_selected: 0,
+            entries,
+        }],
+        resolutions: BTreeMap::new(),
+    };
+    let mut decisions = ResearchDecisions {
+        schema_version: 1,
+        project_id: prepared.project_id.clone(),
+        recheck: true,
+        decisions: vec![],
+    };
+    let first = super::hits::packet_with_recheck(&prepared, Some(&decisions), true);
+    assert_eq!(first.review.len(), 12);
+    for item in first.review.iter().take(10) {
+        decisions.decisions.push(ItemDecision {
+            reviewed_instance_ids: vec!["instance-1".into()],
+            upstream: item.upstream.clone(),
+            key: item.key.clone(),
+            updated_at: item.updated_at.clone(),
+            context_sha256: item.context_sha256.clone(),
+            codebase_revisions: vec![],
+            assessment: Assessment::Review,
+            not_applicable_reason: None,
+            rationale: "Review the synthetic claim.".into(),
+            source_facts: SourceFacts::default(),
+            instance_ids: vec![],
+            all_instances: false,
+        });
+    }
+    let second = super::hits::packet_with_recheck(&prepared, Some(&decisions), true);
+    assert_eq!(second.review.len(), 2);
+    assert_eq!(second.summary.decided, 10);
+    decisions.recheck = false;
+    assert_eq!(
+        super::hits::packet_with_recheck(&prepared, Some(&decisions), true)
+            .review
+            .len(),
+        12
+    );
 }
 
 #[test]
@@ -197,8 +284,10 @@ fn evaluation_exposes_false_negatives_and_top_k_without_changing_decisions() {
         super::evaluate::LabelledItem {
             item: value,
             relevant,
+            high_priority: key == "a" || key == "c",
             rationale: "independent synthetic label".into(),
             linked_body: String::new(),
+            linked_items: Vec::new(),
         }
     };
     let corpus = super::evaluate::Corpus {
@@ -213,9 +302,100 @@ fn evaluation_exposes_false_negatives_and_top_k_without_changing_decisions() {
     let result = serde_json::to_value(super::evaluate::evaluate(corpus, 1).unwrap()).unwrap();
     assert_eq!(result["selected"], 2);
     assert_eq!(result["precision"], 0.5);
+    assert_eq!(result["false_positive_keys"][0], "b");
     assert_eq!(result["recall"], 0.5);
     assert_eq!(result["precision_at_top"], 1.0);
     assert_eq!(result["false_negative_keys"][0], "c");
+    assert_eq!(result["high_priority"], 2);
+    assert_eq!(result["high_priority_recall"], 0.5);
+    assert_eq!(result["high_priority_missed_keys"][0], "c");
+    assert_eq!(result["high_priority_recall_at_top"], 0.5);
+}
+
+#[test]
+fn evaluation_rejects_high_priority_items_labelled_irrelevant() {
+    let corpus = super::evaluate::Corpus {
+        schema_version: 1,
+        items: vec![super::evaluate::LabelledItem {
+            item: item(ItemKind::Issue, "Example", ""),
+            relevant: false,
+            high_priority: true,
+            rationale: "Contradictory synthetic label".into(),
+            linked_body: String::new(),
+            linked_items: Vec::new(),
+        }],
+    };
+    assert!(super::evaluate::evaluate(corpus, 1).is_err());
+}
+
+#[test]
+fn evaluation_screens_linked_item_metadata_like_research() {
+    let mut linked = item(ItemKind::Issue, "Response handling", "No details provided.");
+    linked.key = "example/project#2".into();
+    linked.labels = vec!["security".into()];
+    let mut change = item(ItemKind::PullRequest, "Adjust response handling", "");
+    change.closes = vec![linked.key.clone()];
+    let entry = super::evaluate::LabelledItem {
+        item: change,
+        relevant: true,
+        high_priority: false,
+        rationale: "A linked tracker item has a security label.".into(),
+        linked_body: String::new(),
+        linked_items: vec![linked],
+    };
+    let result = super::evaluate::evaluate(
+        super::evaluate::Corpus {
+            schema_version: 1,
+            items: vec![entry],
+        },
+        1,
+    )
+    .unwrap();
+    assert_eq!(result.selected, 1);
+    assert!(result.false_negative_keys.is_empty());
+}
+
+#[test]
+fn evaluation_rejects_unrelated_linked_items() {
+    let entry = super::evaluate::LabelledItem {
+        item: item(ItemKind::PullRequest, "Adjust response handling", ""),
+        relevant: true,
+        high_priority: false,
+        rationale: "Only referenced items are valid context.".into(),
+        linked_body: String::new(),
+        linked_items: vec![item(ItemKind::Issue, "Security issue", "")],
+    };
+    assert!(
+        super::evaluate::evaluate(
+            super::evaluate::Corpus {
+                schema_version: 1,
+                items: vec![entry]
+            },
+            1
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn screen_selects_claimed_phishing() {
+    for body in [
+        "An email verification flow may enable phishing.",
+        "The login page can be used for a phishing attack.",
+    ] {
+        assert!(screen::screen(&item(ItemKind::Issue, "Request handling", body), "").is_some());
+    }
+    assert!(
+        screen::screen(
+            &item(
+                ItemKind::Issue,
+                "Request handling",
+                "A hard-coded timeout is too short."
+            ),
+            ""
+        )
+        .is_none()
+    );
 }
 
 #[test]
@@ -493,9 +673,10 @@ fn truncated_identifiers_require_review_for_releases_and_dependency_updates() {
     let screen = screen::screen(&release, "").unwrap();
     let disposition = disposition(&release, &screen, &context);
     let prepared = super::hits::Prepared {
-        project_id: "project".into(),
+        project_id: "0de0a8e7-f1a4-4bdc-a198-422b90bbbd84".into(),
+        recheck: false,
         snapshot_id: "snapshot".into(),
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         targets: vec![super::hits::PreparedTarget {
             target: target("https://github.com/example/project"),
             collected,
@@ -594,7 +775,8 @@ fn repository_advisories_are_evaluated_against_the_target_instances() {
 #[test]
 fn decisions_are_validated_and_stale_ones_are_reported() {
     let decision = ItemDecision {
-        workspace_revisions: Vec::new(),
+        reviewed_instance_ids: vec!["instance-1".into()],
+        codebase_revisions: Vec::new(),
         upstream: "https://github.com/example/project".into(),
         key: "example/project#7".into(),
         updated_at: "2026-10-20T10:00:00Z".into(),
@@ -611,6 +793,8 @@ fn decisions_are_validated_and_stale_ones_are_reported() {
     };
     let decisions = ResearchDecisions {
         schema_version: 1,
+        project_id: "0de0a8e7-f1a4-4bdc-a198-422b90bbbd84".into(),
+        recheck: false,
         decisions: vec![decision.clone()],
     };
     decisions.validate().unwrap();
@@ -642,195 +826,12 @@ fn decisions_are_validated_and_stale_ones_are_reported() {
     without_fact.source_facts = SourceFacts::default();
     let invalid = ResearchDecisions {
         schema_version: 1,
+        project_id: "0de0a8e7-f1a4-4bdc-a198-422b90bbbd84".into(),
+        recheck: false,
         decisions: vec![without_fact],
     };
     assert!(invalid.validate().is_err());
 }
 
-#[test]
-fn decisions_with_the_same_key_are_scoped_to_the_upstream() {
-    let github = "https://github.com/example/project";
-    let gitlab = "https://gitlab.com/example/project";
-    let make_prepared = || super::hits::Prepared {
-        project_id: "project".into(),
-        snapshot_id: "snapshot".into(),
-        workspace_revisions: Vec::new(),
-        targets: [github, gitlab]
-            .into_iter()
-            .map(|upstream| {
-                let mut issue = item(
-                    ItemKind::Issue,
-                    "Security issue",
-                    "Security issue in parser.",
-                );
-                issue.url = format!("{upstream}/issues/1");
-                super::hits::PreparedTarget {
-                    target: target(upstream),
-                    collected: empty_collected(upstream),
-                    not_selected: 0,
-                    entries: vec![Entry {
-                        screen: screen::screen(&issue, "").unwrap(),
-                        item: issue,
-                        disposition: Disposition::Review {
-                            unpublished: vec![],
-                        },
-                    }],
-                }
-            })
-            .collect(),
-        resolutions: BTreeMap::new(),
-    };
-    let mut decisions = ResearchDecisions {
-        schema_version: 1,
-        decisions: vec![ItemDecision {
-            workspace_revisions: Vec::new(),
-            upstream: github.into(),
-            key: "example/project#1".into(),
-            updated_at: "2026-10-20T10:00:00+00:00".into(),
-            context_sha256: "a".repeat(64),
-            assessment: Assessment::Ignore,
-            not_applicable_reason: None,
-            rationale: "GitHub item is unrelated.".into(),
-            source_facts: SourceFacts::default(),
-            instance_ids: vec![],
-            all_instances: false,
-        }],
-    };
-    decisions.validate().unwrap();
-    let packet = super::hits::packet(&make_prepared(), Some(&decisions));
-    assert_eq!(packet.review.len(), 1);
-    assert_eq!(packet.review[0].upstream, gitlab);
-    assert!(super::draft::draft(make_prepared(), &decisions, false).is_err());
-
-    let mut gitlab_decision = decisions.decisions[0].clone();
-    gitlab_decision.upstream = gitlab.into();
-    gitlab_decision.assessment = Assessment::Review;
-    gitlab_decision.rationale = "GitLab item needs review.".into();
-    decisions.decisions.push(gitlab_decision);
-    decisions.validate().unwrap();
-    let (batch, _) = super::draft::draft(make_prepared(), &decisions, false).unwrap();
-    assert_eq!(batch.events.len(), 2);
-    assert_eq!(batch.events[0].upstream, github);
-    assert_eq!(batch.events[0].assessment, Assessment::Ignore);
-    assert_eq!(batch.events[1].upstream, gitlab);
-    assert_eq!(batch.events[1].assessment, Assessment::Review);
-
-    decisions.decisions.push(decisions.decisions[0].clone());
-    assert!(decisions.validate().is_err());
-    decisions.decisions.pop();
-    decisions.decisions[0].upstream = "http://example.org/project".into();
-    assert!(decisions.validate().is_err());
-    let mut missing_upstream = serde_json::to_value(&decisions.decisions[0]).unwrap();
-    missing_upstream.as_object_mut().unwrap().remove("upstream");
-    assert!(serde_json::from_value::<ItemDecision>(missing_upstream).is_err());
-}
-
-#[test]
-fn workspace_init_creates_the_monitor_layout_and_rejects_bad_names() {
-    let directory = tempfile::tempdir().unwrap();
-    let layout = workspace::init(directory.path(), "keycloak", "2026-10-27").unwrap();
-    assert!(!layout.profile_exists);
-    assert!(directory.path().join("notes").is_dir());
-    assert!(
-        directory
-            .path()
-            .join("monitors/keycloak/runs/2026-10-27/raw")
-            .is_dir()
-    );
-    assert_eq!(
-        layout.decisions,
-        directory
-            .path()
-            .join("monitors/keycloak/decisions/research.json")
-    );
-    assert!(workspace::init(directory.path(), "Keycloak", "2026-10-27").is_err());
-    assert!(workspace::init(directory.path(), "../x", "2026-10-27").is_err());
-    assert!(workspace::init(directory.path(), "keycloak", "27/10/2026").is_err());
-}
-
-#[test]
-fn truncated_seen_item_requires_a_review_decision() {
-    let report = item(
-        ItemKind::Issue,
-        "Security report",
-        &(0..33)
-            .map(|n| format!("CVE-2026-{:04}", n + 1000))
-            .collect::<Vec<_>>()
-            .join(" "),
-    );
-    let screen = screen::screen(&report, "").unwrap();
-    assert!(screen.identifiers_truncated);
-    let mut research_target = target("https://github.com/example/project");
-    research_target.seen.push(crate::research::SeenEvent {
-        external_id: report.key.clone(),
-        url: report.url.clone(),
-        content_sha256: "a".repeat(64),
-        updated_at: report.updated_at.clone(),
-        context_current: true,
-        assessment: Some(Assessment::Ignore),
-        not_applicable_reason: None,
-        rationale: String::new(),
-    });
-    assert!(!super::hits::already_reviewed(
-        &research_target,
-        &report,
-        &screen
-    ));
-    research_target.seen[0].assessment = Some(Assessment::Review);
-    assert!(super::hits::already_reviewed(
-        &research_target,
-        &report,
-        &screen
-    ));
-}
-
-#[test]
-fn decision_workspace_metadata_must_match_the_review_packet() {
-    use crate::workspace_revision::{RepositoryState, WorkspaceRevision};
-    let revision = WorkspaceRevision {
-        workspace: "/example/project".into(),
-        state: RepositoryState::Git,
-        repository: Some("/example/project".into()),
-        branch: Some("main".into()),
-        commit: Some("a".repeat(40)),
-        dirty: Some(false),
-        worktree_status_sha256: Some("b".repeat(64)),
-        observed_at: "2026-10-20T10:00:00Z".into(),
-    };
-    let mut reviewed = item(ItemKind::Issue, "Security issue", "");
-    reviewed.key = "example/project#7".into();
-    let decision = ItemDecision {
-        upstream: "https://github.com/example/project".into(),
-        key: reviewed.key.clone(),
-        updated_at: reviewed.updated_at.clone(),
-        context_sha256: "a".repeat(64),
-        workspace_revisions: vec![revision.clone()],
-        assessment: Assessment::Review,
-        not_applicable_reason: None,
-        rationale: "Review the issue.".into(),
-        source_facts: SourceFacts::default(),
-        instance_ids: vec![],
-        all_instances: false,
-    };
-    let decisions = ResearchDecisions {
-        schema_version: 1,
-        decisions: vec![decision],
-    };
-    let mut next_observation = revision.clone();
-    next_observation.observed_at = "2026-10-20T12:00:00Z".into();
-    let source = target("https://github.com/example/project");
-    assert!(matches!(
-        decisions.lookup(&reviewed, &source, &[next_observation]),
-        DecisionLookup::Current(_)
-    ));
-    let mut changed = revision;
-    changed.branch = Some("other".into());
-    assert!(matches!(
-        decisions.lookup(&reviewed, &source, &[changed]),
-        DecisionLookup::Stale(_)
-    ));
-    assert!(matches!(
-        decisions.lookup(&reviewed, &source, &[]),
-        DecisionLookup::Stale(_)
-    ));
-}
+#[path = "tests/decisions.rs"]
+mod decisions;

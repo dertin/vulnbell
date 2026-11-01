@@ -6,6 +6,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod requirements;
+
+mod errors;
+use errors::safe_inventory_error;
+mod exclusions;
+pub(crate) use exclusions::{EXCLUDED_DIRECTORIES, excluded_directory, excluded_path};
+
 #[derive(Default)]
 pub struct Inventory {
     pub instances: Vec<Instance>,
@@ -657,8 +664,8 @@ pub fn parse_lock(filename: &str, bytes: &[u8]) -> Result<Vec<LockedPackage>> {
 }
 /// Coverage detail for manifests without a native parser; general discovery can cover them.
 pub const UNSUPPORTED_MANIFEST: &str = "detected ecosystem lock/manifest is not implemented; provide a supported SBOM or explicit components";
-/// Coverage detail for workspaces without native lockfiles; general discovery can cover them.
-pub const NO_NATIVE_INVENTORY: &str = "no supported lockfile/SBOM found; this workspace was not evaluated for exact dependency versions";
+/// Coverage detail for codebases without native lockfiles; general discovery can cover them.
+pub const NO_NATIVE_INVENTORY: &str = "no supported lockfile/SBOM found; this codebase was not evaluated for exact dependency versions";
 /// Lockfiles and SBOMs read by `parse_lock`; their parse failures are reported as inventory coverage.
 pub fn native_inventory_file(name: &str) -> bool {
     [
@@ -675,7 +682,7 @@ pub fn native_inventory_file(name: &str) -> bool {
         || name.ends_with(".spdx.json")
 }
 pub fn discover(
-    workspaces: &[String],
+    codebases: &[String],
     profile_path: &Path,
     store: &crate::store::Store,
     instance_budget: usize,
@@ -684,37 +691,37 @@ pub fn discover(
     let base = profile_path.parent().unwrap_or(Path::new("."));
     let mut visited = std::collections::HashSet::new();
     let mut file_count = 0;
-    let mut total_bytes = 0;
-    'workspaces: for workspace in workspaces {
-        let root = base.join(workspace);
+    let mut total_bytes: usize = 0;
+    'codebases: for codebase in codebases {
+        let root = base.join(codebase);
         let root: PathBuf = match root.canonicalize() {
             Ok(root) if root.is_dir() && !root.starts_with(crate::store::data_root()) => root,
             _ => {
                 inventory.coverage.push(Coverage::new(
-                    "workspace",
-                    workspace,
+                    "codebase",
+                    codebase,
                     CoverageState::Unavailable,
-                    "workspace missing or not a directory",
+                    "codebase missing or not a directory",
                 ));
                 continue;
             }
         };
+        if excluded_path(&root) {
+            inventory.coverage.push(Coverage::new(
+                "codebase",
+                codebase,
+                CoverageState::Unavailable,
+                "dependency or build output cannot be an inventory codebase",
+            ));
+            continue;
+        }
         let walker = ignore::WalkBuilder::new(&root)
             .hidden(false)
             .follow_links(false)
             .max_depth(Some(32))
             .filter_entry(|entry| {
-                ![
-                    ".git",
-                    "node_modules",
-                    "vendor",
-                    ".venv",
-                    "target",
-                    ".cache",
-                    "dist",
-                    "build",
-                ]
-                .contains(&entry.file_name().to_string_lossy().as_ref())
+                !entry.file_type().is_some_and(|kind| kind.is_dir())
+                    || !excluded_directory(&entry.file_name().to_string_lossy())
             })
             .build();
         let mut supported_files = 0;
@@ -722,27 +729,27 @@ pub fn discover(
             if total_bytes > 128 * 1024 * 1024 {
                 inventory.coverage.push(Coverage::new(
                     "inventory",
-                    workspace,
+                    codebase,
                     CoverageState::Partial,
                     "aggregate inventory byte budget exhausted; remaining files were not read",
                 ));
-                break 'workspaces;
+                break 'codebases;
             }
             if inventory.instances.len() >= instance_budget {
                 inventory.coverage.push(Coverage::new(
                     "inventory",
-                    workspace,
+                    codebase,
                     CoverageState::Partial,
                     "shared instance budget exhausted; remaining files were not reviewed",
                 ));
-                break 'workspaces;
+                break 'codebases;
             }
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(_) => {
                     inventory.coverage.push(Coverage::new(
-                        "workspace",
-                        workspace,
+                        "codebase",
+                        codebase,
                         CoverageState::Partial,
                         "directory traversal failed",
                     ));
@@ -752,27 +759,69 @@ pub fn discover(
             file_count += 1;
             if file_count > 100_000 {
                 inventory.coverage.push(Coverage::new(
-                    "workspace",
-                    workspace,
+                    "codebase",
+                    codebase,
                     CoverageState::Partial,
                     "100000 entry discovery limit",
                 ));
-                break 'workspaces;
+                break 'codebases;
             }
             if !entry.file_type().is_some_and(|kind| kind.is_file()) {
                 continue;
             }
             let name = entry.file_name().to_string_lossy();
+            if name == "requirements.txt" {
+                supported_files += 1;
+                if !visited.insert(entry.path().to_owned()) {
+                    continue;
+                }
+                let relative =
+                    crate::slash_path(entry.path().strip_prefix(&root).unwrap_or(entry.path()));
+                match crate::read_limited(entry.path(), 32 * 1024 * 1024) {
+                    Ok(bytes) if total_bytes.saturating_add(bytes.len()) <= 128 * 1024 * 1024 => {
+                        total_bytes += bytes.len();
+                        let remaining = instance_budget.saturating_sub(inventory.instances.len());
+                        match requirements::parse(
+                            &bytes,
+                            &root.to_string_lossy(),
+                            &relative,
+                            remaining,
+                        ) {
+                            Ok((instances, detail)) => {
+                                inventory.instances.extend(instances);
+                                inventory.coverage.push(Coverage::new(
+                                    "inventory",
+                                    &relative,
+                                    CoverageState::Partial,
+                                    detail,
+                                ));
+                            }
+                            Err(error) => inventory.coverage.push(Coverage::new(
+                                "inventory",
+                                &relative,
+                                CoverageState::Partial,
+                                safe_inventory_error(&error),
+                            )),
+                        }
+                    }
+                    Ok(_) => inventory.coverage.push(Coverage::new(
+                        "inventory",
+                        &relative,
+                        CoverageState::Partial,
+                        "aggregate inventory byte budget exhausted",
+                    )),
+                    Err(_) => inventory.coverage.push(Coverage::new(
+                        "inventory",
+                        &relative,
+                        CoverageState::Unavailable,
+                        "requirements file could not be read",
+                    )),
+                }
+                continue;
+            }
             if !native_inventory_file(&name) {
-                if [
-                    "go.mod",
-                    "go.sum",
-                    "poetry.lock",
-                    "uv.lock",
-                    "Pipfile.lock",
-                    "requirements.txt",
-                ]
-                .contains(&name.as_ref())
+                if ["go.mod", "go.sum", "poetry.lock", "uv.lock", "Pipfile.lock"]
+                    .contains(&name.as_ref())
                 {
                     inventory.coverage.push(Coverage::new(
                         "inventory",
@@ -798,7 +847,7 @@ pub fn discover(
                 }
                 use rusqlite::OptionalExtension;
                 let hash = crate::digest(&bytes);
-                let key = format!("parser-v8:{name}:{hash}");
+                let key = format!("{name}:{hash}");
                 let cached: Option<String> = store
                     .connection
                     .query_row(
@@ -831,7 +880,7 @@ pub fn discover(
                                 CoverageState::Partial,
                                 "shared instance budget exhausted inside lockfile",
                             ));
-                            break 'workspaces;
+                            break 'codebases;
                         }
                         let (namespace, package_name) = match package.name.rsplit_once('/') {
                             Some((namespace, name)) => (Some(namespace), name),
@@ -870,7 +919,12 @@ pub fn discover(
                             ));
                             continue;
                         }
-                        let reference = purl.to_string();
+                        let unverified_composer = name == "composer.lock";
+                        let reference = if unverified_composer {
+                            format!("composer-lock:{}", package.name)
+                        } else {
+                            purl.to_string()
+                        };
                         let identity = format!(
                             "{:?}:{relative:?}:{reference:?}:{:?}:{:?}",
                             root, package.version, package.resolution
@@ -888,21 +942,34 @@ pub fn discover(
                                 path: Some(relative.clone()),
                                 sha256: hash.clone(),
                                 observed_at: crate::now(),
-                                workspace: Some(workspace.clone()),
-                                workspace_context_sha256: None,
+                                codebase: Some(codebase.clone()),
+                                codebase_context_sha256: None,
                                 direct: package.direct,
                                 resolution: package.resolution,
                                 artifact_integrity: package.artifact_integrity,
                                 line: package.line,
                             },
-                            purl: Some(reference),
+                            purl: (!unverified_composer).then_some(reference),
                             cpe_product: None,
                             upstream: None,
                             identity_evidence: Vec::new(),
                             release: None,
                         });
                     }
-                    inventory.coverage.push(Coverage::new("inventory", &relative, CoverageState::Checked, "registry packages parsed; directness is included when available; local/git dependencies have no registry equivalence"));
+                    let (state, detail) = if name == "composer.lock" {
+                        (
+                            CoverageState::Partial,
+                            "Composer versions inventoried locally; public package origins are unverified and excluded from external lookup",
+                        )
+                    } else {
+                        (
+                            CoverageState::Checked,
+                            "registry packages parsed; directness is included when available; local/git dependencies have no registry equivalence",
+                        )
+                    };
+                    inventory
+                        .coverage
+                        .push(Coverage::new("inventory", &relative, state, detail));
                 }
                 Err(error) => inventory.coverage.push(Coverage::new(
                     "inventory",
@@ -915,38 +982,11 @@ pub fn discover(
         if supported_files == 0 {
             inventory.coverage.push(Coverage::new(
                 "inventory",
-                workspace,
+                codebase,
                 CoverageState::Partial,
                 NO_NATIVE_INVENTORY,
             ));
         }
     }
     inventory
-}
-
-fn safe_inventory_error(error: &anyhow::Error) -> String {
-    if let Some(error) = error.downcast_ref::<serde_json::Error>() {
-        return format!(
-            "JSON inventory parse failed at line {}, column {}; source content omitted",
-            error.line(),
-            error.column()
-        );
-    }
-    if let Some(error) = error.downcast_ref::<toml::de::Error>() {
-        return format!(
-            "TOML inventory parse failed at byte span {:?}; source content omitted",
-            error.span()
-        );
-    }
-    if let Some(error) = error.downcast_ref::<serde_saphyr::Error>() {
-        return match error.location() {
-            Some(location) => format!(
-                "YAML inventory parse failed at line {}, column {}; source content omitted",
-                location.line(),
-                location.column()
-            ),
-            None => "YAML inventory parse failed; source content omitted".into(),
-        };
-    }
-    error.to_string()
 }

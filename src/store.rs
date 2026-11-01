@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const DATABASE_SCHEMA: u32 = 2;
+const DATABASE_SCHEMA: u32 = 5;
 /// Default wait for another command on the same project (override: VULNBELL_LOCK_WAIT_SECONDS).
 const LOCK_WAIT_SECONDS: u64 = 120;
 
@@ -61,6 +61,7 @@ impl Store {
             CREATE TABLE inventory_cache (key TEXT PRIMARY KEY, body TEXT NOT NULL);
             CREATE TABLE discovery_walk (scope TEXT NOT NULL, root TEXT NOT NULL, path TEXT NOT NULL, cursor TEXT NOT NULL, stamp TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY(scope,root,path));
             CREATE TABLE discovery_files (id TEXT PRIMARY KEY, scope TEXT NOT NULL, root TEXT NOT NULL, path TEXT NOT NULL, stamp TEXT NOT NULL, offset INTEGER NOT NULL, state TEXT NOT NULL, reason TEXT NOT NULL);
+            CREATE INDEX discovery_files_scope_path ON discovery_files(scope,root,path);
             CREATE TABLE discovery_packages (id TEXT PRIMARY KEY, scope TEXT NOT NULL, file_id TEXT NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, sha256 TEXT NOT NULL, body TEXT NOT NULL);
             CREATE TABLE discovery_sources (scope TEXT NOT NULL, instance_id TEXT NOT NULL, fingerprint TEXT NOT NULL, checked_at TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(scope,instance_id));
             CREATE TABLE discovery_documents (id TEXT PRIMARY KEY, body TEXT NOT NULL);
@@ -237,43 +238,29 @@ impl Store {
                 })?;
         Ok(serde_json::from_str(&body)?)
     }
-    pub fn ensure_workspace_current(&self) -> Result<()> {
+    pub fn ensure_codebases_current(&self) -> Result<()> {
         let Some(_) = self.meta("last_snapshot")? else {
             return Ok(());
         };
         let snapshot = self.latest()?;
-        if !snapshot.workspace_revisions.is_empty()
-            && let Some(path) = self.meta("profile_path")?
-        {
+        if let Some(path) = self.meta("profile_path")? {
             let path = Path::new(&path);
             let profile = crate::profile::load(path)?;
-            if !crate::workspace_revision::configured_paths_match(
-                &snapshot.workspace_revisions,
+            if !crate::codebase_revision::configured_paths_match(
+                &snapshot.codebase_revisions,
                 &profile,
                 path,
             ) {
-                bail!("workspace configuration changed; rescan before recording review results");
+                bail!("codebase configuration changed; rescan before recording review results");
             }
         }
-        if snapshot.workspace_revisions.is_empty() {
-            if let Some(path) = self.meta("profile_path")? {
-                let path = Path::new(&path);
-                let profile = crate::profile::load(path)?;
-                let current = crate::workspace_revision::capture(&profile, path);
-                if current.iter().any(|revision| {
-                    revision.state != crate::workspace_revision::RepositoryState::NotGit
-                }) {
-                    bail!(
-                        "workspace Git context was not recorded; rescan before recording review results"
-                    );
-                }
-            }
+        if snapshot.codebase_revisions.is_empty() {
             return Ok(());
         }
-        crate::workspace_revision::ensure_current(&snapshot.workspace_revisions)
+        crate::codebase_revision::ensure_current(&snapshot.codebase_revisions)
     }
     pub fn save_case(&mut self, case: &Case) -> Result<()> {
-        self.ensure_workspace_current()?;
+        self.ensure_codebases_current()?;
         let body = serde_json::to_string(case)?;
         let current_snapshot = self.meta("last_snapshot")?;
         let active = current_snapshot

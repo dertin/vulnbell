@@ -13,7 +13,7 @@ pub struct Profile {
     #[schemars(length(min = 1, max = 120))]
     pub name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub workspaces: Vec<String>,
+    pub codebases: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub components: Vec<Component>,
     #[serde(default)]
@@ -176,12 +176,13 @@ pub enum TrackerScope {
 }
 impl Research {
     pub fn tracks(&self, instance: &crate::model::Instance) -> bool {
-        self.tracker_scope == TrackerScope::All
-            || instance.provenance.direct == Some(true)
-            || self
-                .follow
-                .iter()
-                .any(|reference| reference == &instance.reference)
+        !instance.has_unverified_local_identity()
+            && (self.tracker_scope == TrackerScope::All
+                || instance.provenance.direct == Some(true)
+                || self
+                    .follow
+                    .iter()
+                    .any(|reference| reference == &instance.reference))
     }
 }
 #[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema)]
@@ -296,12 +297,12 @@ pub fn validate(profile: &Profile) -> Validation {
             "Use at most 500 nonempty exact inventory references",
         );
     }
-    let mut workspaces = HashSet::new();
-    for (index, workspace) in profile.workspaces.iter().enumerate() {
-        if workspace.is_empty() || !workspaces.insert(workspace) {
+    let mut codebases = HashSet::new();
+    for (index, codebase) in profile.codebases.iter().enumerate() {
+        if codebase.is_empty() || !codebases.insert(codebase) {
             push(
-                format!("/workspaces/{index}"),
-                "invalid_workspace",
+                format!("/codebases/{index}"),
+                "invalid_codebase",
                 "Use nonempty unique paths",
             );
         }
@@ -441,11 +442,11 @@ pub fn validate(profile: &Profile) -> Validation {
             "Use 1..600 seconds",
         );
     }
-    let warnings = if profile.workspaces.is_empty() && profile.components.is_empty() {
+    let warnings = if profile.codebases.is_empty() && profile.components.is_empty() {
         vec![Diagnostic {
             pointer: "/".into(),
             code: "empty_scope".into(),
-            message: "Add components or authorized workspaces before scan".into(),
+            message: "Add components or authorized codebases before scan".into(),
         }]
     } else {
         Vec::new()

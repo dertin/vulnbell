@@ -1,5 +1,6 @@
 use serde_json::json;
 use std::{fs, path::Path};
+mod support;
 use vulnbell::{
     model::{Applicability, Decision, EvidenceReference, Verdict, Verification},
     profile::{self, Profile},
@@ -106,7 +107,7 @@ fn manual_then_mixed_monitor_is_auditable_and_preserves_history() {
     assert!(first.partial);
     let case = &first.cases[0];
     let forged = Verdict {
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         schema_version: 1,
         case_id: case.case_id.clone(),
         facts_sha256: case.facts_sha256.clone(),
@@ -122,6 +123,27 @@ fn manual_then_mixed_monitor_is_auditable_and_preserves_history() {
     assert!(vulnbell::engine::triage(&mut store, &case.case_id, forged).is_err());
     let second = vulnbell::engine::scan(&profile, &path, true).unwrap();
     assert_eq!(second.cases[0].facts_sha256, case.facts_sha256);
+    let mut stale_context = second.cases[0].clone();
+    stale_context.codebase_revisions =
+        vec![vulnbell::codebase_revision::capture_path(directory.path())];
+    stale_context.applicability = Applicability::NotAffected;
+    stale_context.verification = Verification::LabReproduced;
+    stale_context.decision = Decision::Dismissed;
+    store.save_case(&stale_context).unwrap();
+    let reassessed = vulnbell::engine::scan(&profile, &path, true).unwrap();
+    assert_eq!(reassessed.cases[0].facts_sha256, case.facts_sha256);
+    assert_eq!(reassessed.cases[0].applicability, Applicability::Affected);
+    assert_eq!(
+        reassessed.cases[0].verification,
+        Verification::SourceConfirmed
+    );
+    assert_eq!(reassessed.cases[0].decision, Decision::Actionable);
+    assert!(
+        reassessed.cases[0]
+            .open_questions
+            .iter()
+            .any(|question| question.contains("Codebase revision changed"))
+    );
     cache(
         &store,
         "GET",
@@ -142,7 +164,7 @@ fn manual_then_mixed_monitor_is_auditable_and_preserves_history() {
     )
     .unwrap();
     let before = fs::read(directory.path().join("workspace/package-lock.json")).unwrap();
-    fs::write(&path, format!("{yaml}workspaces: [workspace]\n")).unwrap();
+    fs::write(&path, format!("{yaml}codebases: [workspace]\n")).unwrap();
     let mixed: Profile = profile::load(&path).unwrap();
     let snapshot = vulnbell::engine::scan(&mixed, &path, true).unwrap();
     assert_eq!(snapshot.instances.len(), 4);
@@ -153,13 +175,13 @@ fn manual_then_mixed_monitor_is_auditable_and_preserves_history() {
     );
     assert_eq!(
         fs::read_to_string(&path).unwrap(),
-        format!("{yaml}workspaces: [workspace]\n")
+        format!("{yaml}codebases: [workspace]\n")
     );
     let count: u32 = store
         .connection
         .query_row("SELECT COUNT(*) FROM snapshots", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(count, 4);
+    assert_eq!(count, 5);
     let locked_case = snapshot
         .cases
         .iter()
@@ -190,6 +212,18 @@ fn manual_then_mixed_monitor_is_auditable_and_preserves_history() {
         unchanged.instances[0].provenance.sha256,
         locked_case.instances[0].provenance.sha256
     );
+    let mut stale_research = store.case(&research_case.case_id).unwrap();
+    stale_research.codebase_revisions.clear();
+    stale_research.verification = Verification::LabReproduced;
+    store.save_case(&stale_research).unwrap();
+    let revision_changed = vulnbell::engine::scan(&mixed, &path, true).unwrap();
+    let reopened_research = revision_changed
+        .cases
+        .iter()
+        .find(|case| case.case_id == research_case.case_id)
+        .unwrap();
+    assert_eq!(reopened_research.decision, Decision::Review);
+    assert_eq!(reopened_research.verification, Verification::Inconclusive);
     lock["packages"]["node_modules/lodash"]["integrity"] = json!("sha512-changed-artifact");
     fs::write(&lock_path, serde_json::to_vec(&lock).unwrap()).unwrap();
     let changed = vulnbell::engine::scan(&mixed, &path, true).unwrap();
@@ -234,8 +268,33 @@ fn cli_scaffold_is_valid_and_scan_rejects_empty_scope() {
     remove_project(initialized["project_id"].as_str().unwrap());
 }
 
+#[cfg(unix)]
+#[test]
+fn cli_runs_with_one_mebibyte_stack() {
+    let directory = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new("sh")
+        .args([
+            "-c",
+            "ulimit -s 1024; exec \"$1\" init --output \"$2\"",
+            "sh",
+        ])
+        .arg(assert_cmd::cargo::cargo_bin!("vulnbell"))
+        .arg(directory.path().join("vulnbell.yaml"))
+        .env("VULNBELL_DATA_DIR", directory.path().join("data"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn status_lists_registered_projects_and_persisted_schedule_outcomes() {
+    if support::isolate_data("status_lists_registered_projects_and_persisted_schedule_outcomes") {
+        return;
+    }
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("vulnbell.yaml");
     let output = assert_cmd::Command::new(assert_cmd::cargo::cargo_bin!("vulnbell"))
@@ -396,7 +455,7 @@ fn a_repository_advisory_confirms_the_version_and_absorbs_the_research_case() {
     assert!(first.cases.is_empty());
     let instance = first.instances[0].clone();
     let research = vulnbell::model::Case {
-            workspace_revisions: Vec::new(),
+            codebase_revisions: Vec::new(),
         schema_version: 1,
         case_id: "SIG-synthetic-research-advisory".into(),
         project_id: project.to_string(),
@@ -501,7 +560,7 @@ fn a_repository_advisory_confirms_the_version_and_absorbs_the_research_case() {
     );
 
     let late_research = vulnbell::model::Case {
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         case_id: "SIG-0-late-research".into(),
         snapshot_id: second.id.clone(),
         ..research.clone()
@@ -539,7 +598,7 @@ fn reimported_research_keeps_promoted_advisory_and_evidence() {
     let plan = research::plan_page(&store, "", 20).unwrap();
     let target = &plan.targets[0];
     let event = ResearchEvent {
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         upstream: target.upstream.clone(), instance_ids: target.instance_ids.clone(),
         reviewed_instance_ids: target.instance_ids.clone(), provider: "github".into(),
         external_id: "synthetic-org/synthetic-crate/GHSA-synt-hetc-0001".into(),
@@ -550,6 +609,7 @@ fn reimported_research_keeps_promoted_advisory_and_evidence() {
         rationale: "Review the reported issue.".into(), source_facts: Default::default(),
     };
     let source = |target: &research::ResearchTarget| SourceReview {
+        recheck_context_sha256: None,
         upstream: target.upstream.clone(),
         from: target.from.clone(),
         until: target.until.clone(),
@@ -695,7 +755,7 @@ fn refreshing_an_affected_repository_advisory_with_ambiguous_details_keeps_it_op
         "https://api.github.com/repos/synthetic-org/synthetic-crate/security-advisories/{id}"
     );
     let case = vulnbell::model::Case {
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         schema_version: 1,
         case_id: "SIG-refresh-advisory".into(),
         project_id: project.to_string(),

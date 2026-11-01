@@ -7,6 +7,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 
+pub(crate) mod automation;
+
+const MAX_IMPACT_RESULT_BYTES: usize = 32 * 1024 * 1024;
+
 #[derive(
     Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash,
 )]
@@ -68,7 +72,7 @@ pub struct ImpactTarget {
 pub struct ImpactPlan {
     pub schema_version: u32,
     pub case_id: String,
-    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
+    pub codebase_revisions: Vec<crate::codebase_revision::CodebaseRevision>,
     pub facts_sha256: String,
     pub affected_version_confirmed: bool,
     pub targets: Vec<ImpactTarget>,
@@ -94,7 +98,7 @@ pub struct ImpactSubmission {
     pub answers: Vec<ImpactAnswer>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct InstanceImpact {
     pub instance_id: String,
     pub verdict: ImpactVerdict,
@@ -107,8 +111,7 @@ pub struct InstanceImpact {
 pub struct ImpactResult {
     pub schema_version: u32,
     pub case_id: String,
-    #[serde(default)]
-    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
+    pub codebase_revisions: Vec<crate::codebase_revision::CodebaseRevision>,
     pub facts_sha256: String,
     pub verdict: ImpactVerdict,
     pub confidence: ImpactConfidence,
@@ -118,59 +121,108 @@ pub struct ImpactResult {
 }
 
 pub fn plan(case: &Case, store: &Store) -> ImpactPlan {
+    let targets = case
+        .instances
+        .iter()
+        .map(|instance| (instance, questions()))
+        .collect();
+    plan_selected(case, store, targets)
+}
+
+pub(crate) fn plan_selected(
+    case: &Case,
+    store: &Store,
+    targets: Vec<(&crate::model::Instance, Vec<ImpactQuestion>)>,
+) -> ImpactPlan {
+    let confirmed = confirmed_instances(case, store);
     ImpactPlan {
         schema_version: 1,
         case_id: case.case_id.clone(),
-        workspace_revisions: case.workspace_revisions.clone(),
+        codebase_revisions: case.codebase_revisions.clone(),
         facts_sha256: case.facts_sha256.clone(),
         affected_version_confirmed: case
             .instances
             .iter()
-            .any(|instance| affected_instance_confirmed(case, store, &instance.id)),
-        targets: case
-            .instances
-            .iter()
-            .map(|instance| ImpactTarget {
+            .any(|instance| confirmed.contains(&instance.id)),
+        targets: targets
+            .into_iter()
+            .map(|(instance, questions)| ImpactTarget {
                 instance_id: instance.id.clone(),
                 component: instance.reference.clone(),
                 version: instance.resolved_version.clone(),
                 origin: instance.origin,
-                affected_version_confirmed: affected_instance_confirmed(case, store, &instance.id),
-                questions: questions(),
+                affected_version_confirmed: confirmed.contains(&instance.id),
+                questions,
             })
             .collect(),
     }
 }
 
 pub fn assess(store: &mut Store, id: &str, submission: ImpactSubmission) -> Result<ImpactResult> {
+    assess_checked(store, id, submission, None, Vec::new())
+}
+
+pub(crate) fn assess_if_current(
+    store: &mut Store,
+    id: &str,
+    submission: ImpactSubmission,
+    expected_case: &Case,
+    new_evidence: Vec<Evidence>,
+) -> Result<ImpactResult> {
+    assess_checked(store, id, submission, Some(expected_case), new_evidence)
+}
+
+fn assess_checked(
+    store: &mut Store,
+    id: &str,
+    submission: ImpactSubmission,
+    expected_case: Option<&Case>,
+    new_evidence: Vec<Evidence>,
+) -> Result<ImpactResult> {
     let _lock = store.lock()?;
-    store.ensure_workspace_current()?;
+    store.ensure_codebases_current()?;
     let mut case = store.case(id)?;
+    if let Some(expected) = expected_case {
+        let latest_impact = |case: &Case| {
+            case.evidence
+                .iter()
+                .rev()
+                .find(|evidence| evidence.source == "impact_assessment")
+                .map(|evidence| evidence.sha256.clone())
+        };
+        if latest_impact(&case) != latest_impact(expected)
+            || case.snapshot_id != expected.snapshot_id
+            || case.decision != expected.decision
+            || case.verification != expected.verification
+            || valid_attestations(&case, store) != valid_attestations(expected, store)
+            || !crate::codebase_revision::same_revisions(
+                &case.codebase_revisions,
+                &expected.codebase_revisions,
+            )
+        {
+            bail!("impact assessment changed during source review; retry with the latest answers");
+        }
+    }
+    for evidence in new_evidence {
+        if evidence.source != "local_impact_evidence"
+            || evidence.kind != EvidenceKind::Context
+            || !store.evidence_exists(&evidence)?
+        {
+            bail!("source review note has invalid evidence or integrity");
+        }
+        if !case.evidence.iter().any(|existing| {
+            existing.source == evidence.source && existing.sha256 == evidence.sha256
+        }) {
+            case.evidence.push(evidence);
+        }
+    }
     validate_submission(&case, store, id, &submission)?;
 
-    let mut grouped = BTreeMap::<String, Vec<&ImpactAnswer>>::new();
-    for answer in &submission.answers {
-        grouped
-            .entry(answer.instance_id.clone())
-            .or_default()
-            .push(answer);
-    }
-
-    let mut instances = Vec::new();
-    for instance in &case.instances {
-        let answers = grouped.get(&instance.id).cloned().unwrap_or_default();
-        instances.push(assess_instance(
-            &case,
-            store,
-            &instance.id,
-            affected_instance_confirmed(&case, store, &instance.id),
-            &answers,
-        )?);
-    }
+    let instances = assess_instances(&case, store, &submission.answers)?;
     let result = ImpactResult {
         schema_version: 1,
         case_id: case.case_id.clone(),
-        workspace_revisions: case.workspace_revisions.clone(),
+        codebase_revisions: case.codebase_revisions.clone(),
         facts_sha256: case.facts_sha256.clone(),
         verdict: aggregate_verdict(&instances),
         confidence: aggregate_confidence(&instances),
@@ -178,12 +230,12 @@ pub fn assess(store: &mut Store, id: &str, submission: ImpactSubmission) -> Resu
         instances,
         assessed_at: crate::now(),
     };
-    let evidence = store.record_evidence(
-        &serde_json::to_vec(&result)?,
-        "impact_assessment",
-        None,
-        EvidenceKind::Context,
-    )?;
+    let bytes = serde_json::to_vec(&result)?;
+    if bytes.len() > MAX_IMPACT_RESULT_BYTES {
+        bail!("impact assessment exceeds the 32 MiB evidence limit");
+    }
+    let evidence =
+        store.record_evidence(&bytes, "impact_assessment", None, EvidenceKind::Context)?;
     case.evidence.push(evidence);
     case.updated_at = result.assessed_at.clone();
     store.save_case(&case)?;
@@ -191,24 +243,61 @@ pub fn assess(store: &mut Store, id: &str, submission: ImpactSubmission) -> Resu
 }
 
 pub fn latest(case: &Case, store: &Store) -> Option<ImpactResult> {
-    case.evidence
+    let index = case
+        .evidence
         .iter()
-        .rev()
-        .filter(|evidence| evidence.source == "impact_assessment")
-        .find_map(|evidence| read_result(case, store, evidence).ok())
+        .rposition(|evidence| evidence.source == "impact_assessment")?;
+    if case.evidence[index + 1..].iter().any(|evidence| {
+        evidence.kind == EvidenceKind::Attestation
+            && crate::sandbox::read_attestation(case, store, evidence).is_ok()
+    }) {
+        return None;
+    }
+    let result = read_result(case, store, &case.evidence[index]).ok()??;
+    let instances = assess_instances(case, store, &result.answers).ok()?;
+    if result.instances != instances
+        || result.verdict != aggregate_verdict(&instances)
+        || result.confidence != aggregate_confidence(&instances)
+    {
+        return None;
+    }
+    Some(result)
 }
 
-fn questions() -> Vec<ImpactQuestion> {
+pub(crate) fn previous(case: &Case, store: &Store) -> Result<Option<ImpactResult>> {
+    let Some(evidence) = case
+        .evidence
+        .iter()
+        .rev()
+        .find(|evidence| evidence.source == "impact_assessment")
+    else {
+        return Ok(None);
+    };
+    read_result(case, store, evidence)
+}
+
+pub(crate) fn valid_attestations(case: &Case, store: &Store) -> Vec<String> {
+    case.evidence
+        .iter()
+        .filter(|evidence| {
+            evidence.kind == EvidenceKind::Attestation
+                && crate::sandbox::read_attestation(case, store, evidence).is_ok()
+        })
+        .map(|evidence| evidence.sha256.clone())
+        .collect()
+}
+
+pub(crate) fn questions() -> Vec<ImpactQuestion> {
     vec![
         ImpactQuestion {
             id: ImpactQuestionId::ArtifactDeployed,
             prompt: "Is this exact version present in a deployed or shipped artifact?".into(),
-            evidence_needed: "Lockfile, SBOM, image inventory, deployment record, or a bounded workspace check.".into(),
+            evidence_needed: "Evidence identifying the exact shipped artifact or deployment, such as an artifact inventory or deployment record. A lockfile or isolated sandbox test alone does not establish shipment or deployment.".into(),
         },
         ImpactQuestion {
             id: ImpactQuestionId::AffectedFeatureUsed,
             prompt: "Does the project call or enable the affected function, module, or protocol?".into(),
-            evidence_needed: "Source location, configuration, call path, or a workspace-copy sandbox result.".into(),
+            evidence_needed: "Source location, configuration, call path, or a codebase-copy sandbox result.".into(),
         },
         ImpactQuestion {
             id: ImpactQuestionId::UntrustedInputReachesFeature,
@@ -228,21 +317,53 @@ fn questions() -> Vec<ImpactQuestion> {
     ]
 }
 
-/// An affected advisory claim or a current sandbox reproduction of this exact instance confirms it.
-pub(crate) fn affected_instance_confirmed(case: &Case, store: &Store, instance_id: &str) -> bool {
-    case.claims.iter().any(|claim| {
-        claim.instance_id == instance_id
-            && claim.applicability == crate::model::Applicability::Affected
-    }) || (case.instances.len() == 1 && case.verification == Verification::LabReproduced)
-        || case
-            .evidence
-            .iter()
-            .filter(|evidence| evidence.kind == EvidenceKind::Attestation)
-            .filter_map(|evidence| crate::sandbox::read_attestation(case, store, evidence).ok())
-            .any(|attestation| {
-                attestation.instance_id == instance_id
-                    && attestation.verification == Verification::LabReproduced
-            })
+/// Only intact advisory evidence or a current reproduction confirms an instance.
+fn confirmed_instances(case: &Case, store: &Store) -> HashSet<String> {
+    let mut confirmed = HashSet::new();
+    for claim in &case.claims {
+        if claim.applicability == crate::model::Applicability::Affected
+            && store.evidence_exists(&claim.evidence).unwrap_or(false)
+        {
+            confirmed.insert(claim.instance_id.clone());
+        }
+    }
+    for evidence in &case.evidence {
+        if evidence.kind == EvidenceKind::Attestation
+            && let Ok(attestation) = crate::sandbox::read_attestation(case, store, evidence)
+            && attestation.verification == Verification::LabReproduced
+        {
+            confirmed.insert(attestation.instance_id);
+        }
+    }
+    confirmed
+}
+
+fn assess_instances(
+    case: &Case,
+    store: &Store,
+    answers: &[ImpactAnswer],
+) -> Result<Vec<InstanceImpact>> {
+    let confirmed = confirmed_instances(case, store);
+    let mut grouped = BTreeMap::<&str, Vec<&ImpactAnswer>>::new();
+    for answer in answers {
+        grouped.entry(&answer.instance_id).or_default().push(answer);
+    }
+    case.instances
+        .iter()
+        .map(|instance| {
+            let answers = grouped
+                .get(instance.id.as_str())
+                .cloned()
+                .unwrap_or_default();
+            assess_instance(
+                case,
+                store,
+                &instance.id,
+                confirmed.contains(&instance.id),
+                &answers,
+            )
+        })
+        .collect()
 }
 
 fn validate_submission(
@@ -263,6 +384,7 @@ fn validate_submission(
         .map(|instance| instance.id.as_str())
         .collect();
     let mut answered = HashSet::new();
+    let mut checked_evidence = HashSet::new();
     for answer in &submission.answers {
         if !instance_ids.contains(answer.instance_id.as_str()) {
             bail!("impact answer references an unknown instance");
@@ -287,11 +409,13 @@ fn validate_submission(
                 .iter()
                 .find(|item| item.id == reference.id && item.sha256 == reference.sha256)
                 .context("impact answer references unknown evidence")?;
-            if !store.evidence_exists(evidence)? {
+            if checked_evidence.insert((&evidence.id, &evidence.sha256))
+                && !store.evidence_exists(evidence)?
+            {
                 bail!("impact answer evidence integrity failed");
             }
             if answer.answer != ImpactAnswerValue::Unknown
-                && !supports_question(answer.question, evidence.kind)
+                && !supports_question(answer.question, answer.answer, evidence.kind)
             {
                 bail!("evidence type does not support this project-impact question");
             }
@@ -300,14 +424,18 @@ fn validate_submission(
     Ok(())
 }
 
-fn supports_question(question: ImpactQuestionId, kind: EvidenceKind) -> bool {
+fn supports_question(
+    question: ImpactQuestionId,
+    answer: ImpactAnswerValue,
+    kind: EvidenceKind,
+) -> bool {
     match question {
+        ImpactQuestionId::ArtifactDeployed if answer == ImpactAnswerValue::Yes => {
+            kind == EvidenceKind::Context
+        }
         ImpactQuestionId::ArtifactDeployed => matches!(
             kind,
-            EvidenceKind::Identity
-                | EvidenceKind::Context
-                | EvidenceKind::Attestation
-                | EvidenceKind::NonApplicability
+            EvidenceKind::Context | EvidenceKind::Attestation | EvidenceKind::NonApplicability
         ),
         ImpactQuestionId::AffectedFeatureUsed
         | ImpactQuestionId::UntrustedInputReachesFeature
@@ -534,20 +662,36 @@ fn aggregate_confidence(instances: &[InstanceImpact]) -> ImpactConfidence {
     }
 }
 
-fn read_result(case: &Case, store: &Store, evidence: &Evidence) -> Result<ImpactResult> {
+fn read_result(case: &Case, store: &Store, evidence: &Evidence) -> Result<Option<ImpactResult>> {
     if !store.evidence_exists(evidence)? {
         bail!("impact assessment integrity failed");
     }
     let bytes = crate::read_limited(
         &store.directory.join("evidence").join(&evidence.sha256),
-        1024 * 1024,
+        MAX_IMPACT_RESULT_BYTES as u64,
     )?;
     let result: ImpactResult = serde_json::from_slice(&bytes)?;
-    if result.schema_version != 1
-        || result.case_id != case.case_id
-        || result.facts_sha256 != case.facts_sha256
-    {
-        bail!("stale or mismatched impact assessment");
+    if result.schema_version != 1 || result.case_id != case.case_id {
+        bail!("invalid or mismatched impact assessment");
     }
-    Ok(result)
+    if result.facts_sha256 != case.facts_sha256
+        || !crate::codebase_revision::same_revisions(
+            &result.codebase_revisions,
+            &case.codebase_revisions,
+        )
+    {
+        return Ok(None);
+    }
+    validate_submission(
+        case,
+        store,
+        &case.case_id,
+        &ImpactSubmission {
+            schema_version: result.schema_version,
+            case_id: result.case_id.clone(),
+            facts_sha256: result.facts_sha256.clone(),
+            answers: result.answers.clone(),
+        },
+    )?;
+    Ok(Some(result))
 }

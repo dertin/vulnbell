@@ -214,16 +214,73 @@ pub fn morning_markdown(report: &MorningReport) -> String {
         };
         text.push_str(&format!("{message}: **{missing_verdict}**.\n\n"));
     }
-    if report.workspace_scope_changed {
+    let challenged: Vec<_> = report
+        .finding_checks
+        .iter()
+        .flat_map(|check| {
+            check
+                .open_challenges
+                .iter()
+                .map(move |challenge| (&check.case_id, challenge))
+        })
+        .collect();
+    if !challenged.is_empty() {
         text.push_str(if language == Language::Es {
-            "> **Workspaces modificados:** ejecute un nuevo scan antes de continuar.\n\n"
+            "## Segundas revisiones pendientes\n\n| Caso | Motivo | Acción |\n|---|---|---|\n"
         } else {
-            "> **Workspace configuration changed:** run a new scan before continuing.\n\n"
+            "## Open second reviews\n\n| Case | Reason | Action |\n|---|---|---|\n"
+        });
+        for (case_id, challenge) in challenged {
+            use crate::tools::challenge::OpenReason;
+            let reason = match (&challenge.reason, language) {
+                (OpenReason::Disputed, Language::Es) => "Conclusión cuestionada",
+                (OpenReason::Inconclusive, Language::Es) => "Revisión inconclusa",
+                (OpenReason::AssessmentChanged, Language::Es) => "Cambió el impacto o veredicto",
+                (OpenReason::EvidenceUnavailable, Language::Es) => {
+                    "Evidencia no disponible o inválida"
+                }
+                (OpenReason::Disputed, _) => "Conclusion disputed",
+                (OpenReason::Inconclusive, _) => "Review inconclusive",
+                (OpenReason::AssessmentChanged, _) => "Impact or verdict changed",
+                (OpenReason::EvidenceUnavailable, _) => "Evidence unavailable or invalid",
+            };
+            let detail = challenge
+                .rationale
+                .as_deref()
+                .map(inline)
+                .unwrap_or_default();
+            let action = match (&challenge.reason, language) {
+                (OpenReason::EvidenceUnavailable, Language::Es) => {
+                    "Restaurar la evidencia antes de reevaluar"
+                }
+                (OpenReason::EvidenceUnavailable, _) => "Restore the evidence before reassessment",
+                (_, Language::Es) => "Reevaluar y citar la revisión en un nuevo veredicto",
+                (_, _) => "Reassess and cite the review in a new verdict",
+            };
+            text.push_str(&format!(
+                "| `{}` | {}{} | {} |\n",
+                inline(case_id),
+                reason,
+                if detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {detail}")
+                },
+                action
+            ));
+        }
+        text.push('\n');
+    }
+    if report.codebase_scope_changed {
+        text.push_str(if language == Language::Es {
+            "> **Codebases modificadas:** ejecute un nuevo scan antes de continuar.\n\n"
+        } else {
+            "> **Codebase configuration changed:** run a new scan before continuing.\n\n"
         });
     }
-    text.push_str(&workspace_revisions_markdown(
-        &report.workspace_revisions,
-        report.workspace_context_unrecorded,
+    text.push_str(&codebase_revisions_markdown(
+        &report.codebase_revisions,
+        report.codebase_context_unrecorded,
         language,
     ));
     text.push_str(&inventory_markdown(&report.inventory, language));
@@ -511,11 +568,11 @@ pub fn morning_markdown(report: &MorningReport) -> String {
     }
     if !unassessed.is_empty() {
         text.push_str(if language == Language::Es {
-            "## Señales sin evaluación vigente\n\nLa evidencia anterior puede servir, pero debe contrastarse con los datos actuales. La lista completa está en el reporte JSON y la cola.\n\n"
+            "## Señales sin evaluación vigente\n\nLa evidencia anterior puede servir, pero debe contrastarse con los datos actuales. El reporte JSON y la cola contienen más detalles.\n\n"
         } else {
-            "## Signals without a current assessment\n\nEarlier evidence may help but must be checked against current facts. The JSON report and queue contain the complete list.\n\n"
+            "## Signals without a current assessment\n\nEarlier evidence may help but must be checked against current facts. The JSON report and queue contain further details.\n\n"
         });
-        for item in unassessed.iter().take(8) {
+        for item in &unassessed {
             text.push_str(&format!(
                 "- `{}` — {}: {}",
                 inline(&item.case_id),
@@ -630,8 +687,8 @@ fn inventory_markdown(inventory: &[MonitoredComponent], language: Language) -> S
         std::collections::BTreeMap::new();
     let mut listed = Vec::new();
     for component in inventory {
-        let location = match (&component.workspace, &component.path) {
-            (Some(workspace), Some(path)) => format!("{}/{path}", workspace.trim_end_matches('/')),
+        let location = match (&component.codebase, &component.path) {
+            (Some(codebase), Some(path)) => format!("{}/{path}", codebase.trim_end_matches('/')),
             (None, Some(path)) => path.clone(),
             (_, None) => words.profile_location.to_owned(),
         };
@@ -754,7 +811,7 @@ pub fn verification_markdown(report: &MorningReport) -> String {
 
 /// Only open cases with possible project exposure get references and local checks; the rest are
 /// counted and keep their detail in the JSON report.
-fn verification_section(report: &MorningReport, impact_answers: bool) -> String {
+pub(super) fn verification_section(report: &MorningReport, impact_answers: bool) -> String {
     let open: Vec<&FindingCheck> = report
         .finding_checks
         .iter()
@@ -855,8 +912,8 @@ fn source_facts_text(facts: &SourceFacts, language: Language) -> String {
     parts.join("; ")
 }
 
-pub(super) fn workspace_revisions_markdown(
-    revisions: &[crate::workspace_revision::WorkspaceComparison],
+pub(super) fn codebase_revisions_markdown(
+    revisions: &[crate::codebase_revision::CodebaseComparison],
     unrecorded: bool,
     language: Language,
 ) -> String {
@@ -873,10 +930,10 @@ pub(super) fn workspace_revisions_markdown(
         return String::new();
     }
     let mut out = if es {
-        "## Workspaces revisados\n\n| Workspace | Rama | Commit | Estado |\n|---|---|---|---|\n"
+        "## Codebases revisadas\n\n| Codebase | Rama | Commit | Estado |\n|---|---|---|---|\n"
             .to_owned()
     } else {
-        "## Reviewed workspaces\n\n| Workspace | Branch | Commit | State |\n|---|---|---|---|\n"
+        "## Reviewed codebases\n\n| Codebase | Branch | Commit | State |\n|---|---|---|---|\n"
             .to_owned()
     };
     for item in revisions {
@@ -887,7 +944,7 @@ pub(super) fn workspace_revisions_markdown(
             } else {
                 "Changed or unavailable; run a new scan"
             }
-        } else if reviewed.state == crate::workspace_revision::RepositoryState::NotGit {
+        } else if reviewed.state == crate::codebase_revision::RepositoryState::NotGit {
             if es {
                 "Sin repositorio Git"
             } else {
@@ -915,7 +972,7 @@ pub(super) fn workspace_revisions_markdown(
             });
         out.push_str(&format!(
             "| `{}` | `{}` | `{}` | {} |\n",
-            inline(&reviewed.workspace),
+            inline(&reviewed.codebase),
             inline(branch),
             inline(reviewed.commit.as_deref().unwrap_or(missing)),
             state

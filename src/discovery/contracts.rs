@@ -8,7 +8,7 @@ pub struct DiscoveryPlan {
     pub project_id: String,
     pub scope_sha256: String,
     pub enabled: bool,
-    pub workspace: Vec<FileSlice>,
+    pub codebase_files: Vec<FileSlice>,
     pub components: Vec<PublicTarget>,
     pub summary: DiscoverySummary,
 }
@@ -68,7 +68,7 @@ pub struct PublicTarget {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DiscoveryBatch {
-    Workspace {
+    Codebase {
         schema_version: u32,
         project_id: String,
         scope_sha256: String,

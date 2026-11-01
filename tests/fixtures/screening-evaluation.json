@@ -11,6 +11,7 @@
         "body": "An affected version is reported."
       },
       "relevant": true,
+      "high_priority": true,
       "rationale": "Synthetic known security advisory."
     },
     {
@@ -59,6 +60,7 @@
         "body": "The process stops making progress."
       },
       "relevant": true,
+      "high_priority": true,
       "rationale": "Synthetic relevant issue without the current rule's bug terms."
     },
     {

@@ -11,6 +11,8 @@ use std::{
 
 const MAX_BODY: u64 = 32 * 1024 * 1024;
 const CACHE_TTL: u64 = 3600;
+mod github_auth;
+pub(crate) use github_auth::github_credentials;
 pub struct Http<'a> {
     pub store: &'a Store,
     pub offline: bool,
@@ -18,6 +20,7 @@ pub struct Http<'a> {
     pub cache_hits: usize,
     pub budget: usize,
     blocked_hosts: std::collections::HashSet<String>,
+    github_credentials: Option<Option<github_auth::GitHubCredentials>>,
 }
 pub struct Response {
     pub body: Vec<u8>,
@@ -87,6 +90,7 @@ impl<'a> Http<'a> {
             cache_hits: 0,
             budget: 500,
             blocked_hosts: std::collections::HashSet::new(),
+            github_credentials: None,
         }
     }
     pub fn get(&mut self, url: &str) -> Result<Response> {
@@ -150,8 +154,14 @@ impl<'a> Http<'a> {
                 .header("Accept", accept_for(&url));
             if url.host_str() == Some("api.github.com") {
                 request = request.header("X-GitHub-Api-Version", "2022-11-28");
-                if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-                    request = request.bearer_auth(token);
+                if github_auth::authenticated_endpoint(&url) {
+                    let credentials = self
+                        .github_credentials
+                        .get_or_insert_with(github_credentials);
+                    if let Some(credentials) = credentials {
+                        request = request
+                            .header(reqwest::header::AUTHORIZATION, credentials.header.clone());
+                    }
                 }
             }
             if url.host_str() == Some("gitlab.com")

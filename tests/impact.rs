@@ -38,7 +38,7 @@ fn fixture() -> (String, Store, Case, EvidenceReference) {
         )
         .unwrap();
     let case = Case {
-        workspace_revisions: Vec::new(),
+        codebase_revisions: Vec::new(),
         schema_version: 1,
         case_id: "SIG-impact".into(),
         project_id: project.clone(),
@@ -92,6 +92,149 @@ fn answer(
     }
 }
 
+fn exposed_answers(case: &Case, evidence: &EvidenceReference) -> ImpactSubmission {
+    use ImpactAnswerValue::{No, Yes};
+    use ImpactQuestionId::*;
+    ImpactSubmission {
+        schema_version: 1,
+        case_id: case.case_id.clone(),
+        facts_sha256: case.facts_sha256.clone(),
+        answers: [
+            (ArtifactDeployed, Yes),
+            (AffectedFeatureUsed, Yes),
+            (UntrustedInputReachesFeature, Yes),
+            (RequiredConditionsPresent, Yes),
+            (FixOrMitigationApplied, No),
+        ]
+        .into_iter()
+        .map(|(question, value)| answer(&case.instances[0].id, question, value, evidence))
+        .collect(),
+    }
+}
+
+#[test]
+fn corrupt_attestation_or_runtime_blob_reopens_impact_and_report() {
+    for damaged in ["attestation", "runtime"] {
+        let (project, mut store, mut case, source) = fixture();
+        case.claims.clear();
+        case.decision = Decision::Review;
+        case.verification = Verification::LabReproduced;
+        let runtime = store
+            .record_evidence(
+                b"synthetic runtime evidence",
+                "fixture",
+                None,
+                EvidenceKind::Context,
+            )
+            .unwrap();
+        let attestation = serde_json::json!({
+            "schema_version":2,"project_id":project,"case_id":case.case_id,
+            "codebase_revisions":case.codebase_revisions,"facts_sha256":case.facts_sha256,
+            "instance_id":case.instances[0].id,"artifact_version":"1.0.0","runtime":"microsandbox",
+            "runtime_version":"synthetic","runtime_sha256":"synthetic","test_sha256":"synthetic",
+            "image_reference":"synthetic","image_manifest_digest":"synthetic","staging_sha256":"synthetic",
+            "policy_sha256":runtime.sha256,"input_sha256":[],
+            "oracle":{"stdout_contains":"synthetic","expected_exit":0,"purpose":"reproduction"},
+            "control":null,"network_devices":"synthetic","host_mounts":[],"memory_mib":128,
+            "cpu_count":1,"timeout_seconds":1,"output_sha256":runtime.sha256,
+            "execution_status_sha256":runtime.sha256,"exit_code":0,"execution_complete":true,
+            "timed_out":false,"verification":"lab_reproduced","observed_at":vulnbell::now()
+        });
+        let attestation = store
+            .record_evidence(
+                &serde_json::to_vec(&attestation).unwrap(),
+                "microsandbox_runtime",
+                None,
+                EvidenceKind::Attestation,
+            )
+            .unwrap();
+        case.evidence.extend([runtime.clone(), attestation.clone()]);
+        store.save_case(&case).unwrap();
+        assert!(vulnbell::impact::plan(&case, &store).affected_version_confirmed);
+        let submission = exposed_answers(&case, &source);
+        let impact =
+            vulnbell::impact::assess(&mut store, &case.case_id, submission.clone()).unwrap();
+        assert_eq!(impact.verdict, ImpactVerdict::UrgentUpdate);
+        let case = store.case(&case.case_id).unwrap();
+        assert!(vulnbell::impact::latest(&case, &store).is_some());
+        let target = if damaged == "attestation" {
+            &attestation
+        } else {
+            &runtime
+        };
+        std::fs::write(
+            store.directory.join("evidence").join(&target.sha256),
+            b"corrupt synthetic evidence",
+        )
+        .unwrap();
+        assert!(!vulnbell::impact::plan(&case, &store).affected_version_confirmed);
+        assert!(vulnbell::impact::latest(&case, &store).is_none());
+        let impact = vulnbell::impact::assess(&mut store, &case.case_id, submission).unwrap();
+        assert_eq!(impact.verdict, ImpactVerdict::NeedsEvidence);
+        let case = store.case(&case.case_id).unwrap();
+        assert_eq!(
+            vulnbell::impact::latest(&case, &store).unwrap().verdict,
+            ImpactVerdict::NeedsEvidence
+        );
+        let snapshot = vulnbell::model::Snapshot {
+            schema_version: 1,
+            id: case.snapshot_id.clone(),
+            project_id: project.clone(),
+            profile_sha256: "synthetic".into(),
+            started_at: vulnbell::now(),
+            finished_at: vulnbell::now(),
+            codebase_revisions: Vec::new(),
+            instances: case.instances.clone(),
+            coverage: Vec::new(),
+            cases: vec![case],
+            partial: false,
+            alert_status: "none".into(),
+        };
+        let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+        let check = &report.finding_checks[0].local_checks[0];
+        assert!(check.sandbox_candidate);
+        assert_eq!(
+            serde_json::to_value(&check.result).unwrap(),
+            "invalid_evidence"
+        );
+        drop(store);
+        std::fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+    }
+}
+
+#[test]
+fn corrupt_advisory_claim_invalidates_previous_affected_impact() {
+    let (project, mut store, case, evidence) = fixture();
+    let submission = exposed_answers(&case, &evidence);
+    assert_eq!(
+        vulnbell::impact::assess(&mut store, &case.case_id, submission.clone())
+            .unwrap()
+            .verdict,
+        ImpactVerdict::UrgentUpdate
+    );
+    let case = store.case(&case.case_id).unwrap();
+    assert!(vulnbell::impact::plan(&case, &store).affected_version_confirmed);
+    assert!(vulnbell::impact::latest(&case, &store).is_some());
+    std::fs::write(
+        store
+            .directory
+            .join("evidence")
+            .join(&case.claims[0].evidence.sha256),
+        b"corrupted advisory",
+    )
+    .unwrap();
+    assert!(!vulnbell::impact::plan(&case, &store).affected_version_confirmed);
+    assert!(vulnbell::impact::latest(&case, &store).is_none());
+    assert_eq!(
+        vulnbell::impact::assess(&mut store, &case.case_id, submission)
+            .unwrap()
+            .verdict,
+        ImpactVerdict::NeedsEvidence
+    );
+    drop(store);
+    std::fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+}
+
 #[test]
 fn impact_plan_is_fixed_for_every_instance() {
     let (project, store, mut case, _) = fixture();
@@ -112,6 +255,209 @@ fn impact_plan_is_fixed_for_every_instance() {
         plan.targets[0].questions[0].id,
         ImpactQuestionId::ArtifactDeployed
     );
+    assert!(
+        plan.targets[0].questions[0]
+            .evidence_needed
+            .contains("lockfile")
+    );
+    drop(store);
+    std::fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+}
+
+#[test]
+fn large_multibatch_impact_remains_readable_and_oversize_keeps_prior_state() {
+    let (project, mut store, mut case, _) = fixture();
+    let prototype = case.instances[0].clone();
+    for index in 1..100 {
+        let mut instance = prototype.clone();
+        instance.id = format!("batch-instance-{index}");
+        case.instances.push(instance);
+    }
+    store.save_case(&case).unwrap();
+    let questions = [
+        ImpactQuestionId::AffectedFeatureUsed,
+        ImpactQuestionId::UntrustedInputReachesFeature,
+        ImpactQuestionId::RequiredConditionsPresent,
+        ImpactQuestionId::FixOrMitigationApplied,
+    ];
+    let mut answers = Vec::new();
+    for batch in case.instances.chunks(25) {
+        for instance in batch {
+            for question in questions {
+                answers.push(ImpactAnswer {
+                    instance_id: instance.id.clone(),
+                    question,
+                    answer: ImpactAnswerValue::Unknown,
+                    rationale: "a".repeat(3000),
+                    evidence: Vec::new(),
+                });
+            }
+        }
+        vulnbell::impact::assess(
+            &mut store,
+            &case.case_id,
+            ImpactSubmission {
+                schema_version: 1,
+                case_id: case.case_id.clone(),
+                facts_sha256: case.facts_sha256.clone(),
+                answers: answers.clone(),
+            },
+        )
+        .unwrap();
+        let saved = store.case(&case.case_id).unwrap();
+        assert_eq!(
+            vulnbell::impact::latest(&saved, &store)
+                .unwrap()
+                .answers
+                .len(),
+            answers.len()
+        );
+    }
+    let saved = store.case(&case.case_id).unwrap();
+    let latest = vulnbell::impact::latest(&saved, &store).unwrap();
+    assert!(serde_json::to_vec(&latest).unwrap().len() > 1024 * 1024);
+    assert_eq!(latest.answers.len(), 400);
+
+    let mut expanded = saved;
+    for index in 100..2200 {
+        let mut instance = prototype.clone();
+        instance.id = format!("batch-instance-{index}");
+        expanded.instances.push(instance);
+    }
+    store.save_case(&expanded).unwrap();
+    let before = serde_json::to_vec(&store.case(&case.case_id).unwrap()).unwrap();
+    let rationale = "b".repeat(3900);
+    let mut oversized = Vec::new();
+    for instance in &expanded.instances {
+        for question in questions {
+            oversized.push(ImpactAnswer {
+                instance_id: instance.id.clone(),
+                question,
+                answer: ImpactAnswerValue::Unknown,
+                rationale: rationale.clone(),
+                evidence: Vec::new(),
+            });
+        }
+    }
+    let error = vulnbell::impact::assess(
+        &mut store,
+        &case.case_id,
+        ImpactSubmission {
+            schema_version: 1,
+            case_id: case.case_id.clone(),
+            facts_sha256: case.facts_sha256.clone(),
+            answers: oversized,
+        },
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("32 MiB"));
+    let after = store.case(&case.case_id).unwrap();
+    assert_eq!(serde_json::to_vec(&after).unwrap(), before);
+    assert!(vulnbell::impact::latest(&after, &store).is_none());
+    let prior = after
+        .evidence
+        .iter()
+        .rev()
+        .find(|item| item.source == "impact_assessment")
+        .unwrap();
+    assert!(store.evidence_exists(prior).unwrap());
+    let saved: vulnbell::impact::ImpactResult = serde_json::from_slice(
+        &std::fs::read(store.directory.join("evidence").join(&prior.sha256)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(saved.answers.len(), 400);
+    drop(store);
+    std::fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+}
+
+#[test]
+fn impact_assessment_is_stale_when_codebase_revision_changes() {
+    let (project, mut store, case, evidence) = fixture();
+    vulnbell::impact::assess(
+        &mut store,
+        &case.case_id,
+        ImpactSubmission {
+            schema_version: 1,
+            case_id: case.case_id.clone(),
+            facts_sha256: case.facts_sha256.clone(),
+            answers: vec![answer(
+                &case.instances[0].id,
+                ImpactQuestionId::AffectedFeatureUsed,
+                ImpactAnswerValue::Yes,
+                &evidence,
+            )],
+        },
+    )
+    .unwrap();
+    let mut recorded = store.case(&case.case_id).unwrap();
+    assert!(vulnbell::impact::latest(&recorded, &store).is_some());
+    let other = tempfile::tempdir().unwrap();
+    recorded
+        .codebase_revisions
+        .push(vulnbell::codebase_revision::capture_path(other.path()));
+    assert!(vulnbell::impact::latest(&recorded, &store).is_none());
+    drop(store);
+    std::fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+}
+
+#[test]
+fn artifact_identity_and_lab_evidence_do_not_prove_deployment() {
+    let (project, mut store, mut case, context) = fixture();
+    let mut references = Vec::new();
+    for kind in [
+        EvidenceKind::Identity,
+        EvidenceKind::Attestation,
+        EvidenceKind::NonApplicability,
+    ] {
+        let evidence = store
+            .record_evidence(format!("synthetic {kind:?}").as_bytes(), "test", None, kind)
+            .unwrap();
+        references.push(EvidenceReference {
+            id: evidence.id.clone(),
+            sha256: evidence.sha256.clone(),
+        });
+        case.evidence.push(evidence);
+    }
+    store.save_case(&case).unwrap();
+    for reference in &references {
+        let submission = ImpactSubmission {
+            schema_version: 1,
+            case_id: case.case_id.clone(),
+            facts_sha256: case.facts_sha256.clone(),
+            answers: vec![answer(
+                &case.instances[0].id,
+                ImpactQuestionId::ArtifactDeployed,
+                ImpactAnswerValue::Yes,
+                reference,
+            )],
+        };
+        assert!(vulnbell::impact::assess(&mut store, &case.case_id, submission).is_err());
+    }
+    let submission = ImpactSubmission {
+        schema_version: 1,
+        case_id: case.case_id.clone(),
+        facts_sha256: case.facts_sha256.clone(),
+        answers: vec![answer(
+            &case.instances[0].id,
+            ImpactQuestionId::ArtifactDeployed,
+            ImpactAnswerValue::Yes,
+            &context,
+        )],
+    };
+    let mut result = vulnbell::impact::assess(&mut store, &case.case_id, submission).unwrap();
+    result.answers[0].evidence = vec![references[0].clone()];
+    let invalid = store
+        .record_evidence(
+            &serde_json::to_vec(&result).unwrap(),
+            "impact_assessment",
+            None,
+            EvidenceKind::Context,
+        )
+        .unwrap();
+    let mut saved = store.case(&case.case_id).unwrap();
+    saved.evidence.push(invalid);
+    store.save_case(&saved).unwrap();
+    assert!(vulnbell::impact::latest(&saved, &store).is_none());
     drop(store);
     std::fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
 }

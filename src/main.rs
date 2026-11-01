@@ -1,14 +1,22 @@
 mod cli;
+mod runner_github;
+mod runner_web;
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use cli::{Cli, Commands, RunnerCommands, Sandbox, Skills, ToolCommands, WorkspaceCommands};
-use std::{fs, io::Write};
+use cli::{
+    AssessmentCommands, CaseTools, Cli, Commands, ResearchTools, RunnerCommands, Sandbox, Skills,
+    ToolCommands, WorkspaceCommands,
+};
+use std::{
+    fs,
+    io::{IsTerminal, Write},
+};
 use vulnbell::{
     model::Verdict,
     profile::{self, Profile},
     store::Store,
-    tools::{cases, draft, hits, queue, workspace},
+    tools::{cases, challenge, citations, draft, hits, queue, workspace},
 };
 
 fn emit(value: &impl serde::Serialize) -> Result<()> {
@@ -17,8 +25,16 @@ fn emit(value: &impl serde::Serialize) -> Result<()> {
 /// A reader that closes the pipe early (`| head`) already received what it asked for; the
 /// command's state is persisted before output.
 fn print(text: &str) -> Result<()> {
+    write_stdout(text, true)
+}
+fn write_stdout(text: &str, newline: bool) -> Result<()> {
     let mut stdout = std::io::stdout().lock();
-    match writeln!(stdout, "{text}").and_then(|()| stdout.flush()) {
+    let result = if newline {
+        writeln!(stdout, "{text}")
+    } else {
+        write!(stdout, "{text}")
+    };
+    match result.and_then(|()| stdout.flush()) {
         Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => std::process::exit(0),
         result => Ok(result?),
     }
@@ -28,9 +44,90 @@ fn store_for(path: &std::path::Path) -> Result<(Profile, Store)> {
     let store = Store::open(&profile.project_id.to_string())?;
     Ok((profile, store))
 }
+fn distinct_output(output: &std::path::Path, input: &std::path::Path) -> Result<()> {
+    if output == input
+        || output
+            .canonicalize()
+            .ok()
+            .is_some_and(|path| input.canonicalize().ok().as_ref() == Some(&path))
+    {
+        bail!("output must differ from the profile and decisions file");
+    }
+    Ok(())
+}
+fn report(
+    project: &std::path::Path,
+    json: bool,
+    audience: &str,
+    pdf: Option<std::path::PathBuf>,
+    from_markdown: Option<std::path::PathBuf>,
+    pdf_browser: Option<std::path::PathBuf>,
+) -> Result<()> {
+    let (_, store) = store_for(project)?;
+    let mut snapshot = store.latest()?;
+    snapshot.cases = store.cases()?;
+    if audience == "audit" {
+        if pdf.is_some() {
+            bail!("PDF export requires the manager or cyber report");
+        }
+        if json {
+            emit(&snapshot)?;
+        } else {
+            print(&vulnbell::output::markdown(&snapshot))?;
+        }
+    } else {
+        let mut report = vulnbell::output::morning_report(&snapshot, &store, audience)?;
+        let pending = vulnbell::tools::cases::pending(&store)?;
+        vulnbell::output::add_research_coverage(&mut report, &pending);
+        if json {
+            emit(&report)?;
+        } else {
+            let custom = from_markdown.is_some();
+            let markdown = match from_markdown {
+                Some(path) => String::from_utf8(vulnbell::read_limited(&path, 16 * 1024 * 1024)?)
+                    .context("Markdown must be UTF-8")?,
+                None => format!(
+                    "{}{}",
+                    vulnbell::output::delivery_status_markdown(
+                        &pending,
+                        snapshot.partial,
+                        report.language,
+                    ),
+                    vulnbell::output::morning_markdown(&report),
+                ),
+            };
+            if let Some(path) = pdf {
+                let mut input = String::new();
+                if custom {
+                    input.push_str(match report.language {
+                        profile::Language::Es => "> **Contenido personalizado:** el texto fue proporcionado por el usuario y no fue validado por VulnBell.\n\n",
+                        profile::Language::En => "> **Custom content:** the text was supplied by the user and was not validated by VulnBell.\n\n",
+                    });
+                }
+                input.push_str(&vulnbell::output::pdf_report_body(&markdown, &report));
+                let document = vulnbell::output::pdf_markdown(
+                    &input,
+                    &snapshot.cases,
+                    &store,
+                    report.language,
+                )?;
+                vulnbell::output::write_pdf(&document, &path, pdf_browser.as_deref())?;
+            }
+            write_stdout(&markdown, false)?;
+        }
+    }
+    Ok(())
+}
 fn run() -> Result<i32> {
     let cli = Cli::parse();
     match cli.command {
+        Commands::RunnerWeb => runner_web::serve()?,
+        Commands::RunnerGithub { upstream } => {
+            runner_github::serve(&upstream)?;
+        }
+        Commands::RunnerCodebase { project, receipt } => {
+            vulnbell::runners::serve_codebase(&project, receipt.as_deref())?;
+        }
         Commands::Skills {
             command: Skills::Install { host, directory },
         } => {
@@ -45,7 +142,17 @@ fn run() -> Result<i32> {
                 &serde_json::json!({"schema_version":1,"version":env!("CARGO_PKG_VERSION"),"installed":directories}),
             )?;
         }
-        Commands::Doctor { .. } => emit(&vulnbell::operations::doctor()?)?,
+        Commands::Doctor { json } => {
+            let report = vulnbell::operations::doctor()?;
+            if json {
+                emit(&report)?;
+            } else {
+                let color = std::io::stdout().is_terminal()
+                    && std::env::var_os("NO_COLOR").is_none()
+                    && std::env::var_os("TERM").is_none_or(|term| term != "dumb");
+                print(&vulnbell::operations::doctor_text(&report, color))?;
+            }
+        }
         Commands::Status { json } => {
             let report = vulnbell::operations::status()?;
             if json {
@@ -62,7 +169,7 @@ fn run() -> Result<i32> {
                 schema: 1,
                 project_id: uuid::Uuid::new_v4(),
                 name: "my-monitor".into(),
-                workspaces: Vec::new(),
+                codebases: Vec::new(),
                 components: Vec::new(),
                 discovery: Default::default(),
                 research: Default::default(),
@@ -84,7 +191,7 @@ fn run() -> Result<i32> {
             let store = Store::open(&profile.project_id.to_string())?;
             store.register_project(&profile.name, &output)?;
             emit(
-                &serde_json::json!({"schema_version":1,"project_id":profile.project_id,"profile":output,"warning":"empty_scope: add components/workspaces before scan"}),
+                &serde_json::json!({"schema_version":1,"project_id":profile.project_id,"profile":output,"warning":"empty_scope: add components/codebases before scan"}),
             )?;
         }
         Commands::Schema { contract, .. } => {
@@ -134,6 +241,12 @@ fn run() -> Result<i32> {
                 }
                 "handoff-batch" => serde_json::to_value(schemars::schema_for!(
                     vulnbell::tools::cases::HandoffBatch
+                ))?,
+                "citations" => serde_json::to_value(schemars::schema_for!(
+                    vulnbell::tools::citations::CitationBatch
+                ))?,
+                "challenge" => serde_json::to_value(schemars::schema_for!(
+                    vulnbell::tools::challenge::Challenge
                 ))?,
                 "items" => serde_json::to_value(schemars::schema_for!(Vec<vulnbell::tools::Item>))?,
                 _ => bail!("unknown schema"),
@@ -198,7 +311,7 @@ fn run() -> Result<i32> {
                 || validation_blocker.is_some()
                 || clear_validation_blocker.is_some()
             {
-                store.ensure_workspace_current()?;
+                store.ensure_codebases_current()?;
             }
             let mut case = store.case(&id)?;
             let evidence_before = case.evidence.len();
@@ -327,12 +440,12 @@ fn run() -> Result<i32> {
                 emit(&case)?;
             }
         }
-        Commands::Verify {
+        Commands::Assessment(AssessmentCommands::Verify {
             id,
             project,
             test,
             authorize,
-        } => {
+        }) => {
             let (profile, mut store) = store_for(&project)?;
             emit(&vulnbell::sandbox::verify(
                 &mut store,
@@ -342,7 +455,7 @@ fn run() -> Result<i32> {
                 &profile.sandbox,
             )?)?;
         }
-        Commands::Impact { id, project, from } => {
+        Commands::Assessment(AssessmentCommands::Impact { id, project, from }) => {
             let (_, mut store) = store_for(&project)?;
             if let Some(path) = from {
                 let submission: vulnbell::impact::ImpactSubmission =
@@ -353,35 +466,20 @@ fn run() -> Result<i32> {
                 emit(&vulnbell::impact::plan(&case, &store))?;
             }
         }
-        Commands::Triage { id, project, from } => {
+        Commands::Assessment(AssessmentCommands::Triage { id, project, from }) => {
             let (_, mut store) = store_for(&project)?;
             let verdict: Verdict =
                 serde_json::from_slice(&vulnbell::read_limited(&from, 1024 * 1024)?)?;
             emit(&vulnbell::engine::triage(&mut store, &id, verdict)?)?;
         }
-        Commands::Report {
+        Commands::Assessment(AssessmentCommands::Report {
             project,
             json,
             audience,
-        } => {
-            let (_, store) = store_for(&project)?;
-            let mut snapshot = store.latest()?;
-            snapshot.cases = store.cases()?;
-            if audience == "audit" {
-                if json {
-                    emit(&snapshot)?;
-                } else {
-                    print(&vulnbell::output::markdown(&snapshot))?;
-                }
-            } else {
-                let report = vulnbell::output::morning_report(&snapshot, &store, &audience)?;
-                if json {
-                    emit(&report)?;
-                } else {
-                    print(&vulnbell::output::morning_markdown(&report))?;
-                }
-            }
-        }
+            pdf,
+            from_markdown,
+            pdf_browser,
+        }) => report(&project, json, &audience, pdf, from_markdown, pdf_browser)?,
         Commands::Run { project, now } => {
             let profile = profile::load(&project)?;
             emit(&vulnbell::scheduler::run(&profile, &project, now)?)?;
@@ -397,7 +495,13 @@ fn run() -> Result<i32> {
                 "runners": vulnbell::runners::list()?,
                 "adapters": vulnbell::runners::adapter_catalog(),
             }))?,
-            RunnerCommands::Check { id, live, .. } => emit(&vulnbell::runners::check(&id, live)?)?,
+            RunnerCommands::Check { id, live, .. } => {
+                let check = vulnbell::runners::check(&id, live)?;
+                emit(&check)?;
+                if !check.ready {
+                    return Ok(2);
+                }
+            }
         },
         Commands::Schedule {
             action,
@@ -419,11 +523,17 @@ fn run() -> Result<i32> {
             limit,
             reopen,
             since,
+            recheck,
             ..
         } => {
             let (_, mut store) = store_for(&project)?;
             if let (Some(upstream), Some(since)) = (reopen, since) {
-                emit(&vulnbell::research::reopen(&mut store, &upstream, &since)?)?;
+                let result = if recheck {
+                    vulnbell::research::reopen_recheck(&mut store, &upstream, &since)?
+                } else {
+                    vulnbell::research::reopen(&mut store, &upstream, &since)?
+                };
+                emit(&result)?;
             } else if let Some(path) = from {
                 let batch: vulnbell::research::ResearchBatch =
                     serde_json::from_slice(&vulnbell::read_limited(&path, 16 * 1024 * 1024)?)?;
@@ -497,13 +607,33 @@ fn run() -> Result<i32> {
 }
 fn run_tool(command: ToolCommands) -> Result<i32> {
     match command {
+        ToolCommands::Challenge { project, from } => {
+            let (_, mut store) = store_for(&project)?;
+            let bytes = vulnbell::read_limited(&from, 128 * 1024)?;
+            let submission: challenge::Challenge = serde_json::from_slice(&bytes)?;
+            emit(&challenge::record(&mut store, submission)?)?;
+            Ok(0)
+        }
+        ToolCommands::Citations {
+            project,
+            case,
+            from,
+        } => {
+            let (_, store) = store_for(&project)?;
+            let bytes = vulnbell::read_limited(&from, 1024 * 1024)?;
+            let input: citations::CitationBatch = serde_json::from_slice(&bytes)?;
+            let report = citations::check(&store, &case, input)?;
+            let complete = report.complete;
+            emit(&report)?;
+            Ok(if complete { 0 } else { 2 })
+        }
         ToolCommands::Evaluate { from, top } => {
             let bytes = vulnbell::read_limited(&from, 16 * 1024 * 1024)?;
             let corpus: vulnbell::tools::evaluate::Corpus = serde_json::from_slice(&bytes)?;
             emit(&vulnbell::tools::evaluate::evaluate(corpus, top)?)?;
             Ok(0)
         }
-        ToolCommands::Hits {
+        ToolCommands::Research(ResearchTools::Hits {
             project,
             raw,
             decisions,
@@ -511,27 +641,58 @@ fn run_tool(command: ToolCommands) -> Result<i32> {
             offline,
             recheck,
             upstream,
-        } => {
-            let (_, store) = store_for(&project)?;
+            review_limit,
+        }) => {
+            if review_limit.is_some_and(|limit| !(1..=1000).contains(&limit)) {
+                bail!("review limit must be 1..1000");
+            }
+            distinct_output(&output, &project)?;
+            if let Some(path) = &decisions {
+                distinct_output(&output, path)?;
+            }
+            let (profile, store) = store_for(&project)?;
             let decisions = decisions
                 .as_deref()
                 .map(draft::ResearchDecisions::load)
                 .transpose()?;
+            if decisions.as_ref().is_some_and(|saved| {
+                saved.project_id != profile.project_id.to_string() || saved.recheck != recheck
+            }) {
+                bail!("decisions file belongs to another monitor or review mode");
+            }
             let prepared =
                 hits::prepare_for_upstream(&store, &raw, offline, recheck, upstream.as_deref())?;
-            let packet = hits::packet_with_recheck(&prepared, decisions.as_ref(), recheck);
+            let mut packet = hits::packet_with_recheck(&prepared, decisions.as_ref(), recheck);
+            if let Some(limit) = review_limit {
+                packet.review.truncate(limit);
+                packet.review_remaining =
+                    packet.summary.to_review.saturating_sub(packet.review.len());
+            }
             vulnbell::atomic_write(&output, &serde_json::to_vec_pretty(&packet)?)?;
             emit(&serde_json::json!({
                 "schema_version": 1,
                 "output": output,
                 "summary": packet.summary,
+                "review_returned": packet.review.len(),
+                "review_remaining": packet.review_remaining,
                 "missing": packet.missing.len(),
                 "errors": packet.errors.len(),
             }))?;
             let incomplete = !packet.missing.is_empty() || !packet.errors.is_empty();
             Ok(if incomplete { 2 } else { 0 })
         }
-        ToolCommands::Draft {
+        ToolCommands::Research(ResearchTools::Decide {
+            project,
+            packet,
+            from,
+            decisions,
+        }) => {
+            let (_, store) = store_for(&project)?;
+            draft::save_decision(&store, &packet, &from, &decisions)?;
+            emit(&serde_json::json!({"schema_version": 1, "saved": decisions}))?;
+            Ok(0)
+        }
+        ToolCommands::Research(ResearchTools::Draft {
             project,
             raw,
             decisions,
@@ -541,9 +702,26 @@ fn run_tool(command: ToolCommands) -> Result<i32> {
             offline,
             recheck,
             upstream,
-        } => {
-            let (_, mut store) = store_for(&project)?;
-            let decisions = draft::ResearchDecisions::load(&decisions)?;
+        }) => {
+            distinct_output(&output, &project)?;
+            if let Some(path) = &decisions {
+                distinct_output(&output, path)?;
+            }
+            let (profile, mut store) = store_for(&project)?;
+            let decisions = match decisions {
+                Some(path) => draft::ResearchDecisions::load(&path)?,
+                None => draft::ResearchDecisions {
+                    schema_version: 1,
+                    project_id: profile.project_id.to_string(),
+                    recheck,
+                    decisions: Vec::new(),
+                },
+            };
+            if decisions.project_id != profile.project_id.to_string()
+                || decisions.recheck != recheck
+            {
+                bail!("decisions file belongs to another monitor or review mode");
+            }
             let prepared =
                 hits::prepare_for_upstream(&store, &raw, offline, recheck, upstream.as_deref())?;
             let (batch, summary) = draft::draft(prepared, &decisions, partial)?;
@@ -561,52 +739,52 @@ fn run_tool(command: ToolCommands) -> Result<i32> {
             }))?;
             Ok(0)
         }
-        ToolCommands::Impact { project, from } => {
+        ToolCommands::Cases(CaseTools::Impact { project, from }) => {
             let (_, mut store) = store_for(&project)?;
             let batch = cases::load_impact(&from)?;
             let outcomes = cases::apply_impact(&mut store, &batch, batch_base(&from));
             emit_outcomes(&outcomes)
         }
-        ToolCommands::Triage { project, from } => {
+        ToolCommands::Cases(CaseTools::Triage { project, from }) => {
             let (_, mut store) = store_for(&project)?;
             let batch = cases::load_verdicts(&from)?;
             let outcomes = cases::apply_verdicts(&mut store, &batch, batch_base(&from));
             emit_outcomes(&outcomes)
         }
-        ToolCommands::Scope { project, from } => {
+        ToolCommands::Cases(CaseTools::Scope { project, from }) => {
             let (_, mut store) = store_for(&project)?;
             let batch = cases::load_scope(&from)?;
             let outcomes = cases::apply_scope(&mut store, &batch, batch_base(&from));
             emit_outcomes(&outcomes)
         }
-        ToolCommands::Handoff { project, from } => {
+        ToolCommands::Cases(CaseTools::Handoff { project, from }) => {
             let (_, mut store) = store_for(&project)?;
             let batch = cases::load_handoff(&from)?;
             let outcomes = cases::apply_handoff(&mut store, &batch, batch_base(&from));
             emit_outcomes(&outcomes)
         }
-        ToolCommands::Pending { project, json: _ } => {
+        ToolCommands::Cases(CaseTools::Pending { project, json: _ }) => {
             let (_, store) = store_for(&project)?;
             let report = cases::pending(&store)?;
             emit(&report)?;
             Ok(if report.deliverable { 0 } else { 2 })
         }
-        ToolCommands::Queue {
+        ToolCommands::Cases(CaseTools::Queue {
             project,
             limit,
             offset,
             unworked,
-        } => {
+        }) => {
             let (_, store) = store_for(&project)?;
             emit(&queue::list(&store, limit, offset, unworked)?)?;
             Ok(0)
         }
-        ToolCommands::Progress {
+        ToolCommands::Cases(CaseTools::Progress {
             project,
             case,
             state,
             next_step,
-        } => {
+        }) => {
             let (_, store) = store_for(&project)?;
             if state == "history" {
                 if next_step.is_some() {

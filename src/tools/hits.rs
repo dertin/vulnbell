@@ -30,7 +30,8 @@ const HTTP_BUDGET: usize = 3000;
 pub struct Prepared {
     pub project_id: String,
     pub snapshot_id: String,
-    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
+    pub recheck: bool,
+    pub codebase_revisions: Vec<crate::codebase_revision::CodebaseRevision>,
     pub targets: Vec<PreparedTarget>,
     pub resolutions: BTreeMap<String, Resolution>,
 }
@@ -99,10 +100,32 @@ pub fn prepare_for_upstream(
     recheck: bool,
     upstream: Option<&str>,
 ) -> Result<Prepared> {
-    store.ensure_workspace_current()?;
+    store.ensure_codebases_current()?;
     let plan = crate::research::full_plan(store)?;
     if upstream.is_some_and(|url| !plan.targets.iter().any(|target| target.upstream == url)) {
         anyhow::bail!("upstream is outside the current research plan");
+    }
+    let mut recheck_sources = HashSet::new();
+    if recheck {
+        let selected: Vec<_> = plan
+            .targets
+            .iter()
+            .filter(|target| upstream.is_none_or(|url| target.upstream == url))
+            .collect();
+        if selected.is_empty() {
+            anyhow::bail!("no upstream selected for recheck");
+        }
+        for target in selected {
+            if store
+                .meta(&crate::research::recheck_key(&target.upstream))?
+                .is_some()
+            {
+                recheck_sources.insert(target.upstream.clone());
+            }
+        }
+        if recheck_sources.is_empty() {
+            anyhow::bail!("reopen the selected upstream before starting a recheck");
+        }
     }
     let snapshot = store.latest()?;
     let instance_index = crate::research::index_instances(&snapshot.instances);
@@ -113,6 +136,7 @@ pub fn prepare_for_upstream(
         .targets
         .into_iter()
         .filter(|target| upstream.is_none_or(|url| target.upstream == url))
+        .filter(|target| !recheck || recheck_sources.contains(&target.upstream))
     {
         let mut collected = raw::read_target_with_budget(raw, &target, &mut raw_budget);
         let issue_signals: HashMap<String, screen::LinkedSignals> = collected
@@ -197,7 +221,8 @@ pub fn prepare_for_upstream(
     Ok(Prepared {
         project_id: plan.project_id,
         snapshot_id: plan.snapshot_id,
-        workspace_revisions: plan.workspace_revisions,
+        recheck,
+        codebase_revisions: plan.codebase_revisions,
         targets,
         resolutions,
     })
@@ -458,12 +483,15 @@ pub struct ReviewPacket {
     pub schema_version: u32,
     pub project_id: String,
     pub snapshot_id: String,
-    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
+    pub recheck: bool,
+    pub codebase_revisions: Vec<crate::codebase_revision::CodebaseRevision>,
     pub summary: PacketSummary,
     /// Responses still to fetch; rerun `tools hits` after writing them.
     pub missing: Vec<MissingFetch>,
     pub errors: Vec<TargetError>,
     pub review: Vec<ReviewItem>,
+    /// Remaining review items omitted by the requested packet limit.
+    pub review_remaining: usize,
     /// Bounded sample of items the deterministic screen did not select, for audit.
     pub unselected_sample: Vec<UnselectedItem>,
     pub ordering_model: &'static str,
@@ -579,18 +607,24 @@ pub struct PreviousDecision {
     pub updated_at: String,
     pub assessment: Assessment,
     pub rationale: String,
+    pub instance_ids: Vec<String>,
+    pub reviewed_instance_ids: Vec<String>,
+    pub all_instances: bool,
 }
 
 pub fn packet(prepared: &Prepared, decisions: Option<&ResearchDecisions>) -> ReviewPacket {
-    packet_with_recheck(prepared, decisions, false)
+    packet_with_recheck(prepared, decisions, prepared.recheck)
 }
 
-/// In a recheck, include existing readings as context rather than accepting them automatically.
+/// Decisions are scoped to the current review mode.
 pub fn packet_with_recheck(
     prepared: &Prepared,
     decisions: Option<&ResearchDecisions>,
     recheck: bool,
 ) -> ReviewPacket {
+    let decisions = decisions.filter(|decisions| {
+        decisions.project_id == prepared.project_id && decisions.recheck == recheck
+    });
     let resolutions = &prepared.resolutions;
     let mut summary = PacketSummary {
         targets: prepared.targets.len(),
@@ -632,7 +666,7 @@ pub fn packet_with_recheck(
                 decisions.lookup(
                     &entry.item,
                     &prepared_target.target,
-                    &prepared.workspace_revisions,
+                    &prepared.codebase_revisions,
                 )
             });
             let unpublished: &[String] = match &entry.disposition {
@@ -650,12 +684,15 @@ pub fn packet_with_recheck(
             };
             let previous_decision = match lookup {
                 Some(DecisionLookup::Current(decision))
-                    if recheck || decision.needs_scope(&prepared_target.target) =>
+                    if decision.needs_scope(&prepared_target.target) =>
                 {
                     Some(PreviousDecision {
                         updated_at: decision.updated_at.clone(),
                         assessment: decision.assessment,
                         rationale: decision.rationale.clone(),
+                        instance_ids: decision.instance_ids.clone(),
+                        reviewed_instance_ids: decision.reviewed_instance_ids.clone(),
+                        all_instances: decision.all_instances,
                     })
                 }
                 Some(DecisionLookup::Current(_)) => {
@@ -666,6 +703,9 @@ pub fn packet_with_recheck(
                     updated_at: decision.updated_at.clone(),
                     assessment: decision.assessment,
                     rationale: decision.rationale.clone(),
+                    instance_ids: decision.instance_ids.clone(),
+                    reviewed_instance_ids: decision.reviewed_instance_ids.clone(),
+                    all_instances: decision.all_instances,
                 }),
                 Some(DecisionLookup::Missing) | None => None,
             };
@@ -716,11 +756,13 @@ pub fn packet_with_recheck(
         schema_version: 1,
         project_id: prepared.project_id.clone(),
         snapshot_id: prepared.snapshot_id.clone(),
-        workspace_revisions: prepared.workspace_revisions.clone(),
+        recheck,
+        codebase_revisions: prepared.codebase_revisions.clone(),
         summary,
         missing,
         errors,
         review,
+        review_remaining: 0,
         unselected_sample,
         ordering_model: "deterministic-v1; ordering only, not a severity or applicability verdict",
     }

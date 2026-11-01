@@ -1,7 +1,7 @@
 use crate::{
     model::{
         Applicability, Case, Coverage, CoverageState, Decision, EvidenceKind, Instance,
-        SourceFacts, UpstreamEvent, Verification,
+        UpstreamEvent, Verification,
     },
     store::Store,
 };
@@ -12,11 +12,16 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 pub(crate) mod automation;
 mod contracts;
 pub(crate) mod release;
+mod reopen;
+mod scope;
+mod validation;
 pub use contracts::{
     Assessment, EventKind, FollowSuggestion, NotApplicableReason, ResearchBatch, ResearchComponent,
     ResearchEvent, ResearchPlan, ResearchTarget, ReviewCoverage, SeenEvent, SourceContinuation,
     SourceReview,
 };
+pub use reopen::{reopen, reopen_recheck};
+pub(crate) use validation::validate_source_facts;
 
 pub(crate) type InstanceIndex<'a> = HashMap<&'a str, Vec<(usize, &'a Instance)>>;
 
@@ -134,6 +139,12 @@ pub fn plan_page(store: &Store, after: &str, limit: usize) -> Result<ResearchPla
 pub(crate) fn full_plan(store: &Store) -> Result<ResearchPlan> {
     build_plan(store, "", usize::MAX, true)
 }
+pub(crate) fn decision_plan(store: &Store) -> Result<ResearchPlan> {
+    build_plan(store, "", usize::MAX, false)
+}
+pub(crate) fn recheck_key(upstream: &str) -> String {
+    format!("research_recheck:{}", crate::digest(upstream.as_bytes()))
+}
 fn build_plan(
     store: &Store,
     after: &str,
@@ -141,12 +152,27 @@ fn build_plan(
     include_seen: bool,
 ) -> Result<ResearchPlan> {
     use rusqlite::OptionalExtension;
-    let snapshot = store.latest()?;
-    let instance_index = index_instances(&snapshot.instances);
-    let configured = store
-        .meta("profile_path")?
-        .map(|path| crate::profile::load(std::path::Path::new(&path)))
+    let mut snapshot = store.latest()?;
+    let profile_path = store.meta("profile_path")?;
+    let configured = profile_path
+        .as_deref()
+        .map(|path| crate::profile::load(std::path::Path::new(path)))
         .transpose()?;
+    let observations = match (&configured, profile_path.as_deref()) {
+        (Some(profile), Some(path)) => {
+            crate::discovery::current_observation_ids(profile, std::path::Path::new(path), store)?
+        }
+        _ => Some(HashSet::new()),
+    };
+    let codebase_unavailable = observations.is_none();
+    let valid_observations = observations.unwrap_or_default();
+    let before = snapshot.instances.len();
+    snapshot.instances.retain(|instance| {
+        instance.origin != crate::model::Origin::AgentObserved
+            || valid_observations.contains(&instance.id)
+    });
+    let stale_observations = before - snapshot.instances.len();
+    let instance_index = index_instances(&snapshot.instances);
     let research = configured
         .as_ref()
         .map(|profile| &profile.research)
@@ -328,6 +354,12 @@ fn build_plan(
             context_reopened |= progress.is_some();
             (None, progress)
         };
+        if let Some(stale) = &stale_progress {
+            let previous_from = DateTime::parse_from_rfc3339(&stale.from)?;
+            if previous_from < DateTime::parse_from_rfc3339(&from)? {
+                from = previous_from.to_rfc3339();
+            }
+        }
         if let Some(progress) = &progress {
             from = progress.from.clone();
             until = progress.until.clone();
@@ -393,9 +425,13 @@ fn build_plan(
                 release: instance.release.clone(),
             })
             .collect();
+        let decision_context = match store.meta(&recheck_key(&upstream))? {
+            Some(generation) => crate::digest(&serde_json::to_vec(&(&context, generation))?),
+            None => context,
+        };
         targets.push(ResearchTarget {
             upstream,
-            context_sha256: context,
+            context_sha256: decision_context,
             instance_ids,
             components,
             from,
@@ -409,7 +445,7 @@ fn build_plan(
             context_reopened,
         });
     }
-    Ok(ResearchPlan {schema_version:1,project_id:snapshot.project_id,snapshot_id:snapshot.id,workspace_revisions:snapshot.workspace_revisions,targets,tracker_scope:research.tracker_scope,deferred_transitive_instances,deferred_unknown_instances,scope_unselected,follow_suggestions:suggestions,follow_suggestions_total,next_cursor,required_agent_sites:vec!["github.com".into(),"gitlab.com".into(),"launchpad.net (bugs and merge proposals)".into()],policy:"Review issues, proposed changes, discussions, documentation, changelogs, releases and advisories at each selected mapped source. Deferred transitive and unknown-depth instances remain in the inventory and advisory scan, not proven safe; inspect follow_suggestions and add exact references to research.follow for targeted investigation where warranted. Exhaust relevant pages and linked context in the supplied window. Screen each item on its title, labels and full acquired body, not the title alone; for a proposed change also read the issue it closes. For every item with a security claim, answer from the item in source_facts: which advisory IDs it cites, which versions it says are affected, where it says the fix is (version, release or backport) and through which change, and which feature or configuration it requires; leave a field empty when the item does not say, never infer it. Then judge it against the monitored version. A seen event whose updated_at is unchanged and whose context_current is true keeps its recorded assessment and needs no new review; resend an event when it changed or its context_current is false. Only complete reviews advance source checkpoints. Follow next_cursor for remaining targets. seen_truncated means the prompt contains only a sample; the CLI still deduplicates all imported events. The initial window uses research.initial_since if configured, otherwise exact registry release dates when enabled or a 30 day fallback; shared targets use the earliest date. Later windows overlap the last completed review by 5 minutes. Earlier activity is outside this window, not established safe; advisory scans are independent.".into()})
+    Ok(ResearchPlan {schema_version:1,project_id:snapshot.project_id,snapshot_id:snapshot.id,codebase_revisions:snapshot.codebase_revisions,targets,tracker_scope:research.tracker_scope,deferred_transitive_instances,deferred_unknown_instances,stale_observations,codebase_unavailable,scope_unselected,follow_suggestions:suggestions,follow_suggestions_total,next_cursor,required_agent_sites:vec!["github.com".into(),"gitlab.com".into(),"launchpad.net (bugs and merge proposals)".into()],policy:"Review issues, proposed changes, discussions, documentation, changelogs, releases and advisories at each selected mapped source. Deferred transitive and unknown-depth instances remain in the inventory and advisory scan, not proven safe; inspect follow_suggestions and add exact references to research.follow for targeted investigation where warranted. Exhaust relevant pages and linked context in the supplied window. Screen each item on its title, labels and full acquired body, not the title alone; for a proposed change also read the issue it closes. For every item with a security claim, answer from the item in source_facts: which advisory IDs it cites, which versions it says are affected, where it says the fix is (version, release or backport) and through which change, and which feature or configuration it requires; leave a field empty when the item does not say, never infer it. Then judge it against the monitored version. A seen event whose updated_at is unchanged and whose context_current is true keeps its recorded assessment and needs no new review; resend an event when it changed or its context_current is false. Only complete reviews advance source checkpoints. Follow next_cursor for remaining targets. seen_truncated means the prompt contains only a sample; the CLI still deduplicates all imported events. The initial window uses research.initial_since if configured, otherwise exact registry release dates when enabled or a 30 day fallback; shared targets use the earliest date. Later windows overlap the last completed review by 5 minutes. Earlier activity is outside this window, not established safe; advisory scans are independent.".into()})
 }
 fn tracker_context(
     instance_ids: &[String],
@@ -468,7 +504,7 @@ fn event_hash(
 pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json::Value> {
     use rusqlite::{OptionalExtension, params};
     let _lock = store.lock()?;
-    store.ensure_workspace_current()?;
+    store.ensure_codebases_current()?;
     let plan = build_plan(store, "", usize::MAX, false)?;
     if batch.schema_version != 1
         || batch.project_id != plan.project_id
@@ -481,7 +517,7 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
     }
     let snapshot = store.latest()?;
     for event in &mut batch.events {
-        event.workspace_revisions = snapshot.workspace_revisions.clone();
+        event.codebase_revisions = snapshot.codebase_revisions.clone();
     }
     let instance_index = index_instances(&snapshot.instances);
     let target_ids: HashMap<&str, HashSet<&str>> = plan
@@ -513,6 +549,13 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
             .iter()
             .find(|target| target.upstream == review.upstream)
             .context("research source is outside this snapshot's verified upstream scope")?;
+        let active_recheck = store.meta(&recheck_key(&review.upstream))?;
+        match (&active_recheck, &review.recheck_context_sha256) {
+            (Some(_), Some(expected)) if expected == &target.context_sha256 => {}
+            (Some(_), None) => bail!("an explicit recheck is in progress for {}", review.upstream),
+            (None, None) => {}
+            _ => bail!("recheck generation changed; reopen the source and rebuild the batch"),
+        }
         if !sources.insert(&review.upstream)
             || review.from != target.from
             || review.until != target.until
@@ -530,6 +573,7 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
     let mut prepared = Vec::new();
     let mut duplicates = 0;
     let mut imprecise_sources: HashSet<String> = HashSet::new();
+    let mut unreviewed_sources: HashSet<String> = HashSet::new();
     let mut event_keys = HashSet::new();
     for event in &batch.events {
         if !sources.contains(&event.upstream) {
@@ -550,6 +594,7 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
             .collect();
         let event_url = crate::profile::public_https_syntax(&event.url)?;
         if event.instance_ids.is_empty()
+            || event.instance_ids.iter().collect::<HashSet<_>>().len() != event.instance_ids.len()
             || event
                 .instance_ids
                 .iter()
@@ -558,6 +603,7 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
             bail!("event instance is outside declared upstream scope");
         }
         if event.reviewed_instance_ids.is_empty()
+            || reviewed.len() != event.reviewed_instance_ids.len()
             || event
                 .reviewed_instance_ids
                 .iter()
@@ -568,6 +614,9 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
                 .any(|id| !reviewed.contains(id.as_str()))
         {
             bail!("reviewed instances must include the case scope and belong to the upstream");
+        }
+        if reviewed.len() < candidates.len() {
+            unreviewed_sources.insert(event.upstream.clone());
         }
         if event.external_id.is_empty()
             || event.external_id.len() > 300
@@ -746,7 +795,7 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
                 case_id,
                 project_id: batch.project_id.clone(),
                 snapshot_id: batch.snapshot_id.clone(),
-                workspace_revisions: snapshot.workspace_revisions.clone(),
+                codebase_revisions: snapshot.codebase_revisions.clone(),
                 instances: instances.clone(),
                 claims: Vec::new(),
                 upstream_events: vec![upstream_event.clone()],
@@ -799,7 +848,19 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
         }
         prepared.push((key, hash, event, cases));
     }
+    unreviewed_sources.extend(scope::persisted_unreviewed_sources(
+        store,
+        &batch.sources,
+        &plan.targets,
+        &event_keys,
+    )?);
     for source in &mut batch.sources {
+        if unreviewed_sources.contains(&source.upstream) {
+            source.coverage = ReviewCoverage::Partial;
+            source.detail.push_str(
+                " CLI: candidate instances remain unreviewed; checkpoint was not advanced.",
+            );
+        }
         if imprecise_sources.contains(&source.upstream) {
             source.coverage = ReviewCoverage::Partial;
             source.detail.push_str(
@@ -849,6 +910,12 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
             .context("research source disappeared from plan")?;
         let context = tracker_context(&target.instance_ids, &instance_index, release_windows)?;
         let key_suffix = crate::digest(source.upstream.as_bytes());
+        if source.recheck_context_sha256.is_some() && source.coverage == ReviewCoverage::Complete {
+            transaction.execute(
+                "DELETE FROM meta WHERE key=?1",
+                [recheck_key(&source.upstream)],
+            )?;
+        }
         if source.coverage == ReviewCoverage::Complete {
             transaction.execute(
                 "INSERT OR REPLACE INTO research_cursors VALUES (?1,?2)",
@@ -896,89 +963,4 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
     Ok(
         serde_json::json!({"schema_version":1,"changed_events":prepared.len(),"duplicates":duplicates,"changed_cases":changed_cases,"assessments":assessments,"evidence":evidence,"sources":batch.sources}),
     )
-}
-
-pub(crate) fn validate_source_facts(
-    facts: &SourceFacts,
-    reason: Option<NotApplicableReason>,
-) -> Result<()> {
-    if facts.identifiers.len() > 32
-        || facts.identifiers.iter().any(|identifier| {
-            identifier.len() > 64
-                || !identifier.contains('-')
-                || !identifier
-                    .chars()
-                    .all(|character| character.is_ascii_alphanumeric() || character == '-')
-        })
-    {
-        bail!(
-            "source_facts.identifiers takes up to 32 advisory IDs such as CVE-2026-1234 or GHSA-xxxx-xxxx-xxxx"
-        );
-    }
-    let texts = [
-        &facts.affected_versions,
-        &facts.fixed_in,
-        &facts.fix_reference,
-        &facts.required_feature,
-    ];
-    if texts
-        .iter()
-        .any(|text| text.len() > 500 || text.chars().any(char::is_control))
-    {
-        bail!("source_facts text fields take one line of up to 500 characters");
-    }
-    match reason {
-        Some(NotApplicableReason::FixedInMonitoredVersion) if facts.fixed_in.trim().is_empty() => {
-            bail!("fixed_in_monitored_version requires source_facts.fixed_in as the item states it")
-        }
-        Some(NotApplicableReason::AffectsOtherVersion)
-            if facts.affected_versions.trim().is_empty() =>
-        {
-            bail!(
-                "affects_other_version requires source_facts.affected_versions as the item states it"
-            )
-        }
-        _ => Ok(()),
-    }
-}
-
-/// Moves completed review checkpoints back so the next plan reviews `since` onward again, for
-/// example after the screening method improved. Seen events still deduplicate imports.
-pub fn reopen(store: &mut Store, upstream: &str, since: &str) -> Result<serde_json::Value> {
-    let _lock = store.lock()?;
-    let since = DateTime::parse_from_rfc3339(since).context("--since must be RFC3339")?;
-    if since > Utc::now() {
-        bail!("--since is in the future");
-    }
-    let plan = build_plan(store, "", usize::MAX, false)?;
-    let targets: Vec<&ResearchTarget> = plan
-        .targets
-        .iter()
-        .filter(|target| upstream == "all" || target.upstream == upstream.trim_end_matches('/'))
-        .collect();
-    if targets.is_empty() {
-        bail!("no research target matches {upstream}; use an upstream from the plan or `all`");
-    }
-    let transaction = store.connection.transaction()?;
-    let mut reopened = Vec::new();
-    for target in targets {
-        let Some(checkpoint) = &target.last_complete_review else {
-            continue;
-        };
-        if DateTime::parse_from_rfc3339(checkpoint)? <= since {
-            continue;
-        }
-        let rewound = since + Duration::minutes(5);
-        transaction.execute(
-            "INSERT OR REPLACE INTO research_cursors VALUES (?1,?2)",
-            rusqlite::params![target.upstream, rewound.to_rfc3339()],
-        )?;
-        transaction.execute(
-            "DELETE FROM research_progress WHERE upstream=?1",
-            [&target.upstream],
-        )?;
-        reopened.push(serde_json::json!({"upstream": target.upstream, "previous_checkpoint": checkpoint, "from": since.to_rfc3339()}));
-    }
-    transaction.commit()?;
-    Ok(serde_json::json!({"schema_version": 1, "reopened": reopened}))
 }

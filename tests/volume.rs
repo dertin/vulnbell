@@ -23,7 +23,7 @@ fn fifteen_hundred_locked_packages_use_batches_and_no_upstream_clones() {
     fs::write(
         &profile_path,
         format!(
-            "schema: 1\nproject_id: {project}\nname: synthetic-volume\nworkspaces: [workspace]\n"
+            "schema: 1\nproject_id: {project}\nname: synthetic-volume\ncodebases: [workspace]\n"
         ),
     )
     .unwrap();

@@ -22,10 +22,8 @@ pub enum WorkState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkEvent {
     pub facts_sha256: String,
-    #[serde(default)]
-    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
+    pub codebase_revisions: Vec<crate::codebase_revision::CodebaseRevision>,
     /// Fingerprint of case evidence and outcome when the interval was recorded.
-    #[serde(default)]
     pub context_sha256: String,
     pub state: WorkState,
     pub recorded_at: String,
@@ -85,7 +83,7 @@ pub struct DuplicateAdvisory {
     pub cases: Vec<String>,
 }
 
-/// Find case-level duplicates by exact advisory, package reference and resolved version.
+/// Find candidate duplicates by advisory identifier or alias, package and resolved version.
 pub fn duplicate_advisories(store: &Store) -> Result<Vec<DuplicateAdvisory>> {
     let mut groups: BTreeMap<(String, String, String), BTreeSet<String>> = BTreeMap::new();
     for case in store.cases()? {
@@ -93,28 +91,34 @@ pub fn duplicate_advisories(store: &Store) -> Result<Vec<DuplicateAdvisory>> {
             continue;
         }
         for claim in &case.claims {
-            if claim.id.trim().is_empty() {
-                continue;
-            }
             let Some(instance) = case.instances.iter().find(|i| i.id == claim.instance_id) else {
                 continue;
             };
             let Some(version) = &instance.resolved_version else {
                 continue;
             };
-            groups
-                .entry((
-                    claim.id.clone(),
-                    instance.reference.clone(),
-                    version.clone(),
-                ))
-                .or_default()
-                .insert(case.case_id.clone());
+            for id in std::iter::once(&claim.id).chain(&claim.aliases) {
+                let id = id.trim();
+                if !id.is_empty() {
+                    groups
+                        .entry((
+                            id.to_ascii_uppercase(),
+                            instance.reference.clone(),
+                            version.clone(),
+                        ))
+                        .or_default()
+                        .insert(case.case_id.clone());
+                }
+            }
         }
     }
+    let mut seen = BTreeSet::new();
     Ok(groups
         .into_iter()
         .filter(|(_, cases)| cases.len() > 1)
+        .filter(|((_, component, version), cases)| {
+            seen.insert((component.clone(), version.clone(), cases.clone()))
+        })
         .map(
             |((advisory_id, component, version), cases)| DuplicateAdvisory {
                 advisory_id,
@@ -213,7 +217,7 @@ pub fn record(
     next_step: Option<&str>,
 ) -> Result<WorkEvent> {
     let _lock = store.lock()?;
-    store.ensure_workspace_current()?;
+    store.ensure_codebases_current()?;
     let active: bool = store.connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM cases WHERE id=?1)",
         [case_id],
@@ -230,7 +234,12 @@ pub fn record(
     let now = Utc::now();
     let started_at = if state == WorkState::InProgress {
         if events.last().is_some_and(|e| {
-            e.state == WorkState::InProgress && e.facts_sha256 == case.facts_sha256
+            e.state == WorkState::InProgress
+                && e.facts_sha256 == case.facts_sha256
+                && crate::codebase_revision::same_revisions(
+                    &e.codebase_revisions,
+                    &case.codebase_revisions,
+                )
         }) {
             bail!("review is already in progress for these facts");
         }
@@ -246,7 +255,13 @@ pub fn record(
         let previous = events
             .last()
             .context("start this case before recording progress")?;
-        if previous.state != WorkState::InProgress || previous.facts_sha256 != case.facts_sha256 {
+        if previous.state != WorkState::InProgress
+            || previous.facts_sha256 != case.facts_sha256
+            || !crate::codebase_revision::same_revisions(
+                &previous.codebase_revisions,
+                &case.codebase_revisions,
+            )
+        {
             bail!("no current started review for these case facts");
         }
         previous.started_at.clone()
@@ -255,7 +270,7 @@ pub fn record(
     let elapsed_seconds = (now - start).num_seconds().max(0) as u64;
     let event = WorkEvent {
         facts_sha256: case.facts_sha256.clone(),
-        workspace_revisions: case.workspace_revisions.clone(),
+        codebase_revisions: case.codebase_revisions.clone(),
         context_sha256: context_hash(&case)?,
         state,
         recorded_at: now.to_rfc3339(),
@@ -280,13 +295,24 @@ fn item(
     let context = context_hash(case)?;
     let is_current = |e: &&WorkEvent| {
         e.facts_sha256 == case.facts_sha256
+            && crate::codebase_revision::same_revisions(
+                &e.codebase_revisions,
+                &case.codebase_revisions,
+            )
             && (e.state == WorkState::InProgress || e.context_sha256 == context)
     };
     let progress = last.filter(is_current).cloned();
     let stale = last.is_some() && progress.is_none();
     let recorded_elapsed_seconds = events
         .iter()
-        .filter(|e| e.facts_sha256 == case.facts_sha256 && e.state != WorkState::InProgress)
+        .filter(|e| {
+            e.facts_sha256 == case.facts_sha256
+                && e.state != WorkState::InProgress
+                && crate::codebase_revision::same_revisions(
+                    &e.codebase_revisions,
+                    &case.codebase_revisions,
+                )
+        })
         .fold(0_u64, |total, e| total.saturating_add(e.elapsed_seconds));
     let mut priority_reasons = Vec::new();
     if case.claims.iter().any(|c| c.known_exploited) {
@@ -379,6 +405,7 @@ pub fn list(store: &Store, limit: usize, offset: usize, unworked: bool) -> Resul
         .map(|p| p.case_id.as_str())
         .collect();
     let missing: HashSet<&str> = pending.verdict_missing.iter().map(String::as_str).collect();
+    let challenged: HashSet<&str> = pending.challenge_open.iter().map(String::as_str).collect();
     let followed = match store.meta("profile_path")? {
         Some(path) => {
             crate::profile::load(std::path::Path::new(&path))?
@@ -389,7 +416,9 @@ pub fn list(store: &Store, limit: usize, offset: usize, unworked: bool) -> Resul
     };
     let mut ranked: Vec<(u8, QueueItem)> = Vec::new();
     for case in store.cases()? {
-        if !matches!(case.decision, Decision::Actionable | Decision::Review) {
+        if !matches!(case.decision, Decision::Actionable | Decision::Review)
+            && !challenged.contains(case.case_id.as_str())
+        {
             continue;
         }
         let q = item(

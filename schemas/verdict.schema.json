@@ -10,6 +10,57 @@
       ],
       "type": "string"
     },
+    "CodebaseRevision": {
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "codebase": {
+          "type": "string"
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dirty": {
+          "description": "Changes excluding private paths, ignored files, generated untracked files and submodules.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "repository": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/RepositoryState"
+        },
+        "worktree_status_sha256": {
+          "description": "Hash of Git's status entries and changed files, without retaining names or contents.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "codebase",
+        "state",
+        "observed_at"
+      ],
+      "type": "object"
+    },
     "Decision": {
       "enum": [
         "actionable",
@@ -52,57 +103,6 @@
         "disproven"
       ],
       "type": "string"
-    },
-    "WorkspaceRevision": {
-      "properties": {
-        "branch": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "commit": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "dirty": {
-          "description": "Changes excluding private paths, ignored files and submodule contents.",
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "observed_at": {
-          "type": "string"
-        },
-        "repository": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "state": {
-          "$ref": "#/$defs/RepositoryState"
-        },
-        "workspace": {
-          "type": "string"
-        },
-        "worktree_status_sha256": {
-          "description": "Hash of Git's status entries and changed files, without retaining names or contents.",
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "workspace",
-        "state",
-        "observed_at"
-      ],
-      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -113,6 +113,14 @@
     },
     "case_id": {
       "type": "string"
+    },
+    "codebase_revisions": {
+      "default": [],
+      "description": "Recorded by the CLI from the current case.",
+      "items": {
+        "$ref": "#/$defs/CodebaseRevision"
+      },
+      "type": "array"
     },
     "decision": {
       "$ref": "#/$defs/Decision"
@@ -136,14 +144,6 @@
     },
     "verification": {
       "$ref": "#/$defs/Verification"
-    },
-    "workspace_revisions": {
-      "default": [],
-      "description": "Recorded by the CLI from the current case.",
-      "items": {
-        "$ref": "#/$defs/WorkspaceRevision"
-      },
-      "type": "array"
     }
   },
   "required": [

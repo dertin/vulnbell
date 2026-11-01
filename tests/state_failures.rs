@@ -3,7 +3,7 @@ use vulnbell::store::Store;
 
 #[test]
 fn incompatible_state_is_rejected_without_conversion_or_data_changes() {
-    for version in [0_u32, 1_u32] {
+    for version in [0_u32, 1_u32, 2_u32, 3_u32, 4_u32] {
         let project = uuid::Uuid::new_v4().to_string();
         let directory = vulnbell::store::data_root().join(&project);
         fs::create_dir_all(&directory).unwrap();
@@ -25,6 +25,81 @@ fn incompatible_state_is_rejected_without_conversion_or_data_changes() {
 }
 
 #[test]
+fn incompatible_profile_fields_are_rejected_without_changing_the_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("vulnbell.yaml");
+    let contents = format!(
+        "schema: 1\nproject_id: {}\nname: fixture\nworkspaces: [source]\n",
+        uuid::Uuid::new_v4()
+    );
+    fs::write(&path, &contents).unwrap();
+    assert!(vulnbell::profile::load(&path).is_err());
+    assert_eq!(fs::read_to_string(&path).unwrap(), contents);
+}
+
+#[test]
+fn codebase_contracts_reject_previous_field_names() {
+    let old_discovery = serde_json::json!({
+        "phase": "workspace", "schema_version": 1, "project_id": "project",
+        "scope_sha256": "scope", "reviews": []
+    });
+    assert!(serde_json::from_value::<vulnbell::discovery::DiscoveryBatch>(old_discovery).is_err());
+    assert!(
+        serde_json::from_value::<vulnbell::sandbox::TestMode>(serde_json::json!("workspace_copy"))
+            .is_err()
+    );
+    assert!(
+        serde_json::from_value::<vulnbell::sandbox::TestMode>(serde_json::json!("codebase_copy"))
+            .is_ok()
+    );
+
+    let mut decision = serde_json::json!({
+        "upstream": "https://example.com/project", "key": "item", "updated_at": "2026-01-01",
+        "context_sha256": "context", "workspace_revisions": [], "assessment": "review",
+        "rationale": "review", "reviewed_instance_ids": []
+    });
+    assert!(
+        serde_json::from_value::<vulnbell::tools::draft::ItemDecision>(decision.clone()).is_err()
+    );
+    decision
+        .as_object_mut()
+        .unwrap()
+        .remove("workspace_revisions");
+    decision["codebase_revisions"] = serde_json::json!([]);
+    assert!(serde_json::from_value::<vulnbell::tools::draft::ItemDecision>(decision).is_ok());
+}
+
+#[test]
+fn persisted_review_state_requires_current_context_fields() {
+    let snapshot = serde_json::json!({
+        "schema_version": 1, "id": "snapshot", "project_id": "project", "profile_sha256": "hash",
+        "started_at": "start", "finished_at": "end", "instances": [], "coverage": [],
+        "cases": [], "partial": false, "alert_status": "none"
+    });
+    let error = serde_json::from_value::<vulnbell::model::Snapshot>(snapshot).unwrap_err();
+    assert!(error.to_string().contains("codebase_revisions"));
+
+    let impact = serde_json::json!({
+        "schema_version": 1, "case_id": "case", "facts_sha256": "hash",
+        "verdict": "needs_evidence", "confidence": "low", "answers": [],
+        "instances": [], "assessed_at": "now"
+    });
+    let error = serde_json::from_value::<vulnbell::impact::ImpactResult>(impact).unwrap_err();
+    assert!(error.to_string().contains("codebase_revisions"));
+
+    let mut event = serde_json::json!({
+        "facts_sha256": "hash", "state": "reviewed", "recorded_at": "now",
+        "started_at": "now", "elapsed_seconds": 0, "next_step": null
+    });
+    let error =
+        serde_json::from_value::<vulnbell::tools::queue::WorkEvent>(event.clone()).unwrap_err();
+    assert!(error.to_string().contains("codebase_revisions"));
+    event["codebase_revisions"] = serde_json::json!([]);
+    let error = serde_json::from_value::<vulnbell::tools::queue::WorkEvent>(event).unwrap_err();
+    assert!(error.to_string().contains("context_sha256"));
+}
+
+#[test]
 fn current_database_is_initialized_once_and_reopens_without_rebuilding_tables() {
     let project = uuid::Uuid::new_v4().to_string();
     let store = Store::open(&project).unwrap();
@@ -32,7 +107,7 @@ fn current_database_is_initialized_once_and_reopens_without_rebuilding_tables() 
         .connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 5);
     store.set_meta("sentinel", "retained").unwrap();
     store
         .connection
@@ -83,6 +158,85 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
     assert!(inventory.coverage.iter().any(|coverage| coverage.state
         == vulnbell::model::CoverageState::Partial
         && coverage.detail == "invalid package namespace"));
+    drop(store);
+    fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+}
+
+#[test]
+fn mixed_codebase_inventories_each_ecosystem_with_its_own_provenance() {
+    use vulnbell::model::Origin;
+
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = directory.path().join("workspace");
+    for subdirectory in ["rust", "python", "php", "javascript"] {
+        fs::create_dir_all(workspace.join(subdirectory)).unwrap();
+    }
+    for (path, contents) in [
+        (
+            "rust/Cargo.lock",
+            include_str!("fixtures/workspace/rust/Cargo.lock"),
+        ),
+        ("python/requirements.txt", "requests==2.31.0\n"),
+        (
+            "php/composer.lock",
+            include_str!("fixtures/workspace/php/composer.lock"),
+        ),
+        (
+            "javascript/package-lock.json",
+            include_str!("fixtures/workspace/js/package-lock.json"),
+        ),
+    ] {
+        fs::write(workspace.join(path), contents).unwrap();
+    }
+
+    let project = uuid::Uuid::new_v4().to_string();
+    let store = Store::open(&project).unwrap();
+    let inventory = vulnbell::inventory::discover(
+        &["workspace".into()],
+        &directory.path().join("vulnbell.yaml"),
+        &store,
+        100,
+    );
+    for (reference, path, version, origin) in [
+        (
+            "pkg:cargo/serde",
+            "rust/Cargo.lock",
+            "1.0.228",
+            Origin::Locked,
+        ),
+        (
+            "python-requirement:requests",
+            "python/requirements.txt",
+            "2.31.0",
+            Origin::Declared,
+        ),
+        (
+            "composer-lock:monolog/monolog",
+            "php/composer.lock",
+            "3.9.0",
+            Origin::Locked,
+        ),
+        (
+            "pkg:npm/lodash",
+            "javascript/package-lock.json",
+            "4.17.20",
+            Origin::Locked,
+        ),
+    ] {
+        assert!(
+            inventory.instances.iter().any(|instance| {
+                instance.reference == reference
+                    && instance.provenance.path.as_deref() == Some(path)
+                    && instance.resolved_version.as_deref() == Some(version)
+                    && instance.origin == origin
+            }),
+            "missing {reference} from {path}"
+        );
+    }
+    assert!(inventory.coverage.iter().any(|coverage| {
+        coverage.scope == "python/requirements.txt"
+            && coverage.state == vulnbell::model::CoverageState::Partial
+    }));
     drop(store);
     fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
 }

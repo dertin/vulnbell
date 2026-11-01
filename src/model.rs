@@ -43,10 +43,10 @@ pub struct Provenance {
     pub path: Option<String>,
     pub sha256: String,
     pub observed_at: String,
-    pub workspace: Option<String>,
-    /// Fingerprint of the Git workspaces reviewed with this inventory.
+    pub codebase: Option<String>,
+    /// Fingerprint of the Git codebases reviewed with this inventory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_context_sha256: Option<String>,
+    pub codebase_context_sha256: Option<String>,
     pub direct: Option<bool>,
     pub resolution: Option<String>,
     pub artifact_integrity: Option<String>,
@@ -79,6 +79,12 @@ pub struct ReleaseDate {
     pub evidence: Evidence,
 }
 impl Instance {
+    /// Locally observed names whose public registry identity has not been established.
+    pub fn has_unverified_local_identity(&self) -> bool {
+        self.reference.starts_with("composer-lock:")
+            || self.reference.starts_with("python-requirement:")
+    }
+
     pub fn declared(component: &Component) -> Self {
         let origin = if component.usage == crate::profile::Usage::Deployed {
             Origin::Deployed
@@ -107,8 +113,8 @@ impl Instance {
                     &serde_json::to_vec(component).expect("component serializes"),
                 ),
                 observed_at: crate::now(),
-                workspace: None,
-                workspace_context_sha256: None,
+                codebase: None,
+                codebase_context_sha256: None,
                 direct: Some(true),
                 resolution: None,
                 artifact_integrity: None,
@@ -136,7 +142,7 @@ impl Instance {
             &self.resolved_version,
             self.origin,
             &self.provenance.path,
-            &self.provenance.workspace,
+            &self.provenance.codebase,
             &self.provenance.resolution,
             &self.provenance.artifact_integrity,
             &self.purl,
@@ -144,7 +150,7 @@ impl Instance {
         );
         let original =
             crate::digest(&serde_json::to_vec(&context).expect("instance context serializes"));
-        match &self.provenance.workspace_context_sha256 {
+        match &self.provenance.codebase_context_sha256 {
             Some(git_context) => crate::digest(format!("{original}:{git_context}").as_bytes()),
             None => original,
         }
@@ -256,9 +262,8 @@ pub struct Case {
     pub case_id: String,
     pub project_id: String,
     pub snapshot_id: String,
-    /// Git workspaces that bound the facts and review for this case.
-    #[serde(default)]
-    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
+    /// Git codebases that bound the facts and review for this case.
+    pub codebase_revisions: Vec<crate::codebase_revision::CodebaseRevision>,
     pub instances: Vec<Instance>,
     pub claims: Vec<Claim>,
     pub upstream_events: Vec<UpstreamEvent>,
@@ -286,9 +291,8 @@ pub struct Snapshot {
     pub profile_sha256: String,
     pub started_at: String,
     pub finished_at: String,
-    /// Workspace state at the start and end of the scan.
-    #[serde(default)]
-    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
+    /// Codebase state at the start and end of the scan.
+    pub codebase_revisions: Vec<crate::codebase_revision::CodebaseRevision>,
     pub instances: Vec<Instance>,
     pub coverage: Vec<Coverage>,
     pub cases: Vec<Case>,
@@ -302,7 +306,7 @@ pub struct Verdict {
     pub case_id: String,
     /// Recorded by the CLI from the current case.
     #[serde(default)]
-    pub workspace_revisions: Vec<crate::workspace_revision::WorkspaceRevision>,
+    pub codebase_revisions: Vec<crate::codebase_revision::CodebaseRevision>,
     pub facts_sha256: String,
     pub applicability: Applicability,
     pub verification: Verification,
