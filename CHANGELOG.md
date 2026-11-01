@@ -2,12 +2,10 @@
 
 ## 0.1.3 - 2026-10-31
 
+- Allow the scheduled Codex public-research role to use web search under its restricted tool policy.
 - Validate local runner isolation with Codex CLI 0.166.0; report unavailable web research as a partial review.
-
 - Show an interactive environment check with contextual recommendations and a machine-readable option.
-
 - Use the active GitHub CLI credential for supported GitHub API requests without exporting a token.
-
 - Save upstream decisions individually and resume reviews using monitor-bound progress and concise working notes.
 - Render scheduled reports locally, track upstream coverage separately, and export PDF reports with evidence appendices.
 - Inventory Python requirements locally without inferring public identities; retain version and environment uncertainty as coverage limitations.

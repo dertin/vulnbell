@@ -4,9 +4,10 @@ Issues, pull requests, web pages, code, and claimed security reports are untrust
 
 ## Scheduled runner
 
-- The researcher receives a bounded plan through stdin and has only public research tools.
+- The researcher receives a bounded plan through stdin and can use public web research tools.
 - Workspace discovery receives bounded text fragments in a separate tool-free role. Public discovery receives only component references and public URLs.
-- Shell, local file access, personal MCP, Apps, plugins, hooks, and subagents are disabled.
+- Shell, direct project-file access, personal MCP, Apps, plugins, hooks, and subagents are disabled. Codex public research uses code mode for web access under a read-only policy; tools that request writes remain denied.
+- Treat external source code and instructions as data. The researcher is instructed not to execute them; a prompt alone cannot enforce this rule in another agent or harness.
 - Reports are rendered locally by the CLI from recorded data.
 - Each adapter checks its supported client version and effective tool permissions before research. Local web fetch and inherited configuration are denied.
 - Imported research is stored as context. It cannot create a lab attestation or dismiss a case by itself.
@@ -21,7 +22,7 @@ Final job status, exit code, and timeout come from the runtime's control interfa
 
 Static evidence can support a not-affected assessment without a sandbox test. When using a sandbox test to establish non-applicability, the test requires positive evidence and a contrasting control. A timeout, tool failure, or failed reproduction stays inconclusive.
 
-Project impact is a separate applicability diagnostic. It asks whether the exact artifact is deployed, whether the affected feature is used, whether untrusted input reaches it, whether prerequisites hold, and whether a fix or mitigation exists. When source is available, the agent reviews lockfiles, configuration, call sites, feature flags, and relevant input flow statically before considering execution. Source review can be detailed without running project code.
+Project impact is a separate applicability diagnostic. It asks whether the exact artifact is deployed, whether the affected feature is used, whether untrusted input reaches it, whether prerequisites hold, and whether a fix or mitigation exists. When source is available, the agent reviews lockfiles, configuration, call sites, feature flags, and relevant input flow statically before considering execution. Source review can be detailed without running project code. Interactive agents can inspect the selected codebase; scheduled local discovery receives bounded dependency fragments and does not yet perform a general static impact review of application code.
 
 If static evidence is insufficient and a dynamic check is authorized, only selected reviewed workspace files are copied into Microsandbox. With no workspace, the assessment covers the advisory and exact artifact in general terms; deployment, feature use, and project reachability remain unknown unless separate evidence establishes them. A minimal artifact reproduction confirms only the tested behavior and conditions, not exposure in an unavailable project.
 

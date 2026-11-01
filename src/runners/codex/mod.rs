@@ -69,7 +69,6 @@ impl CodexAdapter<'_> {
             "unified_exec",
             "code_mode",
             "code_mode_only",
-            "code_mode_host",
             "multi_agent",
             "computer_use",
             "browser_use",
@@ -82,6 +81,9 @@ impl CodexAdapter<'_> {
             "remote_plugin",
         ] {
             command.args(["--disable", feature]);
+        }
+        if !research {
+            command.args(["--disable", "code_mode_host"]);
         }
         for server in mcp_servers {
             let name = toml::Value::String(server.name.clone()).to_string();
