@@ -9,6 +9,9 @@ use vulnbell::{
     store::Store,
 };
 
+#[path = "research/unavailable.rs"]
+mod unavailable;
+
 #[test]
 fn completed_research_can_close_a_clean_scan_without_hiding_open_windows() {
     let directory = tempfile::tempdir().unwrap();

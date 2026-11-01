@@ -394,11 +394,7 @@ pub fn verify(
     )?;
     case.evidence.push(test_evidence);
     if !availability().available {
-        case.verification = Verification::Inconclusive;
-        if case.decision == crate::model::Decision::Dismissed {
-            case.decision = crate::model::Decision::Review;
-            case.applicability = crate::model::Applicability::Unknown;
-        }
+        begin_attempt(&mut case);
         case.sandbox = availability();
         let reason = case.sandbox.reason.clone();
         append_blocker(
@@ -459,12 +455,7 @@ pub fn verify(
             );
         }
     }
-    case.verification = Verification::Inconclusive;
-    if case.decision == crate::model::Decision::Dismissed {
-        case.decision = crate::model::Decision::Review;
-        case.applicability = crate::model::Applicability::Unknown;
-    }
-    case.updated_at = crate::now();
+    begin_attempt(&mut case);
     store.save_case(&case)?;
     let observation = match execute_guest(store, &image, &test, &input_root, limits) {
         Ok(observation) => observation,
@@ -592,13 +583,7 @@ pub fn verify(
         observation.policy_evidence,
         observation.status_evidence,
     ]);
-    case.verification = verification;
-    if case.decision == crate::model::Decision::Dismissed && verification != Verification::Disproven
-    {
-        case.decision = crate::model::Decision::Review;
-        case.applicability = crate::model::Applicability::Unknown;
-    }
-    case.updated_at = crate::now();
+    apply_attestation(&mut case, &attestation);
     if verification == Verification::Inconclusive {
         let error = store.record_evidence(
             &process.stderr,
@@ -612,7 +597,32 @@ pub fn verify(
     Ok(case)
 }
 
+fn apply_attestation(case: &mut Case, attestation: &Attestation) {
+    case.verification = attestation.verification;
+    reopen_closed_case(case);
+    case.updated_at = crate::now();
+}
+
+fn begin_attempt(case: &mut Case) {
+    case.verification = Verification::Inconclusive;
+    reopen_closed_case(case);
+    case.updated_at = crate::now();
+}
+
+fn reopen_closed_case(case: &mut Case) {
+    if matches!(
+        case.decision,
+        crate::model::Decision::Informational | crate::model::Decision::Dismissed
+    ) {
+        case.decision = crate::model::Decision::Review;
+        case.applicability = crate::model::Applicability::Unknown;
+    }
+}
+
 mod runtime;
 pub mod staging;
 pub use runtime::{availability, image_path, prepare, prepare_image};
 use runtime::{checked_runtime, execute_guest, validate_image};
+
+#[cfg(test)]
+mod tests;

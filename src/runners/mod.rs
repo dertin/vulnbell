@@ -9,9 +9,12 @@ use std::{
 
 pub(crate) mod codebase;
 mod codex;
+mod mcp;
 mod opencode;
 
 pub use codebase::serve_codebase;
+#[doc(hidden)]
+pub use mcp::serve as serve_mcp;
 
 const CONFIG_LIMIT: u64 = 64 * 1024;
 const INPUT_LIMIT: usize = 4 * 1024 * 1024;
@@ -93,6 +96,60 @@ pub(crate) struct Request<'a> {
     pub codebase_project: Option<&'a Path>,
     pub seconds: u64,
     pub log: &'a Path,
+}
+
+struct SourceAccess {
+    project: PathBuf,
+    project_id: String,
+    data_root: PathBuf,
+    receipt: PathBuf,
+}
+
+impl SourceAccess {
+    fn for_request(request: &Request<'_>) -> Result<Option<Self>> {
+        if matches!(request.role, AgentRole::CodebaseReview) != request.codebase_project.is_some() {
+            bail!("codebase review requires its project scope, and other roles cannot receive it");
+        }
+        let Some(project) = request.codebase_project else {
+            return Ok(None);
+        };
+        let project = project.canonicalize()?;
+        let project_id = crate::profile::load(&project)?.project_id.to_string();
+        let data_root = crate::store::data_root().canonicalize()?;
+        let parent = request
+            .log
+            .parent()
+            .context("source review log needs a parent")?
+            .canonicalize()?;
+        let receipt = parent.join(format!("source-access-{}.json", uuid::Uuid::new_v4()));
+        Ok(Some(Self {
+            project,
+            project_id,
+            data_root,
+            receipt,
+        }))
+    }
+
+    fn verify(&self) -> Result<()> {
+        let bytes = crate::read_limited(&self.receipt, 4096)
+            .context("source review did not access its codebase")?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        if value
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            != Some(1)
+            || value
+                .get("source_read")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+            || value.get("project_id").and_then(serde_json::Value::as_str)
+                != Some(self.project_id.as_str())
+            || crate::profile::load(&self.project)?.project_id.to_string() != self.project_id
+        {
+            bail!("source access receipt is invalid");
+        }
+        Ok(())
+    }
 }
 
 trait AgentAdapter {

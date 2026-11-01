@@ -890,10 +890,27 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
 
     let mut multi = store.case(&case_id).unwrap();
     let first_id = multi.instances[0].id.clone();
+    let previous_impact = vulnbell::impact::latest(&multi, &store).unwrap();
     let mut second = multi.instances[0].clone();
     second.id = "second-instance".into();
     multi.instances.push(second);
     store.save_case(&multi).unwrap();
+    required.cases[0].sandbox_instance_ids = vec![first_id.clone()];
+    assert!(vulnbell::impact::latest(&multi, &store).is_none());
+    assert!(!cases::apply_handoff(&mut store, &required, &batches)[0].applied);
+    let refreshed = vulnbell::impact::assess(
+        &mut store,
+        &case_id,
+        vulnbell::impact::ImpactSubmission {
+            schema_version: 1,
+            case_id: case_id.clone(),
+            facts_sha256: multi.facts_sha256.clone(),
+            answers: previous_impact.answers,
+        },
+    )
+    .unwrap();
+    assert_eq!(refreshed.instances.len(), 2);
+    assert!(cases::apply_verdicts(&mut store, &changed_verdict, &batches)[0].applied);
     required.cases[0].sandbox_instance_ids.clear();
     assert!(!cases::apply_handoff(&mut store, &required, &batches)[0].applied);
     required.cases[0].sandbox_instance_ids = vec![first_id.clone()];

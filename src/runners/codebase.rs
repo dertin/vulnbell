@@ -4,7 +4,7 @@ use ignore::{DirEntry, WalkBuilder};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    io::{self, BufRead, Read, Write},
+    io::Read,
     path::Path,
     sync::LazyLock,
     time::{Duration, Instant},
@@ -211,19 +211,29 @@ fn file_text(root: &str, relative: &str) -> Result<String> {
     Ok(content)
 }
 
-pub(crate) fn ensure_visible(store: &Store, codebase: usize, path: &str) -> Result<()> {
+pub(crate) fn ensure_visible_batch(
+    store: &Store,
+    citations: &[crate::tools::citations::Citation],
+) -> Result<()> {
     store.ensure_workspace_current()?;
     let snapshot = store.latest()?;
-    let root = &snapshot
-        .workspace_revisions
-        .get(codebase)
-        .context("codebase is outside the monitor")?
-        .workspace;
-    let (files, complete) = paths(Path::new(root), Some(path))?;
-    if !complete || !files.iter().any(|file| file == path) {
-        bail!("citation refers to an excluded or unavailable source file");
+    let mut checked = std::collections::HashSet::new();
+    for citation in citations {
+        if !checked.insert((citation.codebase, citation.path.as_str())) {
+            continue;
+        }
+        let root = &snapshot
+            .workspace_revisions
+            .get(citation.codebase)
+            .context("codebase is outside the monitor")?
+            .workspace;
+        let (files, complete) = paths(Path::new(root), Some(&citation.path))?;
+        if !complete || !files.iter().any(|file| file == &citation.path) {
+            bail!("citation refers to an excluded or unavailable source file");
+        }
+        file_text(root, &citation.path)?;
     }
-    file_text(root, path)?;
+    store.ensure_workspace_current()?;
     Ok(())
 }
 
@@ -346,84 +356,41 @@ pub fn serve_codebase(project: &Path, receipt: Option<&Path>) -> Result<()> {
         .into_iter()
         .map(|revision| revision.workspace)
         .collect();
-    let stdin = io::stdin();
-    let mut input = stdin.lock();
-    let mut stdout = io::stdout().lock();
-    loop {
-        let mut line = Vec::new();
-        let count = (&mut input)
-            .take((MAX_MESSAGE + 1) as u64)
-            .read_until(b'\n', &mut line)?;
-        if count == 0 {
-            break;
-        }
-        if count > MAX_MESSAGE {
-            bail!("MCP request exceeds limit");
-        }
-        let message: Value = serde_json::from_slice(&line)?;
-        let Some(id) = message.get("id").cloned() else {
-            continue;
-        };
-        let result = match message.get("method").and_then(Value::as_str) {
-            Some("initialize") => {
-                json!({"protocolVersion":message.pointer("/params/protocolVersion").and_then(Value::as_str).unwrap_or("2025-03-26"),"capabilities":{"tools":{}},"serverInfo":{"name":"vulnbell-codebase","version":env!("CARGO_PKG_VERSION")}})
-            }
-            Some("ping") => json!({}),
-            Some("tools/list") => {
-                let schema = json!({"type":"object","properties":{"codebase":{"type":"integer","minimum":0},"path":{"type":"string"},"query":{"type":"string"},"offset":{"type":"integer","minimum":0},"start_line":{"type":"integer","minimum":1},"line_count":{"type":"integer","minimum":1,"maximum":100}},"required":["codebase"],"additionalProperties":false});
-                let tool = |name, description| json!({"name":name,"description":description,"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false},"inputSchema":schema});
-                json!({"tools":[tool("codebase_list","List selected codebase files with a paginated offset; an optional path narrows the subtree. Excludes private, ignored, dependency and build output paths."),tool("codebase_read","Read up to 100 lines of a selected codebase file with one-based line numbers and hashes."),tool("codebase_search","Find a literal string in selected codebase files; an optional path narrows the subtree. complete=false means the search was bounded or skipped files.")]})
-            }
-            Some("tools/call") => {
-                let outcome = (|| -> Result<Value> {
-                    let name = message
-                        .pointer("/params/name")
-                        .and_then(Value::as_str)
-                        .context("missing tool name")?;
-                    let args = serde_json::from_value(
-                        message
-                            .pointer("/params/arguments")
-                            .cloned()
-                            .context("missing arguments")?,
-                    )?;
-                    let result = execute(&store, &roots, name, args)?;
-                    if let Some(receipt) =
-                        receipt.filter(|_| matches!(name, "codebase_read" | "codebase_search"))
-                    {
-                        crate::atomic_write(
-                            receipt,
-                            &serde_json::to_vec(
-                                &json!({"schema_version":1,"project_id":profile.project_id.to_string(),"source_read":true}),
-                            )?,
-                        )?;
-                    }
-                    Ok(result)
-                })();
-                match outcome {
-                    Ok(value) => json!({"content":[{"type":"text","text":value.to_string()}]}),
-                    Err(error) => {
-                        json!({"isError":true,"content":[{"type":"text","text":error.to_string()}]})
-                    }
-                }
-            }
-            _ => {
-                writeln!(
-                    stdout,
-                    "{}",
-                    json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"method not found"}})
+    let schema = json!({"type":"object","properties":{"codebase":{"type":"integer","minimum":0},"path":{"type":"string"},"query":{"type":"string"},"offset":{"type":"integer","minimum":0},"start_line":{"type":"integer","minimum":1},"line_count":{"type":"integer","minimum":1,"maximum":100}},"required":["codebase"],"additionalProperties":false});
+    let tool = |name, description| json!({"name":name,"description":description,"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false},"inputSchema":schema});
+    let tools = json!([
+        tool(
+            "codebase_list",
+            "List selected codebase files with a paginated offset; an optional path narrows the subtree. Excludes private, ignored, dependency and build output paths."
+        ),
+        tool(
+            "codebase_read",
+            "Read up to 100 lines of a selected codebase file with one-based line numbers and hashes."
+        ),
+        tool(
+            "codebase_search",
+            "Find a literal string in selected codebase files; an optional path narrows the subtree. complete=false means the search was bounded or skipped files."
+        )
+    ]);
+    super::serve_mcp(
+        "vulnbell-codebase",
+        MAX_MESSAGE,
+        tools,
+        |name, arguments| {
+            let result = execute(&store, &roots, name, serde_json::from_value(arguments)?)?;
+            if let Some(receipt) =
+                receipt.filter(|_| matches!(name, "codebase_read" | "codebase_search"))
+            {
+                crate::atomic_write(
+                    receipt,
+                    &serde_json::to_vec(
+                        &json!({"schema_version":1,"project_id":profile.project_id.to_string(),"source_read":true}),
+                    )?,
                 )?;
-                stdout.flush()?;
-                continue;
             }
-        };
-        writeln!(
-            stdout,
-            "{}",
-            json!({"jsonrpc":"2.0","id":id,"result":result})
-        )?;
-        stdout.flush()?;
-    }
-    Ok(())
+            Ok(result)
+        },
+    )
 }
 
 #[cfg(test)]

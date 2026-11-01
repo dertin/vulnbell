@@ -88,6 +88,9 @@ fn run_with(
     let mut continuations: HashMap<String, HashSet<String>> = HashMap::new();
     loop {
         let plan = plan_page(store, &cursor, 1)?;
+        if plan.workspace_unavailable {
+            bail!("codebase unavailable; research coverage remains incomplete");
+        }
         let Some(target) = plan.targets.first() else {
             store.set_meta("research_agent_cursor", "")?;
             if advanced || initial_wrap {

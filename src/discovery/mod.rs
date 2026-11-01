@@ -414,19 +414,34 @@ pub(crate) fn current_observation_ids(
     profile: &Profile,
     path: &Path,
     store: &Store,
-) -> Result<std::collections::HashSet<String>> {
+) -> Result<Option<std::collections::HashSet<String>>> {
+    let unavailable = || -> Result<bool> {
+        Ok(roots(profile, path)?
+            .iter()
+            .any(|root| std::fs::read_dir(root).is_err()))
+    };
+    if unavailable()? {
+        return Ok(None);
+    }
     if profile.discovery == DiscoveryMode::Off {
-        return Ok(std::collections::HashSet::new());
+        return Ok(Some(std::collections::HashSet::new()));
     }
     let scope = scope(profile, path)?;
-    workspace::prepare(profile, path, store, &scope)?;
-    if !workspace::sync_include_guard(store, &scope)? {
-        return Ok(std::collections::HashSet::new());
+    if let Err(error) = workspace::prepare(profile, path, store, &scope) {
+        if unavailable()? {
+            return Ok(None);
+        }
+        return Err(error);
     }
-    Ok(workspace::instances(store, &scope)?
-        .into_iter()
-        .map(|instance| instance.id)
-        .collect())
+    if !workspace::sync_include_guard(store, &scope)? {
+        return Ok(Some(std::collections::HashSet::new()));
+    }
+    Ok(Some(
+        workspace::instances(store, &scope)?
+            .into_iter()
+            .map(|instance| instance.id)
+            .collect(),
+    ))
 }
 
 pub fn source_map(

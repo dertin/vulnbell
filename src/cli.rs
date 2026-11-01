@@ -13,6 +13,8 @@ pub(super) struct Cli {
 #[derive(Subcommand)]
 pub(super) enum Commands {
     #[command(hide = true)]
+    RunnerWeb,
+    #[command(hide = true)]
     RunnerGithub {
         #[arg(long)]
         upstream: String,

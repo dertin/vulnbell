@@ -600,16 +600,13 @@ pub fn pending(store: &Store) -> Result<PendingReport> {
     let verdict_missing: Vec<String> = snapshot
         .cases
         .iter()
-        .filter(|case| {
-            matches!(case.decision, Decision::Actionable | Decision::Review)
-                || crate::tools::challenge::blocks_verdict(case, store)
-        })
-        .filter(|case| !has_current_verdict(case, store))
+        .filter(|case| verdict_missing(case, store))
         .map(|case| case.case_id.clone())
         .collect();
     let plan = crate::research::full_plan(store)?;
     let tracker_scope_unresolved = plan.scope_unselected;
     let stale_observations = plan.stale_observations;
+    let workspace_unavailable = plan.workspace_unavailable;
     let research_open: Vec<ResearchOpen> = plan
         .targets
         .into_iter()
@@ -651,7 +648,8 @@ pub fn pending(store: &Store) -> Result<PendingReport> {
         .filter(|open| {
             open.directories_pending > 0 || open.files_pending > 0 || open.components_unmapped > 0
         });
-    let workspace_context_changed = report.workspace_context_unrecorded
+    let workspace_context_changed = workspace_unavailable
+        || report.workspace_context_unrecorded
         || report.workspace_scope_changed
         || report
             .workspace_revisions
@@ -686,4 +684,14 @@ pub fn pending(store: &Store) -> Result<PendingReport> {
 
 fn has_current_verdict(case: &Case, store: &Store) -> bool {
     crate::engine::current_verdict(case, store).is_some()
+}
+
+pub(crate) fn verdict_missing(case: &Case, store: &Store) -> bool {
+    (matches!(case.decision, Decision::Actionable | Decision::Review)
+        || crate::tools::challenge::blocks_verdict(case, store)
+        || case
+            .evidence
+            .iter()
+            .any(|item| item.source == "agent_verdict"))
+        && !has_current_verdict(case, store)
 }

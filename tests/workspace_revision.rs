@@ -421,3 +421,76 @@ fn non_git_and_unborn_repositories_are_distinguished() {
     assert_eq!(unborn.commit, None);
     assert!(workspace_revision::ensure_current(&[unborn]).is_err());
 }
+
+#[test]
+fn added_non_git_codebase_requires_a_new_scan_before_recording() {
+    let directory = tempfile::tempdir().unwrap();
+    let codebase = directory.path().join("code");
+    fs::create_dir(&codebase).unwrap();
+    fs::write(codebase.join("source.rs"), "fn synthetic() {}\n").unwrap();
+    let project = uuid::Uuid::new_v4().to_string();
+    let profile = directory.path().join("vulnbell.yaml");
+    let initial = format!(
+        "schema: 1\nproject_id: {project}\nname: fixture\ndiscovery: off\ncomponents:\n  - ref: synthetic\n    version: '1.0.0'\n    upstream: https://github.com/example/example\n"
+    );
+    fs::write(&profile, &initial).unwrap();
+    let path = profile.to_str().unwrap();
+    let cli = |arguments: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_vulnbell"))
+            .env("VULNBELL_DATA_DIR", directory.path().join("data"))
+            .args(arguments)
+            .output()
+            .unwrap()
+    };
+    let scan = cli(&["scan", "--project", path, "--offline", "--json"]);
+    assert!(matches!(scan.status.code(), Some(0 | 2)));
+    let snapshot: serde_json::Value = serde_json::from_slice(&scan.stdout).unwrap();
+    assert!(
+        snapshot["workspace_revisions"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let batch = directory.path().join("research.json");
+    fs::write(&batch, serde_json::to_vec(&serde_json::json!({"schema_version":1,"project_id":project,"snapshot_id":snapshot["id"],"sources":[],"events":[]})).unwrap()).unwrap();
+    fs::write(&profile, format!("{initial}workspaces: [code]\n")).unwrap();
+
+    let report = cli(&["report", "--project", path, "--audience", "cyber", "--json"]);
+    assert!(report.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
+    assert_eq!(report["workspace_context_unrecorded"], true);
+    let pending = cli(&["tools", "pending", "--project", path, "--json"]);
+    let pending: serde_json::Value = serde_json::from_slice(&pending.stdout).unwrap();
+    assert_eq!(pending["workspace_context_changed"], true);
+    assert_eq!(pending["deliverable"], false);
+    let attempt = cli(&[
+        "research",
+        "--project",
+        path,
+        "--from",
+        batch.to_str().unwrap(),
+    ]);
+    assert!(!attempt.status.success());
+    assert!(String::from_utf8_lossy(&attempt.stderr).contains("workspace configuration changed"));
+
+    let rescan = cli(&["scan", "--project", path, "--offline", "--json"]);
+    assert!(matches!(rescan.status.code(), Some(0 | 2)));
+    let snapshot: serde_json::Value = serde_json::from_slice(&rescan.stdout).unwrap();
+    assert_eq!(snapshot["workspace_revisions"][0]["state"], "not_git");
+    fs::write(&batch, serde_json::to_vec(&serde_json::json!({"schema_version":1,"project_id":project,"snapshot_id":snapshot["id"],"sources":[],"events":[]})).unwrap()).unwrap();
+    let accepted = cli(&[
+        "research",
+        "--project",
+        path,
+        "--from",
+        batch.to_str().unwrap(),
+    ]);
+    assert!(
+        accepted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&accepted.stderr)
+    );
+    let pending = cli(&["tools", "pending", "--project", path, "--json"]);
+    let pending: serde_json::Value = serde_json::from_slice(&pending.stdout).unwrap();
+    assert_eq!(pending["workspace_context_changed"], false);
+}

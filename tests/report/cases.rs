@@ -1,6 +1,268 @@
 use super::*;
 
 #[test]
+fn affected_verdict_requires_intact_claim_even_when_its_cited_note_is_intact() {
+    let project = uuid::Uuid::new_v4().to_string();
+    let mut store = Store::open(&project).unwrap();
+    let instance = Instance::declared(&vulnbell::profile::Component {
+        reference: "pkg:cargo/synthetic".into(),
+        version: Some("1.0.0".into()),
+        usage: Default::default(),
+        upstream: None,
+        feeds: Vec::new(),
+    });
+    let snapshot = Snapshot {
+        schema_version: 1,
+        id: "synthetic-snapshot".into(),
+        project_id: project.clone(),
+        profile_sha256: "synthetic".into(),
+        started_at: vulnbell::now(),
+        finished_at: vulnbell::now(),
+        workspace_revisions: Vec::new(),
+        instances: vec![instance.clone()],
+        coverage: Vec::new(),
+        cases: Vec::new(),
+        partial: false,
+        alert_status: "none".into(),
+    };
+    store.save_snapshot(&snapshot).unwrap();
+    let claim_bytes = b"synthetic affected advisory";
+    let affected = store
+        .record_evidence(claim_bytes, "osv", None, EvidenceKind::Advisory)
+        .unwrap();
+    let note = store
+        .record_evidence(
+            b"independent source review note",
+            "local_impact_evidence",
+            None,
+            EvidenceKind::Context,
+        )
+        .unwrap();
+    let claim = Claim {
+        id: "SYNTHETIC-ADVISORY".into(),
+        source: "osv".into(),
+        aliases: Vec::new(),
+        instance_id: instance.id.clone(),
+        summary: "Synthetic affected advisory".into(),
+        applicability: Applicability::Affected,
+        evidence: affected.clone(),
+        known_exploited: false,
+    };
+    let case = Case {
+        schema_version: 1,
+        case_id: "SIG-corrupt-advisory".into(),
+        project_id: project.clone(),
+        snapshot_id: snapshot.id,
+        workspace_revisions: Vec::new(),
+        instances: vec![instance],
+        claims: vec![claim.clone()],
+        upstream_events: Vec::new(),
+        evidence: vec![affected.clone(), note.clone()],
+        coverage: Vec::new(),
+        applicability: Applicability::Affected,
+        verification: Verification::SourceConfirmed,
+        decision: Decision::Actionable,
+        facts_sha256: "synthetic-facts".into(),
+        open_questions: Vec::new(),
+        suggested_search_queries: Vec::new(),
+        sandbox: SandboxAvailability {
+            available: false,
+            reason: "synthetic".into(),
+        },
+        updated_at: vulnbell::now(),
+    };
+    store.save_case(&case).unwrap();
+    let verdict = |verification| Verdict {
+        schema_version: 1,
+        case_id: case.case_id.clone(),
+        workspace_revisions: Vec::new(),
+        facts_sha256: case.facts_sha256.clone(),
+        applicability: Applicability::Affected,
+        verification,
+        decision: Decision::Actionable,
+        rationale: "Independent reviewed note.".into(),
+        evidence: vec![EvidenceReference {
+            id: note.id.clone(),
+            sha256: note.sha256.clone(),
+        }],
+    };
+    let advisory_path = store.directory.join("evidence").join(&affected.sha256);
+    std::fs::write(&advisory_path, b"corrupted advisory").unwrap();
+    for verification in [Verification::SourceConfirmed, Verification::Inconclusive] {
+        assert!(
+            vulnbell::engine::triage(&mut store, &case.case_id, verdict(verification)).is_err()
+        );
+    }
+    assert_eq!(
+        store.case(&case.case_id).unwrap().evidence.len(),
+        case.evidence.len()
+    );
+
+    std::fs::write(&advisory_path, claim_bytes).unwrap();
+    let recorded = vulnbell::engine::triage(
+        &mut store,
+        &case.case_id,
+        verdict(Verification::SourceConfirmed),
+    )
+    .unwrap();
+    assert!(vulnbell::engine::current_verdict(&recorded, &store).is_some());
+    assert!(
+        !vulnbell::tools::cases::pending(&store)
+            .unwrap()
+            .verdict_missing
+            .contains(&case.case_id)
+    );
+    std::fs::write(&advisory_path, b"corrupted advisory").unwrap();
+    assert!(store.evidence_exists(&note).unwrap());
+    assert!(vulnbell::engine::current_verdict(&recorded, &store).is_none());
+    assert!(
+        vulnbell::tools::cases::pending(&store)
+            .unwrap()
+            .verdict_missing
+            .contains(&case.case_id)
+    );
+
+    let alternate = store
+        .record_evidence(
+            b"second affected advisory",
+            "osv",
+            None,
+            EvidenceKind::Advisory,
+        )
+        .unwrap();
+    let mut independently_supported = recorded;
+    independently_supported.claims.push(Claim {
+        evidence: alternate,
+        ..claim
+    });
+    assert!(vulnbell::engine::current_verdict(&independently_supported, &store).is_some());
+    drop(store);
+    std::fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+}
+
+#[test]
+fn closed_cases_with_invalid_recorded_verdicts_return_to_review() {
+    let project = uuid::Uuid::new_v4().to_string();
+    let mut store = Store::open(&project).unwrap();
+    let instance = Instance::declared(&vulnbell::profile::Component {
+        reference: "synthetic-component".into(),
+        version: Some("1.0.0".into()),
+        usage: Default::default(),
+        upstream: None,
+        feeds: Vec::new(),
+    });
+    let mut snapshot = Snapshot {
+        schema_version: 1,
+        id: "synthetic-snapshot".into(),
+        project_id: project.clone(),
+        profile_sha256: "synthetic".into(),
+        started_at: vulnbell::now(),
+        finished_at: vulnbell::now(),
+        workspace_revisions: Vec::new(),
+        instances: vec![instance.clone()],
+        coverage: Vec::new(),
+        cases: Vec::new(),
+        partial: false,
+        alert_status: "none".into(),
+    };
+    store.save_snapshot(&snapshot).unwrap();
+    let case = |id: String, decision| Case {
+        schema_version: 1,
+        case_id: id,
+        project_id: project.clone(),
+        snapshot_id: snapshot.id.clone(),
+        workspace_revisions: Vec::new(),
+        instances: vec![instance.clone()],
+        claims: Vec::new(),
+        upstream_events: Vec::new(),
+        evidence: Vec::new(),
+        coverage: Vec::new(),
+        applicability: Applicability::NotAffected,
+        verification: Verification::Inconclusive,
+        decision,
+        facts_sha256: "synthetic-facts".into(),
+        open_questions: Vec::new(),
+        suggested_search_queries: Vec::new(),
+        sandbox: SandboxAvailability {
+            available: false,
+            reason: "synthetic".into(),
+        },
+        updated_at: vulnbell::now(),
+    };
+    let mut corrupt = Vec::new();
+    for (name, decision) in [
+        ("informational", Decision::Informational),
+        ("dismissed", Decision::Dismissed),
+    ] {
+        store
+            .save_case(&case(format!("auto-{name}"), decision))
+            .unwrap();
+        for mode in ["missing", "corrupt"] {
+            let id = format!("manual-{name}-{mode}");
+            let evidence = store
+                .record_evidence(
+                    id.as_bytes(),
+                    "synthetic",
+                    None,
+                    EvidenceKind::NonApplicability,
+                )
+                .unwrap();
+            let mut item = case(id.clone(), decision);
+            item.evidence.push(evidence.clone());
+            store.save_case(&item).unwrap();
+            vulnbell::engine::triage(
+                &mut store,
+                &id,
+                Verdict {
+                    schema_version: 1,
+                    case_id: id.clone(),
+                    workspace_revisions: Vec::new(),
+                    facts_sha256: item.facts_sha256,
+                    applicability: Applicability::NotAffected,
+                    verification: Verification::Inconclusive,
+                    decision,
+                    rationale: "Synthetic assessment.".into(),
+                    evidence: vec![EvidenceReference {
+                        id: evidence.id,
+                        sha256: evidence.sha256.clone(),
+                    }],
+                },
+            )
+            .unwrap();
+            corrupt.push((
+                id,
+                store.directory.join("evidence").join(evidence.sha256),
+                mode,
+            ));
+        }
+    }
+    assert!(vulnbell::tools::cases::pending(&store).unwrap().deliverable);
+    for (_, path, mode) in &corrupt {
+        if *mode == "missing" {
+            std::fs::remove_file(path).unwrap();
+        } else {
+            std::fs::write(path, b"corrupted synthetic evidence").unwrap();
+        }
+    }
+    let pending = vulnbell::tools::cases::pending(&store).unwrap();
+    assert!(!pending.deliverable);
+    assert_eq!(pending.verdict_missing.len(), corrupt.len());
+    for (id, _, _) in &corrupt {
+        assert!(pending.verdict_missing.contains(id));
+    }
+    snapshot.cases = store.cases().unwrap();
+    let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    assert_eq!(report.informational_count, 1);
+    assert_eq!(report.dismissed_count, 1);
+    assert_eq!(report.needs_review.len(), corrupt.len());
+    for (id, _, _) in &corrupt {
+        assert!(report.needs_review.iter().any(|item| &item.case_id == id));
+    }
+    drop(store);
+    std::fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+}
+
+#[test]
 fn contained_advisories_collapse_into_one_row_and_exposed_cases_keep_their_card() {
     let project = uuid::Uuid::new_v4().to_string();
     let mut store = Store::open(&project).unwrap();

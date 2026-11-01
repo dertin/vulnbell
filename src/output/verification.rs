@@ -113,7 +113,10 @@ pub(super) fn finding_check(case: &Case, store: &Store, language: Language) -> F
     let affected_claims: HashSet<&str> = case
         .claims
         .iter()
-        .filter(|claim| claim.applicability == crate::model::Applicability::Affected)
+        .filter(|claim| {
+            claim.applicability == crate::model::Applicability::Affected
+                && store.evidence_exists(&claim.evidence).unwrap_or(false)
+        })
         .map(|claim| claim.instance_id.as_str())
         .collect();
     let mut reproduced = HashSet::new();
@@ -144,7 +147,6 @@ pub(super) fn finding_check(case: &Case, store: &Store, language: Language) -> F
             artifact_version: instance.resolved_version.clone(),
             sandbox_candidate: needs_evidence
                 && !affected_claims.contains(instance.id.as_str())
-                && !(case.instances.len() == 1 && case.verification == Verification::LabReproduced)
                 && !reproduced.contains(&instance.id),
             sandbox_needed: review_handoff.as_ref().is_some_and(|handoff| {
                 handoff.sandbox_required && handoff.sandbox_instance_ids.contains(&instance.id)

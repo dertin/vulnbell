@@ -1,4 +1,4 @@
-use super::{AgentAdapter, AgentRole, Request, base_command};
+use super::{AgentAdapter, AgentRole, Request, SourceAccess, base_command};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::{path::Path, process::Command};
@@ -243,26 +243,9 @@ impl AgentAdapter for CodexAdapter<'_> {
     }
 
     fn execute(&self, request: Request<'_>) -> Result<()> {
-        if matches!(request.role, AgentRole::CodebaseReview) != request.codebase_project.is_some() {
-            bail!("codebase review requires its project scope, and other roles cannot receive it");
-        }
+        let source = SourceAccess::for_request(&request)?;
         let mcp_servers = self.capabilities(request.directory)?;
         let tool_executable = std::env::current_exe()?;
-        let data_root = if request.codebase_project.is_some() {
-            Some(crate::store::data_root().canonicalize()?)
-        } else {
-            None
-        };
-        let receipt = if request.codebase_project.is_some() {
-            let parent = request
-                .log
-                .parent()
-                .context("source review log needs a parent")?
-                .canonicalize()?;
-            Some(parent.join(format!("source-access-{}.json", uuid::Uuid::new_v4())))
-        } else {
-            None
-        };
         let github = request.github_upstream.filter(|upstream| {
             matches!(
                 crate::tools::raw::provider_for(upstream),
@@ -277,16 +260,12 @@ impl AgentAdapter for CodexAdapter<'_> {
             &mcp_servers,
             ToolBindings {
                 github: github.map(|upstream| (tool_executable.as_path(), upstream)),
-                codebase: request
-                    .codebase_project
-                    .zip(data_root.as_deref())
-                    .zip(receipt.as_deref())
-                    .map(|((project, data_root), receipt)| CodebaseBinding {
-                        executable: tool_executable.as_path(),
-                        project,
-                        data_root,
-                        receipt,
-                    }),
+                codebase: source.as_ref().map(|scope| CodebaseBinding {
+                    executable: tool_executable.as_path(),
+                    project: &scope.project,
+                    data_root: &scope.data_root,
+                    receipt: &scope.receipt,
+                }),
             },
         );
         let process = crate::process::run_agent_with_input(
@@ -302,28 +281,8 @@ impl AgentAdapter for CodexAdapter<'_> {
                 "Codex adapter failed or exceeded its execution window; inspect private job logs"
             );
         }
-        if let Some(receipt) = receipt {
-            let value: serde_json::Value = serde_json::from_slice(
-                &crate::read_limited(&receipt, 4096)
-                    .context("source review did not access its codebase")?,
-            )?;
-            let project = request
-                .codebase_project
-                .context("source review project is unavailable")?;
-            let expected_project = crate::profile::load(project)?.project_id.to_string();
-            if value
-                .get("schema_version")
-                .and_then(serde_json::Value::as_u64)
-                != Some(1)
-                || value
-                    .get("source_read")
-                    .and_then(serde_json::Value::as_bool)
-                    != Some(true)
-                || value.get("project_id").and_then(serde_json::Value::as_str)
-                    != Some(expected_project.as_str())
-            {
-                bail!("source access receipt is invalid");
-            }
+        if let Some(source) = source {
+            source.verify()?;
         }
         let bytes = crate::read_limited(request.output, 2 * 1024 * 1024)
             .context("Codex adapter exited without a readable output artifact")?;

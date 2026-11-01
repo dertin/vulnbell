@@ -28,23 +28,34 @@ pub fn add_research_coverage(
     if !pending.research_open.is_empty()
         || pending.tracker_scope_unresolved
         || pending.stale_observations > 0
+        || pending.workspace_context_changed
     {
         let detail = match report.language {
             Language::Es => format!(
-                "{} ventanas upstream pendientes; {} observaciones desactualizadas requieren un nuevo scan; alcance de fuentes sin resolver: {}",
+                "{} ventanas upstream pendientes; {} observaciones desactualizadas requieren un nuevo scan; alcance de fuentes sin resolver: {}; codebase cambiada o no disponible: {}",
                 pending.research_open.len(),
                 pending.stale_observations,
                 if pending.tracker_scope_unresolved {
                     "sí"
                 } else {
                     "no"
+                },
+                if pending.workspace_context_changed {
+                    "sí"
+                } else {
+                    "no"
                 }
             ),
             Language::En => format!(
-                "{} upstream windows pending; {} stale observations require a new scan; tracker scope unresolved: {}",
+                "{} upstream windows pending; {} stale observations require a new scan; tracker scope unresolved: {}; codebase changed or unavailable: {}",
                 pending.research_open.len(),
                 pending.stale_observations,
                 if pending.tracker_scope_unresolved {
+                    "yes"
+                } else {
+                    "no"
+                },
+                if pending.workspace_context_changed {
                     "yes"
                 } else {
                     "no"
@@ -382,13 +393,7 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
             .meta("profile_path")?
             .and_then(|path| {
                 let profile = crate::profile::load(std::path::Path::new(&path)).ok()?;
-                Some(
-                    crate::workspace_revision::capture(&profile, std::path::Path::new(&path))
-                        .iter()
-                        .any(|revision| {
-                            revision.state != crate::workspace_revision::RepositoryState::NotGit
-                        }),
-                )
+                Some(!profile.workspaces.is_empty())
             })
             .unwrap_or(false)
     } else {
@@ -414,7 +419,7 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
         }
         match case.decision {
             Decision::Informational | Decision::Dismissed
-                if crate::tools::challenge::blocks_verdict(case, store) => {}
+                if crate::tools::cases::verdict_missing(case, store) => {}
             Decision::Informational => {
                 informational_count += 1;
                 continue;

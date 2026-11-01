@@ -580,15 +580,30 @@ fn search_queries(instance: &Instance, profile: &Profile) -> Vec<String> {
             .unwrap_or("version unknown")
     )]
 }
+
+fn has_affected_claim(case: &Case, store: &Store) -> bool {
+    case.claims.iter().any(|claim| {
+        claim.applicability == Applicability::Affected
+            && store.evidence_exists(&claim.evidence).unwrap_or(false)
+    })
+}
+
 pub fn current_verdict(case: &Case, store: &Store) -> Option<Verdict> {
     if crate::tools::challenge::blocks_verdict(case, store) {
         return None;
     }
-    let evidence = case
+    let (verdict_index, evidence) = case
         .evidence
         .iter()
+        .enumerate()
         .rev()
-        .find(|item| item.source == "agent_verdict")?;
+        .find(|(_, item)| item.source == "agent_verdict")?;
+    if case.evidence.iter().skip(verdict_index + 1).any(|item| {
+        item.kind == EvidenceKind::Attestation
+            && crate::sandbox::read_attestation(case, store, item).is_ok()
+    }) {
+        return None;
+    }
     if !store.evidence_exists(evidence).ok()? {
         return None;
     }
@@ -613,6 +628,7 @@ pub fn current_verdict(case: &Case, store: &Store) -> Option<Verdict> {
     {
         return None;
     }
+    let mut has_attestation = false;
     for reference in &verdict.evidence {
         let cited = case
             .evidence
@@ -626,11 +642,16 @@ pub fn current_verdict(case: &Case, store: &Store) -> Option<Verdict> {
         {
             return None;
         }
-        if cited.kind == EvidenceKind::Attestation
-            && crate::sandbox::read_attestation(case, store, cited).is_err()
-        {
-            return None;
+        if cited.kind == EvidenceKind::Attestation {
+            let attestation = crate::sandbox::read_attestation(case, store, cited).ok()?;
+            has_attestation |= attestation.verification == Verification::LabReproduced;
         }
+    }
+    if (verdict.verification == Verification::SourceConfirmed
+        || verdict.decision == Decision::Actionable && !has_attestation)
+        && !has_affected_claim(case, store)
+    {
+        return None;
     }
     Some(verdict)
 }
@@ -700,21 +721,15 @@ pub fn triage(store: &mut Store, id: &str, mut verdict: Verdict) -> Result<Case>
     {
         bail!("actionable requires affected applicability");
     }
-    if verdict.verification == Verification::SourceConfirmed
-        && !case
-            .claims
-            .iter()
-            .any(|claim| claim.applicability == Applicability::Affected)
+    if (verdict.verification == Verification::SourceConfirmed
+        || verdict.decision == Decision::Actionable && !has_attestation)
+        && !has_affected_claim(&case, store)
     {
-        bail!("no authoritative affected claim for source_confirmed");
-    }
-    let authoritative_affected = case
-        .claims
-        .iter()
-        .any(|claim| claim.applicability == Applicability::Affected);
-    if verdict.decision == Decision::Actionable && !(authoritative_affected || has_attestation) {
+        if verdict.verification == Verification::SourceConfirmed {
+            bail!("no authoritative affected claim with intact evidence for source_confirmed");
+        }
         bail!(
-            "actionable requires an authoritative affected claim or positive runtime attestation"
+            "actionable requires an affected claim with intact evidence or positive runtime attestation"
         );
     }
     if verdict.verification == Verification::Disproven && !positive_nonapplicability {

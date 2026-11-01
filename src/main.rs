@@ -1,5 +1,6 @@
 mod cli;
 mod runner_github;
+mod runner_web;
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
@@ -120,6 +121,7 @@ fn report(
 fn run() -> Result<i32> {
     let cli = Cli::parse();
     match cli.command {
+        Commands::RunnerWeb => runner_web::serve()?,
         Commands::RunnerGithub { upstream } => {
             runner_github::serve(&upstream)?;
         }

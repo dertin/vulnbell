@@ -52,6 +52,35 @@ fn batch(
 }
 
 #[test]
+fn unavailable_codebase_keeps_scheduled_research_incomplete() {
+    for discovery in ["", "discovery: off\n"] {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("codebase");
+        fs::create_dir(&workspace).unwrap();
+        let project = uuid::Uuid::new_v4().to_string();
+        let path = directory.path().join("vulnbell.yaml");
+        fs::write(&path, format!("schema: 1\nproject_id: {project}\nname: fixture\n{discovery}workspaces:\n  - {}\ncomponents:\n  - ref: example\n    version: '1.0.0'\n    upstream: https://github.com/example/example\n", workspace.display())).unwrap();
+        let profile = profile::load(&path).unwrap();
+        crate::engine::scan(&profile, &path, true).unwrap();
+        let mut store = Store::open(&project).unwrap();
+        fs::remove_dir(&workspace).unwrap();
+
+        let error = run_with(&mut store, Utc::now() + Duration::minutes(1), |_, _| {
+            panic!("unavailable codebase must not start a source review")
+        })
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("research coverage remains incomplete")
+        );
+        assert!(store.meta("research_agent_cursor").unwrap().is_none());
+        drop(store);
+        fs::remove_dir_all(crate::store::data_root().join(project)).unwrap();
+    }
+}
+
+#[test]
 fn partial_pages_rotate_sources_and_finish_in_the_same_run() {
     let (_directory, project, mut store) = fixture(&[
         "https://github.com/example/a",

@@ -4,9 +4,9 @@ Issues, pull requests, web pages, code, and claimed security reports are untrust
 
 ## Scheduled runner
 
-- The researcher receives a bounded plan through stdin and can use public web research tools. For a GitHub target, Codex can also call a read-only tool scoped to that public repository; the tool uses the local `gh` credential without exposing it to the agent.
+- The researcher receives a bounded plan through stdin and can use public web research tools. For a GitHub target, both runners can also call a read-only tool scoped to that public repository; the tool uses the local `gh` credential without exposing it to the agent.
 - Workspace discovery receives bounded text fragments in a separate tool-free role. Public discovery receives only component references and public URLs.
-- A separate Codex source-review role can list, search and read bounded files in the monitor's codebases. It has no web access; private, ignored, dependency and build output paths are excluded. Citations must match current source-line hashes before an impact answer is recorded.
+- A separate source-review role in both runners can list, search and read bounded files in the monitor's codebases. It has no web access; private, ignored, dependency and build output paths are excluded. Citations must match current source-line hashes before an impact answer is recorded.
 - Shell, direct project-file access, personal MCP, Apps, plugins, hooks, and subagents are disabled. Codex uses code mode for its scoped tools under a read-only policy; tools that request writes remain denied.
 - Treat external source code and instructions as data. The researcher is instructed not to execute them; a prompt alone cannot enforce this rule in another agent or harness.
 - Reports are rendered locally by the CLI from recorded data.

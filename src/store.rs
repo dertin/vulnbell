@@ -243,9 +243,7 @@ impl Store {
             return Ok(());
         };
         let snapshot = self.latest()?;
-        if !snapshot.workspace_revisions.is_empty()
-            && let Some(path) = self.meta("profile_path")?
-        {
+        if let Some(path) = self.meta("profile_path")? {
             let path = Path::new(&path);
             let profile = crate::profile::load(path)?;
             if !crate::workspace_revision::configured_paths_match(
@@ -257,18 +255,6 @@ impl Store {
             }
         }
         if snapshot.workspace_revisions.is_empty() {
-            if let Some(path) = self.meta("profile_path")? {
-                let path = Path::new(&path);
-                let profile = crate::profile::load(path)?;
-                let current = crate::workspace_revision::capture(&profile, path);
-                if current.iter().any(|revision| {
-                    revision.state != crate::workspace_revision::RepositoryState::NotGit
-                }) {
-                    bail!(
-                        "workspace Git context was not recorded; rescan before recording review results"
-                    );
-                }
-            }
             return Ok(());
         }
         crate::workspace_revision::ensure_current(&snapshot.workspace_revisions)

@@ -2,9 +2,9 @@
 
 ## 0.1.3 - 2026-10-31
 
-- Let scheduled Codex reviews read scoped codebase evidence and public GitHub records through bounded read-only tools.
-- Allow the scheduled Codex public-research role to use web search under its restricted tool policy.
-- Validate local runner isolation with Codex CLI 0.166.0; report unavailable web research as a partial review.
+- Let scheduled reviews read scoped codebase evidence and public GitHub records through bounded read-only tools.
+- Allow scheduled public research to search the web and open public pages under a restricted tool policy.
+- Validate local runner isolation with Codex CLI 0.166.0 and OpenCode 1.19.4; report unavailable web research as a partial review.
 - Show an interactive environment check with contextual recommendations and a machine-readable option.
 - Use the active GitHub CLI credential for supported GitHub API requests without exporting a token.
 - Save upstream decisions individually and resume reviews using monitor-bound progress and concise working notes.

@@ -166,6 +166,8 @@ pub struct ResearchPlan {
     pub deferred_unknown_instances: usize,
     /// Observations no longer valid for the current discovery context; rescan before research.
     pub stale_observations: usize,
+    /// Current workspace observations cannot be checked while a codebase is unavailable.
+    pub workspace_unavailable: bool,
     /// No inventory instance was selected for tracker research.
     pub scope_unselected: bool,
     /// Evidence-backed candidates for focused investigation; these do not change the scope.
