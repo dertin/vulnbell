@@ -12,6 +12,18 @@ pub(super) struct Cli {
 }
 #[derive(Subcommand)]
 pub(super) enum Commands {
+    #[command(hide = true)]
+    RunnerGithub {
+        #[arg(long)]
+        upstream: String,
+    },
+    #[command(hide = true)]
+    RunnerCodebase {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        receipt: Option<PathBuf>,
+    },
     /// Install the embedded, version-aligned Agent Skill without overwriting user changes.
     Skills {
         #[command(subcommand)]

@@ -22,4 +22,4 @@ Scheduled execution starts a separate local runner. It does not reuse the intera
 
 The runner receives bounded requests through standard input and returns validated JSON. Workspace discovery reads supplied fragments without tools. Public discovery and research receive public identities without workspace text. The CLI renders recorded data as Markdown without another agent call. Missing credentials, invalid output, unavailable providers, and permission failures produce a partial report. See [Local runners](runners.md).
 
-Scheduled research can access public web evidence. It cannot inherit local shell access, project tools, plugins, hooks, or connected applications. See [Agent security](agent-security.md) for the permission boundary.
+Scheduled research can access public web evidence and, with Codex, read the selected public GitHub repository through the local GitHub CLI. A separate Codex role reviews configured codebases without web access. Neither role inherits a shell, plugins, hooks, or connected applications. See [Agent security](agent-security.md) for the permission boundary.

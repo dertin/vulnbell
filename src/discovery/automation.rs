@@ -161,6 +161,8 @@ impl Session<'_> {
         crate::runners::execute(
             self.runner,
             Request {
+                github_upstream: None,
+                codebase_project: None,
                 directory: &self.work,
                 output: &output,
                 prompt,

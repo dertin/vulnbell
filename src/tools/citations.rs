@@ -14,7 +14,7 @@ pub struct CitationBatch {
     pub citations: Vec<Citation>,
 }
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Citation {
     /// Zero-based index in the scan's workspace_revisions array.

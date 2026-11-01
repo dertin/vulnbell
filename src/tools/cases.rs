@@ -501,7 +501,11 @@ fn case_verdict(store: &mut Store, entry: &BatchVerdict, base: &Path) -> Result<
 }
 
 /// Registers a reviewed local note on the case once; the same content is never added twice.
-fn register_note(store: &mut Store, case_id: &str, path: &Path) -> Result<EvidenceReference> {
+pub(crate) fn register_note(
+    store: &mut Store,
+    case_id: &str,
+    path: &Path,
+) -> Result<EvidenceReference> {
     store.ensure_workspace_current()?;
     let _lock = store.lock()?;
     let bytes = crate::read_limited(path, NOTE_LIMIT)

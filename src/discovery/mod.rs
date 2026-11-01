@@ -13,7 +13,9 @@ mod sources;
 mod workspace;
 pub use contracts::*;
 pub use sources::{RegistryFailure, RegistryRun};
-pub(crate) use workspace::{checked_path, open_file, private_name};
+pub(crate) use workspace::{
+    checked_path, has_untrusted_sources, open_file, private_name, requirements_file,
+};
 
 /// Discovery state is keyed by project and workspace roots only, so editing components,
 /// research topics or schedules keeps completed file reviews.

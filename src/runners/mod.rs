@@ -7,8 +7,11 @@ use std::{
     process::Command,
 };
 
+pub(crate) mod codebase;
 mod codex;
 mod opencode;
+
+pub use codebase::serve_codebase;
 
 const CONFIG_LIMIT: u64 = 64 * 1024;
 const INPUT_LIMIT: usize = 4 * 1024 * 1024;
@@ -76,6 +79,7 @@ pub struct AdapterInfo {
 pub(crate) enum AgentRole {
     PublicResearch,
     ToolFree,
+    CodebaseReview,
 }
 
 #[derive(Clone, Copy)]
@@ -85,6 +89,8 @@ pub(crate) struct Request<'a> {
     pub prompt: &'a str,
     pub schema: Option<&'a Path>,
     pub role: AgentRole,
+    pub github_upstream: Option<&'a str>,
+    pub codebase_project: Option<&'a Path>,
     pub seconds: u64,
     pub log: &'a Path,
 }
@@ -298,6 +304,8 @@ fn probe(id: &str, directory: &Path) -> Result<()> {
     execute(
         id,
         Request {
+            github_upstream: None,
+            codebase_project: None,
             directory,
             output: &output,
             prompt: &prompt,

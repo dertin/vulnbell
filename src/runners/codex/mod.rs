@@ -23,6 +23,19 @@ enum McpTransport {
     StreamableHttp,
 }
 
+#[derive(Default)]
+struct ToolBindings<'a> {
+    github: Option<(&'a Path, &'a str)>,
+    codebase: Option<CodebaseBinding<'a>>,
+}
+
+struct CodebaseBinding<'a> {
+    executable: &'a Path,
+    project: &'a Path,
+    data_root: &'a Path,
+    receipt: &'a Path,
+}
+
 impl CodexAdapter<'_> {
     fn capabilities(&self, directory: &Path) -> Result<Vec<McpServer>> {
         let mut version = base_command(self.executable, directory);
@@ -52,9 +65,11 @@ impl CodexAdapter<'_> {
         schema: Option<&Path>,
         role: AgentRole,
         mcp_servers: &[McpServer],
+        bindings: ToolBindings<'_>,
     ) -> Command {
         let mut command = base_command(self.executable, directory);
         let research = matches!(role, AgentRole::PublicResearch);
+        let source_review = matches!(role, AgentRole::CodebaseReview);
         command.args([
             "--no-daemon",
             "--strict-config",
@@ -82,7 +97,7 @@ impl CodexAdapter<'_> {
         ] {
             command.args(["--disable", feature]);
         }
-        if !research {
+        if !research && !source_review {
             command.args(["--disable", "code_mode_host"]);
         }
         for server in mcp_servers {
@@ -98,6 +113,92 @@ impl CodexAdapter<'_> {
                 "mcp_servers.{name}.{key}={}",
                 toml::Value::String(value.to_owned())
             ));
+        }
+        if let Some((executable, upstream)) = bindings.github.filter(|_| research) {
+            let server_name = (0..)
+                .map(|index| format!("vulnbell_github_{index}"))
+                .find(|name| mcp_servers.iter().all(|server| server.name != *name))
+                .expect("an unoccupied server name exists");
+            let executable = toml::Value::String(executable.to_string_lossy().into_owned());
+            let args = toml::Value::Array(vec![
+                toml::Value::String("runner-github".into()),
+                toml::Value::String("--upstream".into()),
+                toml::Value::String(upstream.into()),
+            ]);
+            command
+                .arg("-c")
+                .arg(format!("mcp_servers.{server_name}.enabled=true"));
+            command
+                .arg("-c")
+                .arg(format!("mcp_servers.{server_name}.command={executable}"));
+            command
+                .arg("-c")
+                .arg(format!("mcp_servers.{server_name}.args={args}"));
+            command
+                .arg("-c")
+                .arg(format!("mcp_servers.{server_name}.startup_timeout_sec=45"));
+            command.arg("-c").arg(format!(
+                "mcp_servers.{server_name}.enabled_tools=[\"github_read\"]"
+            ));
+            command.arg("-c").arg(format!(
+                "mcp_servers.{server_name}.tools.github_read.approval_mode=\"approve\""
+            ));
+            command.arg("-c").arg(format!(
+                "mcp_servers.{server_name}.tools.github_read.output_token_limit=30000"
+            ));
+            for key in ["GH_CONFIG_DIR", "XDG_CONFIG_HOME"] {
+                if let Some(value) = std::env::var_os(key) {
+                    command.arg("-c").arg(format!(
+                        "mcp_servers.{server_name}.env.{key}={}",
+                        toml::Value::String(value.to_string_lossy().into_owned())
+                    ));
+                }
+            }
+            command.arg("-c").arg("mcp_optional_startup_grace_ms=0");
+        }
+        if let Some(CodebaseBinding {
+            executable,
+            project,
+            data_root,
+            receipt,
+        }) = bindings.codebase.filter(|_| source_review)
+        {
+            let server_name = (0..)
+                .map(|index| format!("vulnbell_codebase_{index}"))
+                .find(|name| mcp_servers.iter().all(|server| server.name != *name))
+                .expect("an unoccupied server name exists");
+            let executable = toml::Value::String(executable.to_string_lossy().into_owned());
+            let args = toml::Value::Array(vec![
+                toml::Value::String("runner-codebase".into()),
+                toml::Value::String("--project".into()),
+                toml::Value::String(project.to_string_lossy().into_owned()),
+                toml::Value::String("--receipt".into()),
+                toml::Value::String(receipt.to_string_lossy().into_owned()),
+            ]);
+            for setting in [
+                format!("mcp_servers.{server_name}.enabled=true"),
+                format!("mcp_servers.{server_name}.command={executable}"),
+                format!("mcp_servers.{server_name}.args={args}"),
+                format!("mcp_servers.{server_name}.startup_timeout_sec=45"),
+                format!(
+                    "mcp_servers.{server_name}.enabled_tools=[\"codebase_list\",\"codebase_read\",\"codebase_search\"]"
+                ),
+                format!(
+                    "mcp_servers.{server_name}.env.VULNBELL_DATA_DIR={}",
+                    toml::Value::String(data_root.to_string_lossy().into_owned())
+                ),
+            ] {
+                command.arg("-c").arg(setting);
+            }
+            for tool in ["codebase_list", "codebase_read", "codebase_search"] {
+                command.arg("-c").arg(format!(
+                    "mcp_servers.{server_name}.tools.{tool}.approval_mode=\"approve\""
+                ));
+                command.arg("-c").arg(format!(
+                    "mcp_servers.{server_name}.tools.{tool}.output_token_limit=30000"
+                ));
+            }
+            command.arg("-c").arg("mcp_optional_startup_grace_ms=0");
         }
         command
             .args([
@@ -142,13 +243,51 @@ impl AgentAdapter for CodexAdapter<'_> {
     }
 
     fn execute(&self, request: Request<'_>) -> Result<()> {
+        if matches!(request.role, AgentRole::CodebaseReview) != request.codebase_project.is_some() {
+            bail!("codebase review requires its project scope, and other roles cannot receive it");
+        }
         let mcp_servers = self.capabilities(request.directory)?;
+        let tool_executable = std::env::current_exe()?;
+        let data_root = if request.codebase_project.is_some() {
+            Some(crate::store::data_root().canonicalize()?)
+        } else {
+            None
+        };
+        let receipt = if request.codebase_project.is_some() {
+            let parent = request
+                .log
+                .parent()
+                .context("source review log needs a parent")?
+                .canonicalize()?;
+            Some(parent.join(format!("source-access-{}.json", uuid::Uuid::new_v4())))
+        } else {
+            None
+        };
+        let github = request.github_upstream.filter(|upstream| {
+            matches!(
+                crate::tools::raw::provider_for(upstream),
+                crate::tools::raw::Provider::GitHub { mirror: false, .. }
+            )
+        });
         let mut command = self.command(
             request.directory,
             request.output,
             request.schema,
             request.role,
             &mcp_servers,
+            ToolBindings {
+                github: github.map(|upstream| (tool_executable.as_path(), upstream)),
+                codebase: request
+                    .codebase_project
+                    .zip(data_root.as_deref())
+                    .zip(receipt.as_deref())
+                    .map(|((project, data_root), receipt)| CodebaseBinding {
+                        executable: tool_executable.as_path(),
+                        project,
+                        data_root,
+                        receipt,
+                    }),
+            },
         );
         let process = crate::process::run_agent_with_input(
             &mut command,
@@ -162,6 +301,29 @@ impl AgentAdapter for CodexAdapter<'_> {
             bail!(
                 "Codex adapter failed or exceeded its execution window; inspect private job logs"
             );
+        }
+        if let Some(receipt) = receipt {
+            let value: serde_json::Value = serde_json::from_slice(
+                &crate::read_limited(&receipt, 4096)
+                    .context("source review did not access its codebase")?,
+            )?;
+            let project = request
+                .codebase_project
+                .context("source review project is unavailable")?;
+            let expected_project = crate::profile::load(project)?.project_id.to_string();
+            if value
+                .get("schema_version")
+                .and_then(serde_json::Value::as_u64)
+                != Some(1)
+                || value
+                    .get("source_read")
+                    .and_then(serde_json::Value::as_bool)
+                    != Some(true)
+                || value.get("project_id").and_then(serde_json::Value::as_str)
+                    != Some(expected_project.as_str())
+            {
+                bail!("source access receipt is invalid");
+            }
         }
         let bytes = crate::read_limited(request.output, 2 * 1024 * 1024)
             .context("Codex adapter exited without a readable output artifact")?;

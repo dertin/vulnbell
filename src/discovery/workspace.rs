@@ -1,6 +1,7 @@
 mod requirements;
 
 use self::requirements::blocked_requirement_roots;
+pub(crate) use self::requirements::has_untrusted_sources;
 pub(super) use self::requirements::sync_include_guard;
 use super::contracts::{FileReview, FileSlice};
 use crate::{
@@ -95,7 +96,7 @@ fn file_classification(parent: &str, name: &str) -> Option<(&'static str, &'stat
     }
 }
 
-fn requirements_file(name: &str) -> bool {
+pub(crate) fn requirements_file(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     (name.starts_with("requirements") || name.starts_with("constraints"))
         && (name.ends_with(".txt") || name.ends_with(".in"))

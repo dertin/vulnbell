@@ -68,6 +68,8 @@ For the `gh`-based GitHub tracker workflow, sign in with `gh auth login`. Adviso
 
 The local agent reviews public upstream evidence and available project codebases. A codebase is a local source tree selected for monitoring; the VulnBell workspace is where monitor artifacts are kept. Profile and JSON fields use `workspaces` for codebase paths. The CLI keeps the inventory, evidence, impact answers, sandbox attestations, and reports as auditable local data.
 
+An interactive agent may need permission to read a codebase outside its current workspace. Scheduled Codex reviews use the codebase paths configured in the monitor; if access is unavailable, the report keeps the impact open. A monitor can also track software without a local codebase.
+
 > **State compatibility:** VulnBell releases support the current state contracts only. Workspaces, profiles, databases, snapshots, evidence, and other state created by an earlier release may be incompatible. Incompatible state is rejected with a clear error and left untouched; VulnBell does not silently delete, overwrite, migrate, or convert it. If a project database is incompatible, create a new monitor with a new project ID. VulnBell does not maintain legacy readers, schema fallbacks, or other code solely to support state from earlier releases.
 
 ## Ask your agent to set up monitoring
@@ -128,7 +130,7 @@ With a workspace, the agent first reviews source, lockfiles, configuration, and 
 
 ## Security tests
 
-Active tests use Microsandbox 0.7.11 with limited inputs, a non-root user, and blocked network access. Tests need explicit approval and never run proof-of-concept code on the host. Scheduled researchers cannot run tests or enable local tools.
+Active tests use Microsandbox 0.7.11 with limited inputs, a non-root user, and blocked network access. Tests need explicit approval and never run proof-of-concept code on the host. Scheduled reviews use scoped, read-only source tools and cannot run tests.
 
 [Sandbox](docs/sandbox.md) · [Agent security](docs/agent-security.md) · [Coverage](docs/coverage.md)
 

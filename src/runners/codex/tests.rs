@@ -24,6 +24,7 @@ fn readers_have_no_host_execution_or_ambient_mcp_and_reporters_have_no_web() {
             name: "personal-write-tool".into(),
             transport: McpTransport::Stdio,
         }],
+        ToolBindings::default(),
     );
     let args: Vec<String> = command
         .get_args()
@@ -63,6 +64,7 @@ fn public_research_enables_code_mode_host_but_not_shell_tools() {
         None,
         AgentRole::PublicResearch,
         &[],
+        ToolBindings::default(),
     );
     let args: Vec<_> = command
         .get_args()
@@ -73,6 +75,87 @@ fn public_research_enables_code_mode_host_but_not_shell_tools() {
         assert!(args.iter().any(|arg| arg == feature));
     }
     assert!(args.iter().any(|arg| arg == "web_search=\"live\""));
+}
+
+#[test]
+fn github_tool_is_read_only_scoped_to_public_research_and_avoids_server_collisions() {
+    let directory = tempfile::tempdir().unwrap();
+    let adapter = adapter(Path::new("/usr/bin/codex"));
+    let upstream = "https://github.com/serde-rs/serde";
+    let servers = [McpServer {
+        name: "vulnbell_github_0".into(),
+        transport: McpTransport::StreamableHttp,
+    }];
+    let arguments = |role| {
+        adapter
+            .command(
+                directory.path(),
+                &directory.path().join("out"),
+                None,
+                role,
+                &servers,
+                ToolBindings {
+                    github: Some((Path::new("/usr/bin/vulnbell"), upstream)),
+                    codebase: None,
+                },
+            )
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+    };
+    let public = arguments(AgentRole::PublicResearch);
+    assert!(
+        public
+            .iter()
+            .any(|arg| arg == "mcp_servers.vulnbell_github_1.enabled_tools=[\"github_read\"]")
+    );
+    assert!(
+        public.iter().any(|arg| arg
+            == "mcp_servers.vulnbell_github_1.tools.github_read.approval_mode=\"approve\"")
+    );
+    assert!(public.iter().any(|arg| arg.contains(upstream)));
+    let local = arguments(AgentRole::ToolFree);
+    assert!(!local.iter().any(|arg| arg.contains("vulnbell_github_1")));
+    assert!(!local.iter().any(|arg| arg.contains(upstream)));
+}
+
+#[test]
+fn codebase_role_exposes_scoped_read_tools_without_web_or_shell() {
+    let directory = tempfile::tempdir().unwrap();
+    let adapter = adapter(Path::new("/usr/bin/codex"));
+    let project = directory.path().join("vulnbell.yaml");
+    let receipt = directory.path().join("receipt.json");
+    let command = adapter.command(
+        directory.path(),
+        &directory.path().join("out"),
+        None,
+        AgentRole::CodebaseReview,
+        &[],
+        ToolBindings {
+            github: Some((
+                Path::new("/usr/bin/vulnbell"),
+                "https://github.com/owner/repo",
+            )),
+            codebase: Some(CodebaseBinding {
+                executable: Path::new("/usr/bin/vulnbell"),
+                project: &project,
+                data_root: directory.path(),
+                receipt: &receipt,
+            }),
+        },
+    );
+    let args: Vec<_> = command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    assert!(args.iter().any(|arg| arg == "web_search=\"disabled\""));
+    assert!(args.iter().any(|arg| arg == "shell_tool"));
+    assert!(!args.iter().any(|arg| arg == "code_mode_host"));
+    assert!(!args.iter().any(|arg| arg.contains("vulnbell_github_")));
+    assert!(args.iter().any(|arg| {
+        arg.contains("enabled_tools=[\"codebase_list\",\"codebase_read\",\"codebase_search\"]")
+    }));
+    assert!(args.iter().any(|arg| arg.contains("--receipt")));
 }
 
 #[test]
@@ -88,6 +171,7 @@ fn structured_local_discovery_has_no_web_despite_its_json_schema() {
         Some(&schema),
         AgentRole::ToolFree,
         &[],
+        ToolBindings::default(),
     );
     assert!(
         command
@@ -121,6 +205,8 @@ fn actual_reader_preserves_the_security_claim_without_host_effects() {
     );
     let log = work.join("agent.jsonl");
     let result = adapter.execute(Request {
+        github_upstream: None,
+        codebase_project: None,
         directory: &work,
         output: &output,
         prompt: &prompt,
@@ -185,6 +271,8 @@ fn actual_local_reader_has_no_web_or_host_tools() {
     );
     let log = work.join("agent.jsonl");
     let result = adapter.execute(Request {
+        github_upstream: None,
+        codebase_project: None,
         directory: &work,
         output: &output,
         prompt: &prompt,
@@ -228,6 +316,8 @@ fn actual_public_reader_has_no_shell_or_personal_mcp_tools() {
     let log = work.path().join("agent.jsonl");
     adapter
         .execute(Request {
+            github_upstream: None,
+            codebase_project: None,
             directory: work.path(),
             output: &output,
             prompt,
@@ -297,6 +387,8 @@ fn actual_public_reader_cannot_write_with_code_mode() {
     let log = work.join("agent.jsonl");
     adapter
         .execute(Request {
+            github_upstream: None,
+            codebase_project: None,
             directory: &work,
             output: &output,
             prompt: &prompt,
@@ -349,6 +441,8 @@ fn actual_public_reader_fetches_current_release() {
     let schema = work.path().join("schema.json");
     fs::write(&schema, r#"{"type":"object","properties":{"version":{"type":"string"}},"required":["version"],"additionalProperties":false}"#).unwrap();
     adapter(&executable).execute(Request {
+        github_upstream: None,
+        codebase_project: None,
         directory: work.path(), output: &output,
         prompt: "Use the public web tool to open https://rust-lang.org/ and return the exact version shown under Get Started. If you cannot access it, return an empty string. Do not guess.",
         schema: Some(&schema), role: AgentRole::PublicResearch, seconds: 90,
@@ -388,6 +482,8 @@ fn actual_public_reader_searches_for_official_release_information() {
     );
     adapter(&executable)
         .execute(Request {
+            github_upstream: None,
+            codebase_project: None,
             directory: work.path(),
             output: &output,
             prompt: &prompt,

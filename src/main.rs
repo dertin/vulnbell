@@ -1,4 +1,5 @@
 mod cli;
+mod runner_github;
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
@@ -119,6 +120,12 @@ fn report(
 fn run() -> Result<i32> {
     let cli = Cli::parse();
     match cli.command {
+        Commands::RunnerGithub { upstream } => {
+            runner_github::serve(&upstream)?;
+        }
+        Commands::RunnerCodebase { project, receipt } => {
+            vulnbell::runners::serve_codebase(&project, receipt.as_deref())?;
+        }
         Commands::Skills {
             command: Skills::Install { host, directory },
         } => {

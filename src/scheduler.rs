@@ -212,6 +212,17 @@ pub fn run(profile: &Profile, profile_path: &Path, force: bool) -> Result<serde_
     if store.meta("last_snapshot")?.is_some() {
         snapshot = store.latest()?;
     }
+    let remaining_seconds = (deadline - Utc::now()).num_seconds().max(0);
+    let impact_deadline = Utc::now() + Duration::seconds(remaining_seconds / 2);
+    let mut impact_error = crate::impact::automation::run(
+        &mut store,
+        &config.runner,
+        profile_path,
+        &directory.join("impact"),
+        impact_deadline,
+    )
+    .err()
+    .map(|error| error.to_string());
     let agent_directory = directory.join("agent-work");
     let mut research_error = crate::research::automation::run(
         &mut store,
@@ -222,6 +233,17 @@ pub fn run(profile: &Profile, profile_path: &Path, force: bool) -> Result<serde_
     )
     .err()
     .map(|error| error.to_string());
+    if Utc::now() < deadline {
+        impact_error = crate::impact::automation::run(
+            &mut store,
+            &config.runner,
+            profile_path,
+            &directory.join("impact"),
+            deadline,
+        )
+        .err()
+        .map(|error| error.to_string());
+    }
     let mut report_snapshot = snapshot;
     research_error = match (discovery_error, research_error) {
         (Some(discovery), Some(research)) => Some(format!("{discovery}; {research}")),
@@ -243,6 +265,9 @@ pub fn run(profile: &Profile, profile_path: &Path, force: bool) -> Result<serde_
     if let Some(error) = &research_error {
         text = fill(words.agent_partial, &[&text, error]);
     }
+    if let Some(error) = &impact_error {
+        text = fill(words.agent_partial, &[&text, error]);
+    }
     let text = fill(
         words.audit_links,
         &[
@@ -256,7 +281,10 @@ pub fn run(profile: &Profile, profile_path: &Path, force: bool) -> Result<serde_
         .report_dir
         .join(format!("{}-{}.md", run_id, profile.project_id));
     crate::atomic_write(&report_path, text.as_bytes())?;
-    let complete = research_error.is_none() && !report_snapshot.partial && pending.deliverable;
+    let complete = research_error.is_none()
+        && impact_error.is_none()
+        && !report_snapshot.partial
+        && pending.deliverable;
     let outcome = if complete {
         "report_written"
     } else {
@@ -275,10 +303,15 @@ pub fn run(profile: &Profile, profile_path: &Path, force: bool) -> Result<serde_
             .execute("DELETE FROM meta WHERE key='last_agent_failure'", [])?;
         store.set_meta("last_agent_success", &crate::now())?;
     }
-    if let Some(error) = &research_error {
-        store.set_meta("last_agent_failure", error)?;
+    let failure = match (&research_error, &impact_error) {
+        (Some(research), Some(impact)) => Some(format!("{research}; {impact}")),
+        (Some(error), None) | (None, Some(error)) => Some(error.clone()),
+        (None, None) => None,
+    };
+    if let Some(error) = failure {
+        store.set_meta("last_agent_failure", &error)?;
     }
     Ok(
-        serde_json::json!({"schema_version":1,"state":outcome,"report":report_path,"slot":slot_key,"research_error":research_error,"unattended_sandbox":false,"review_budget_minutes":profile.research.review_budget_minutes,"review_deadline":budget_deadline,"review_budget_exhausted":budget_deadline.is_some_and(|end| Utc::now() >= end)}),
+        serde_json::json!({"schema_version":1,"state":outcome,"report":report_path,"slot":slot_key,"research_error":research_error,"impact_error":impact_error,"unattended_sandbox":false,"review_budget_minutes":profile.research.review_budget_minutes,"review_deadline":budget_deadline,"review_budget_exhausted":budget_deadline.is_some_and(|end| Utc::now() >= end)}),
     )
 }

@@ -245,6 +245,9 @@ impl AgentAdapter for OpenCodeAdapter<'_> {
     }
 
     fn execute(&self, request: Request<'_>) -> Result<()> {
+        if matches!(request.role, AgentRole::CodebaseReview) {
+            bail!("scheduled codebase review is not supported by the OpenCode adapter");
+        }
         let research = matches!(request.role, AgentRole::PublicResearch);
         let session = Session::new(self, request.directory, research)?;
         session.preflight(self, research)?;

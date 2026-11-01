@@ -31,6 +31,63 @@ fn local_archive(line: &str) -> bool {
     })
 }
 
+pub(crate) fn has_untrusted_sources(text: &str) -> bool {
+    let mut logical = String::with_capacity(text.len());
+    for line in text.lines() {
+        if line
+            .trim_start_matches('\u{feff}')
+            .trim_start()
+            .starts_with('#')
+        {
+            logical.push('\n');
+        } else if let Some(line) = line.strip_suffix('\\') {
+            logical.push_str(line);
+        } else {
+            logical.push_str(line);
+            logical.push('\n');
+        }
+    }
+    logical.lines().any(|line| {
+        let line = line.trim_start_matches('\u{feff}').trim_start();
+        let comment = line.char_indices().find_map(|(index, character)| {
+            (character == '#' && (index == 0 || line.as_bytes()[index - 1].is_ascii_whitespace()))
+                .then_some(index)
+        });
+        let line = line[..comment.unwrap_or(line.len())].trim_end();
+        if line.starts_with('#') || line.is_empty() {
+            return false;
+        }
+        [
+            "-r",
+            "-c",
+            "-e",
+            "-i",
+            "-f",
+            "--requirement",
+            "--constraint",
+            "--editable",
+            "--index-url",
+            "--extra-index-url",
+            "--no-index",
+            "--find-links",
+            ".",
+            "/",
+            "~",
+            "file:",
+            "\\\\",
+        ]
+        .iter()
+        .any(|option| line.starts_with(option))
+            || line.contains('@')
+            || line.contains("://")
+            || line.contains("${")
+            || line.contains('/')
+            || line.contains('\\')
+            || line.as_bytes().get(1) == Some(&b':')
+            || local_archive(line)
+    })
+}
+
 /// Close the agent boundary until all codebase directories have been classified.
 pub(in crate::discovery) fn sync_include_guard(store: &Store, scope: &str) -> Result<bool> {
     let unfinished: bool = store.connection.query_row(
@@ -109,61 +166,7 @@ pub(super) fn blocked_requirement_roots(store: &Store, scope: &str) -> Result<BT
                 bail!("requirements changed during preflight");
             }
             let text = std::str::from_utf8(&contents)?;
-            let mut logical = String::with_capacity(text.len());
-            for line in text.lines() {
-                if line
-                    .trim_start_matches('\u{feff}')
-                    .trim_start()
-                    .starts_with('#')
-                {
-                    logical.push('\n');
-                } else if let Some(line) = line.strip_suffix('\\') {
-                    logical.push_str(line);
-                } else {
-                    logical.push_str(line);
-                    logical.push('\n');
-                }
-            }
-            let includes = logical.lines().any(|line| {
-                let line = line.trim_start_matches('\u{feff}').trim_start();
-                let comment = line.char_indices().find_map(|(index, character)| {
-                    (character == '#'
-                        && (index == 0 || line.as_bytes()[index - 1].is_ascii_whitespace()))
-                    .then_some(index)
-                });
-                let line = line[..comment.unwrap_or(line.len())].trim_end();
-                if line.starts_with('#') || line.is_empty() {
-                    return false;
-                }
-                [
-                    "-r",
-                    "-c",
-                    "-e",
-                    "-i",
-                    "-f",
-                    "--requirement",
-                    "--constraint",
-                    "--editable",
-                    "--index-url",
-                    "--extra-index-url",
-                    "--no-index",
-                    "--find-links",
-                    ".",
-                    "/",
-                    "~",
-                    "file:",
-                    "\\\\",
-                ]
-                .iter()
-                .any(|option| line.starts_with(option))
-                    || line.contains('@')
-                    || line.contains("://")
-                    || line.contains("${")
-                    || line.contains('/')
-                    || line.contains('\\')
-                    || line.as_bytes().get(1) == Some(&b':')
-                    || local_archive(line)
-            });
+            let includes = has_untrusted_sources(text);
             Ok((includes, contents.len() as u64))
         };
         match check() {
