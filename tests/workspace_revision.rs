@@ -69,6 +69,33 @@ fn generated_directories_are_excluded_from_git_worktree_fingerprints() {
 }
 
 #[test]
+fn same_size_change_with_index_timestamp_is_detected() {
+    let dir = tempfile::tempdir().unwrap();
+    git(dir.path(), &["init", "-b", "main"]);
+    let path = dir.path().join("project.txt");
+    fs::write(&path, "initial").unwrap();
+    let modified = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+    let set_modified = |path: &Path| {
+        fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+    };
+    set_modified(&path);
+    git(dir.path(), &["add", "project.txt"]);
+    git(dir.path(), &["commit", "-m", "fixture"]);
+    set_modified(&dir.path().join(".git/index"));
+    fs::write(&path, "changed").unwrap();
+    set_modified(&path);
+
+    let revision = workspace_revision::capture_path(dir.path());
+    assert_eq!(revision.dirty, Some(true));
+    assert!(revision.worktree_status_sha256.is_some());
+}
+
+#[test]
 fn generated_directories_are_excluded_for_a_nested_git_codebase() {
     let dir = tempfile::tempdir().unwrap();
     git(dir.path(), &["init", "-b", "main"]);

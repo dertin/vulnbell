@@ -186,11 +186,24 @@ fn git_worktree_config(workspace: &Path) -> Result<Vec<(&'static str, String)>> 
     Ok(values.into_iter().collect())
 }
 
+fn copy_shadow_index(source: &Path, destination: &Path) -> Result<()> {
+    let before = fs::metadata(source)?;
+    let bytes = crate::read_limited(source, 64 * 1024 * 1024)?;
+    let after = fs::metadata(source)?;
+    if before.len() != after.len() || before.modified()? != after.modified()? {
+        bail!("Git index changed during workspace capture");
+    }
+    fs::write(destination, bytes)?;
+    let file = fs::OpenOptions::new().write(true).open(destination)?;
+    file.set_times(fs::FileTimes::new().set_modified(before.modified()?))?;
+    Ok(())
+}
+
 fn git_status(workspace: &Path, repository: &Path, commit: &str) -> Result<Vec<u8>> {
     if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         bail!("invalid Git commit");
     }
-    let index = crate::read_limited(&git_path(workspace, "index")?, 64 * 1024 * 1024)?;
+    let index = git_path(workspace, "index")?;
     let objects = git_path(workspace, "objects")?;
     let shadow = tempfile::tempdir()?;
     fs::create_dir(shadow.path().join("refs"))?;
@@ -209,7 +222,7 @@ fn git_status(workspace: &Path, repository: &Path, commit: &str) -> Result<Vec<u
             usize::from(commit.len() == 64)
         ),
     )?;
-    fs::write(shadow.path().join("index"), index)?;
+    copy_shadow_index(&index, &shadow.path().join("index"))?;
     let exclude = git_path(workspace, "info/exclude")?;
     if exclude.exists() {
         fs::write(
@@ -559,6 +572,27 @@ pub fn ensure_current(revisions: &[WorkspaceRevision]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shadow_index_preserves_original_modification_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("index");
+        let destination = dir.path().join("shadow-index");
+        fs::write(&source, b"index data").unwrap();
+        let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&source)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(time))
+            .unwrap();
+        copy_shadow_index(&source, &destination).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"index data");
+        assert_eq!(
+            fs::metadata(&source).unwrap().modified().unwrap(),
+            fs::metadata(&destination).unwrap().modified().unwrap()
+        );
+    }
 
     #[test]
     fn status_reads_a_fresh_repository() {
