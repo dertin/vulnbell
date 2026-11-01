@@ -85,7 +85,7 @@ pub(super) fn parse(
         if line.is_empty() {
             continue;
         }
-        if line.len() > 16 * 1024
+        if line.len() > 1024 * 1024
             || !nesting_within_limit(line)
             || line.starts_with('-')
             || line.contains("${")
@@ -305,5 +305,20 @@ mod tests {
         .unwrap();
         assert_eq!(items[0].reference, "python-requirement:requests");
         assert_eq!(items[0].provenance.line, Some(1));
+    }
+
+    #[test]
+    fn many_hashes_do_not_hide_a_valid_locked_requirement() {
+        let mut content = String::from("example==1.2.3 \\\n");
+        for index in 0..300 {
+            content.push_str(&format!("    --hash=sha256:{index:064x}"));
+            content.push_str(if index == 299 { "\n" } else { " \\\n" });
+        }
+        assert!(content.len() > 16 * 1024);
+        let (items, detail) =
+            parse(content.as_bytes(), "codebase", "requirements.lock", 10).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].resolved_version.as_deref(), Some("1.2.3"));
+        assert!(detail.contains("0 unsupported"));
     }
 }

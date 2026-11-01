@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.4 - Unreleased
+
+- Inventory Python requirements lockfiles and structured Python lock formats locally, retaining unverified source and environment coverage.
+- Keep recognized Python dependency inputs and unrecognized lockfiles out of agent discovery and source tools.
+
 ## 0.1.3 - 2026-11-01
 
 - Let scheduled reviews read scoped codebase evidence and public GitHub records through bounded read-only tools.

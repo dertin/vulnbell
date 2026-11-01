@@ -41,7 +41,7 @@ fn roots(profile: &Profile, path: &Path) -> Result<Vec<String>> {
 pub fn scope(profile: &Profile, path: &Path) -> Result<String> {
     let roots = roots(profile, path)?;
     Ok(crate::digest(&serde_json::to_vec(&(
-        "discovery-scope-v4",
+        "discovery-scope-v5",
         profile.project_id,
         roots,
     ))?))

@@ -134,7 +134,7 @@ pub(super) fn blocked_requirement_roots(store: &Store, scope: &str) -> Result<BT
         .query_map([scope], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     let mut query = store.connection.prepare(
-        "SELECT root,path,state FROM discovery_files WHERE scope=?1 AND state<>'removed' AND (lower(path) LIKE '%requirements%.txt' OR lower(path) LIKE '%requirements%.in' OR lower(path) LIKE '%constraints%.txt' OR lower(path) LIKE '%constraints%.in') ORDER BY root,path",
+        "SELECT root,path,state FROM discovery_files WHERE scope=?1 AND state<>'removed' AND (lower(path) LIKE '%requirements%.txt' OR lower(path) LIKE '%requirements%.in' OR lower(path) LIKE '%requirements%.lock' OR lower(path) LIKE '%constraints%.txt' OR lower(path) LIKE '%constraints%.in' OR lower(path) LIKE '%constraints%.lock') ORDER BY root,path",
     )?;
     let files: Vec<(String, String, String)> = query
         .query_map([scope], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?

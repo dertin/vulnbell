@@ -243,6 +243,74 @@ fn requirements_never_export_private_names_or_local_paths_to_discovery() {
 }
 
 #[test]
+fn python_and_unknown_lockfiles_are_not_exposed_to_discovery() {
+    let (directory, path, profile, store) = project();
+    let workspace = directory.path().join("workspace");
+    for name in [
+        "requirements.lock",
+        "requirements-dev.lock",
+        "constraints.lock",
+        "uv.lock",
+        "poetry.lock",
+        "Pipfile.lock",
+        "pylock.app.toml",
+        "custom.lock",
+    ] {
+        fs::write(workspace.join(name), "synthetic-private==1.0\n").unwrap();
+    }
+    let page = discovery::plan(&profile, &path, &store, 20).unwrap();
+    assert!(page.codebase_files.is_empty());
+    let json = serde_json::to_string(&page).unwrap();
+    assert!(!json.contains("synthetic-private"));
+    assert!(
+        discovery::gaps(&profile, &path, &store, "", 100)
+            .unwrap()
+            .items
+            .iter()
+            .any(|gap| gap.path == "custom.lock" && gap.state == "unavailable")
+    );
+    cleanup(store, &profile);
+}
+
+#[test]
+fn requirements_lock_include_keeps_referenced_inputs_local() {
+    let (directory, path, profile, store) = project();
+    let workspace = directory.path().join("workspace");
+    fs::write(workspace.join("requirements.lock"), "-r internal.json\n").unwrap();
+    fs::write(workspace.join("internal.json"), "synthetic-private-canary").unwrap();
+    let page = discovery::plan(&profile, &path, &store, 20).unwrap();
+    assert!(page.codebase_files.is_empty());
+    assert!(
+        !serde_json::to_string(&page)
+            .unwrap()
+            .contains("synthetic-private-canary")
+    );
+    cleanup(store, &profile);
+}
+
+#[test]
+fn private_lockfiles_are_not_exported_even_if_a_discovery_row_is_pending() {
+    let (directory, path, profile, store) = project();
+    let workspace = directory.path().join("workspace");
+    for name in ["requirements.lock", "pylock.app.toml", "unknown.lock"] {
+        fs::write(workspace.join(name), "synthetic-private-canary==1.0\n").unwrap();
+    }
+    discovery::plan(&profile, &path, &store, 20).unwrap();
+    store
+        .connection
+        .execute("UPDATE discovery_files SET state='pending'", [])
+        .unwrap();
+    let page = discovery::plan(&profile, &path, &store, 20).unwrap();
+    assert!(page.codebase_files.is_empty());
+    assert!(
+        !serde_json::to_string(&page)
+            .unwrap()
+            .contains("synthetic-private-canary")
+    );
+    cleanup(store, &profile);
+}
+
+#[test]
 fn requirements_includes_keep_arbitrary_paths_local_before_any_agent_page() {
     let (directory, path, profile, store) = project();
     let workspace = directory.path().join("workspace");

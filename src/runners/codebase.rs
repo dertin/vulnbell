@@ -21,6 +21,8 @@ static CREDENTIAL_URL: LazyLock<regex::Regex> = LazyLock::new(|| {
 
 fn private_manifest(name: &str) -> bool {
     discovery::requirements_file(name)
+        || inventory::python_lock_file(name)
+        || name.to_ascii_lowercase().ends_with(".lock")
         || name.eq_ignore_ascii_case("composer.json")
         || inventory::native_inventory_file(name)
 }
@@ -420,6 +422,14 @@ mod tests {
             "# synthetic lockfile\n",
         )
         .unwrap();
+        for name in [
+            "requirements.lock",
+            "uv.lock",
+            "pylock.app.toml",
+            "unknown.lock",
+        ] {
+            fs::write(directory.path().join(name), "synthetic private content").unwrap();
+        }
         fs::create_dir(directory.path().join("node_modules")).unwrap();
         fs::write(
             directory.path().join("node_modules/package.js"),
@@ -438,6 +448,10 @@ mod tests {
             "requirements-dev.txt",
             "composer.json",
             "Cargo.lock",
+            "requirements.lock",
+            "uv.lock",
+            "pylock.app.toml",
+            "unknown.lock",
             "ignored.rs",
             "node_modules/package.js",
             "target/generated.rs",
@@ -446,6 +460,14 @@ mod tests {
             assert!(!files.iter().any(|path| path == forbidden), "{forbidden}");
         }
         let root = directory.path().canonicalize().unwrap();
+        for name in [
+            "requirements.lock",
+            "uv.lock",
+            "pylock.app.toml",
+            "unknown.lock",
+        ] {
+            assert!(file_text(root.to_str().unwrap(), name).is_err(), "{name}");
+        }
         assert_eq!(
             paths(&root, Some("source.rs")).unwrap().0,
             vec!["source.rs"]

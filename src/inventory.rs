@@ -6,7 +6,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod python_lock;
 mod requirements;
+
+pub(crate) use python_lock::recognizes as python_lock_file;
 
 mod errors;
 use errors::safe_inventory_error;
@@ -770,7 +773,10 @@ pub fn discover(
                 continue;
             }
             let name = entry.file_name().to_string_lossy();
-            if name == "requirements.txt" {
+            let lower_name = name.to_ascii_lowercase();
+            let requirements = lower_name.starts_with("requirements")
+                && crate::discovery::requirements_file(&lower_name);
+            if requirements || python_lock::recognizes(&name) {
                 supported_files += 1;
                 if !visited.insert(entry.path().to_owned()) {
                     continue;
@@ -781,12 +787,12 @@ pub fn discover(
                     Ok(bytes) if total_bytes.saturating_add(bytes.len()) <= 128 * 1024 * 1024 => {
                         total_bytes += bytes.len();
                         let remaining = instance_budget.saturating_sub(inventory.instances.len());
-                        match requirements::parse(
-                            &bytes,
-                            &root.to_string_lossy(),
-                            &relative,
-                            remaining,
-                        ) {
+                        let parser = if requirements {
+                            requirements::parse
+                        } else {
+                            python_lock::parse
+                        };
+                        match parser(&bytes, &root.to_string_lossy(), &relative, remaining) {
                             Ok((instances, detail)) => {
                                 inventory.instances.extend(instances);
                                 inventory.coverage.push(Coverage::new(
@@ -820,9 +826,7 @@ pub fn discover(
                 continue;
             }
             if !native_inventory_file(&name) {
-                if ["go.mod", "go.sum", "poetry.lock", "uv.lock", "Pipfile.lock"]
-                    .contains(&name.as_ref())
-                {
+                if ["go.mod", "go.sum"].contains(&name.as_ref()) || lower_name.ends_with(".lock") {
                     inventory.coverage.push(Coverage::new(
                         "inventory",
                         &crate::slash_path(
