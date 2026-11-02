@@ -84,7 +84,10 @@ pub struct ArtifactEvidence {
     pub sha256: String,
     /// Exact installed wheel files and paths checked within the monitored codebase.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub installed_wheel: Option<InstalledWheelEvidence>,
+    pub installed_wheel: Option<InstalledScopeEvidence>,
+    /// Installed Cargo or npm package checked against its lockfile archive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_archive: Option<InstalledArchiveEvidence>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
@@ -98,8 +101,8 @@ pub enum ArtifactLocation {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
 #[serde(deny_unknown_fields)]
-pub struct InstalledWheelEvidence {
-    /// Codebase-relative installed package directory.
+pub struct InstalledScopeEvidence {
+    /// Codebase-relative installed package or source directory.
     pub root: String,
     /// Paths or bounded filename patterns relative to the installed directory checked for absence.
     pub absent_paths: Vec<String>,
@@ -109,6 +112,20 @@ pub struct InstalledWheelEvidence {
     pub scope_complete: bool,
     /// Current source line supporting the scope described in the case evidence.
     pub scope_source: ArtifactScopeSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
+#[serde(deny_unknown_fields)]
+pub struct InstalledArchiveEvidence {
+    pub ecosystem: ArchiveEcosystem,
+    pub scope: InstalledScopeEvidence,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchiveEcosystem {
+    Cargo,
+    Npm,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
@@ -235,4 +252,12 @@ pub struct FollowSuggestion {
     pub advisory_id: String,
     pub applicability: Applicability,
     pub evidence: crate::model::Evidence,
+}
+
+#[derive(Deserialize)]
+pub(super) struct RecordedEvent {
+    pub assessment: Assessment,
+    #[serde(default)]
+    pub not_applicable_reason: Option<NotApplicableReason>,
+    pub rationale: String,
 }

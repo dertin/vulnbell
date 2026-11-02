@@ -10,6 +10,13 @@
       ],
       "type": "string"
     },
+    "ArchiveEcosystem": {
+      "enum": [
+        "cargo",
+        "npm"
+      ],
+      "type": "string"
+    },
     "ArtifactEvidence": {
       "additionalProperties": false,
       "description": "A checksummed artifact and optional evidence of its installed contents.",
@@ -19,10 +26,21 @@
           "minimum": 0,
           "type": "integer"
         },
+        "installed_archive": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InstalledArchiveEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Installed Cargo or npm package checked against its lockfile archive."
+        },
         "installed_wheel": {
           "anyOf": [
             {
-              "$ref": "#/$defs/InstalledWheelEvidence"
+              "$ref": "#/$defs/InstalledScopeEvidence"
             },
             {
               "type": "null"
@@ -412,7 +430,23 @@
       ],
       "type": "string"
     },
-    "InstalledWheelEvidence": {
+    "InstalledArchiveEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "ecosystem": {
+          "$ref": "#/$defs/ArchiveEcosystem"
+        },
+        "scope": {
+          "$ref": "#/$defs/InstalledScopeEvidence"
+        }
+      },
+      "required": [
+        "ecosystem",
+        "scope"
+      ],
+      "type": "object"
+    },
+    "InstalledScopeEvidence": {
       "additionalProperties": false,
       "properties": {
         "absent_paths": {
@@ -423,7 +457,7 @@
           "type": "array"
         },
         "root": {
-          "description": "Codebase-relative installed package directory.",
+          "description": "Codebase-relative installed package or source directory.",
           "type": "string"
         },
         "scope_complete": {

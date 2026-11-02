@@ -5,7 +5,7 @@ use crate::{
         Snapshot, Verification,
     },
     profile::Component,
-    research::{ArtifactEvidence, InstalledWheelEvidence, validation},
+    research::{ArtifactEvidence, InstalledScopeEvidence, validation},
     store::Store,
 };
 use std::{fs, io::Write};
@@ -108,7 +108,7 @@ impl Fixture {
             location: crate::research::ArtifactLocation::Codebase,
             path: "example.whl".into(),
             sha256: digest,
-            installed_wheel: Some(InstalledWheelEvidence {
+            installed_wheel: Some(InstalledScopeEvidence {
                 root: "site".into(),
                 absent_paths: vec!["example/native_backend".into()],
                 scope_evidence_id: note.id,
@@ -119,6 +119,7 @@ impl Fixture {
                     line_sha256: crate::digest(b"COPY site /app/site"),
                 },
             }),
+            installed_archive: None,
         };
         Self {
             directory,

@@ -377,6 +377,7 @@ fn component_retraction_is_bound_to_an_observed_artifact() {
         path: "artifact.bin".into(),
         sha256: vulnbell::digest(b"wrong"),
         installed_wheel: None,
+        installed_archive: None,
     });
     assert!(vulnbell::research::import(&mut store, batch(event.clone())).is_err());
     assert_eq!(

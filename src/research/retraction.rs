@@ -13,6 +13,7 @@ struct BindingKey {
     path: String,
     sha256: String,
     installed_root: Option<String>,
+    archive_ecosystem: Option<super::ArchiveEcosystem>,
 }
 
 impl BindingKey {
@@ -26,7 +27,17 @@ impl BindingKey {
             installed_root: artifact
                 .installed_wheel
                 .as_ref()
-                .map(|wheel| wheel.root.clone()),
+                .map(|wheel| wheel.root.clone())
+                .or_else(|| {
+                    artifact
+                        .installed_archive
+                        .as_ref()
+                        .map(|archive| archive.scope.root.clone())
+                }),
+            archive_ecosystem: artifact
+                .installed_archive
+                .as_ref()
+                .map(|archive| archive.ecosystem),
         }
     }
 }
@@ -302,7 +313,7 @@ pub(crate) fn project_retractions_with_cache(
 mod tests {
     use super::BindingKey;
     use crate::research::{
-        ArtifactEvidence, ArtifactLocation, ArtifactScopeSource, InstalledWheelEvidence,
+        ArtifactEvidence, ArtifactLocation, ArtifactScopeSource, InstalledScopeEvidence,
     };
 
     #[test]
@@ -313,7 +324,7 @@ mod tests {
             location: ArtifactLocation::MonitorWorkspace,
             path: "example.whl".into(),
             sha256: "a".repeat(64),
-            installed_wheel: Some(InstalledWheelEvidence {
+            installed_wheel: Some(InstalledScopeEvidence {
                 root: "site".into(),
                 absent_paths: vec!["example/one".into()],
                 scope_evidence_id: "note-one".into(),
@@ -324,6 +335,7 @@ mod tests {
                     line_sha256: "b".repeat(64),
                 },
             }),
+            installed_archive: None,
         };
         let first = BindingKey::new(&artifact);
         let wheel = artifact.installed_wheel.as_mut().unwrap();

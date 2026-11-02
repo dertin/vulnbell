@@ -17,6 +17,36 @@ pub(super) fn reset_content_verifications() {
     CONTENT_VERIFICATIONS.with(|count| count.set(0));
 }
 
+pub(crate) fn verify_event_artifact(
+    event: &super::ResearchEvent,
+    snapshot: &crate::model::Snapshot,
+    store: &crate::store::Store,
+) -> Result<Option<VerifiedArtifact>> {
+    let Some(artifact) = &event.artifact_evidence else {
+        return Ok(None);
+    };
+    if event.not_applicable_reason != Some(NotApplicableReason::ComponentNotInBuild)
+        || event.instance_ids.len() != 1
+    {
+        bail!("artifact evidence requires component_not_in_build and exactly one instance");
+    }
+    if artifact.installed_wheel.is_some() && artifact.installed_archive.is_some() {
+        bail!("artifact evidence has multiple installation types");
+    }
+    let scope = artifact.installed_wheel.as_ref().or_else(|| {
+        artifact
+            .installed_archive
+            .as_ref()
+            .map(|archive| &archive.scope)
+    });
+    if scope.is_some_and(|scope| !scope.scope_complete) {
+        bail!("installed package does not cover every in-scope build for this instance");
+    }
+    let verified = verify_artifact_content(artifact, snapshot, &event.instance_ids, store)?;
+    verify_artifact_scope(artifact, snapshot, &verified)?;
+    Ok(Some(verified))
+}
+
 pub(crate) fn verify_scope_evidence(
     artifact: &super::ArtifactEvidence,
     case: &crate::model::Case,
@@ -27,14 +57,22 @@ pub(crate) fn verify_scope_evidence(
         .iter()
         .find(|instance| instance.id == artifact.instance_id)
         .context("artifact instance is not in the case")?;
-    let Some(installed) = artifact.installed_wheel.as_ref() else {
+    if artifact.installed_wheel.is_some() && artifact.installed_archive.is_some() {
+        bail!("artifact evidence has multiple installation types");
+    }
+    let Some(installed) = artifact.installed_wheel.as_ref().or_else(|| {
+        artifact
+            .installed_archive
+            .as_ref()
+            .map(|archive| &archive.scope)
+    }) else {
         if instance.origin == crate::model::Origin::ObservedArtifact {
             return Ok(());
         }
         bail!("a lockfile or a note alone does not establish which artifact was installed");
     };
     if !installed.scope_complete {
-        bail!("installed wheel does not cover every in-scope build for this instance");
+        bail!("installed package does not cover every in-scope build for this instance");
     }
     let note = case
         .evidence
@@ -42,18 +80,18 @@ pub(crate) fn verify_scope_evidence(
         .find(|evidence| {
             evidence.id == installed.scope_evidence_id && evidence.source == "local_impact_evidence"
         })
-        .context("installed wheel needs a registered note describing the assessed build scope")?;
+        .context("installed package needs a registered note describing the assessed build scope")?;
     if !store.evidence_exists(note)? {
-        bail!("installed wheel scope evidence is unavailable or corrupt");
+        bail!("installed package scope evidence is unavailable or corrupt");
     }
     let bytes = crate::read_limited(
         &store.directory.join("evidence").join(&note.sha256),
         64 * 1024,
     )?;
     let text =
-        std::str::from_utf8(&bytes).context("installed wheel scope evidence must be UTF-8")?;
+        std::str::from_utf8(&bytes).context("installed package scope evidence must be UTF-8")?;
     if text.trim().len() < 20 || text.contains('\0') {
-        bail!("installed wheel scope evidence must describe the reviewed build");
+        bail!("installed package scope evidence must describe the reviewed build");
     }
     Ok(())
 }
@@ -61,7 +99,7 @@ pub(crate) fn verify_scope_evidence(
 #[derive(Clone)]
 pub(crate) enum VerifiedArtifact {
     Observed,
-    InstalledWheel(std::collections::HashSet<String>),
+    InstalledPackage(std::collections::HashSet<String>),
 }
 
 pub(crate) fn verify_artifact_content(
@@ -85,12 +123,16 @@ pub(crate) fn verify_content_after_artifact_verified(
     if let Some(installed) = &artifact.installed_wheel {
         let roots = super::wheel::verify_content(artifact, installed, snapshot, store)?;
         verify_artifact(artifact, snapshot, instance_ids, store)?;
-        Ok(VerifiedArtifact::InstalledWheel(roots))
+        Ok(VerifiedArtifact::InstalledPackage(roots))
+    } else if let Some(installed) = &artifact.installed_archive {
+        let roots = super::archive::verify_content(artifact, installed, snapshot, store)?;
+        verify_artifact(artifact, snapshot, instance_ids, store)?;
+        Ok(VerifiedArtifact::InstalledPackage(roots))
     } else if !snapshot.instances.iter().any(|instance| {
         instance.id == artifact.instance_id
             && instance.origin == crate::model::Origin::ObservedArtifact
     }) {
-        bail!("retraction requires an observed artifact or a verified installed wheel");
+        bail!("retraction requires an observed artifact or a verified installation");
     } else {
         Ok(VerifiedArtifact::Observed)
     }
@@ -101,9 +143,15 @@ pub(crate) fn verify_artifact_scope(
     snapshot: &crate::model::Snapshot,
     verified: &VerifiedArtifact,
 ) -> Result<()> {
-    match (&artifact.installed_wheel, verified) {
-        (Some(installed), VerifiedArtifact::InstalledWheel(roots)) => {
-            super::wheel::verify_scope(artifact, installed, snapshot, roots)
+    let scope = artifact.installed_wheel.as_ref().or_else(|| {
+        artifact
+            .installed_archive
+            .as_ref()
+            .map(|archive| &archive.scope)
+    });
+    match (scope, verified) {
+        (Some(installed), VerifiedArtifact::InstalledPackage(roots)) => {
+            super::installed::verify_scope(artifact, installed, snapshot, roots)
         }
         (None, VerifiedArtifact::Observed) => Ok(()),
         _ => bail!("artifact scope does not match the verified installation"),
@@ -138,13 +186,17 @@ pub(crate) fn verify_artifact(
         .iter()
         .find(|instance| instance.id == artifact.instance_id)
         .context("artifact instance is not in the snapshot")?;
-    if instance.resolved_version.is_none()
-        || instance
-            .provenance
-            .codebase
-            .as_deref()
-            .is_some_and(|codebase| codebase != root.codebase)
-    {
+    let same_codebase = match instance.provenance.codebase.as_deref() {
+        None => true,
+        Some(codebase) if codebase == root.codebase => true,
+        Some(codebase) => store
+            .meta("profile_path")?
+            .and_then(|profile| std::path::Path::new(&profile).canonicalize().ok())
+            .and_then(|profile| profile.parent().map(|parent| parent.join(codebase)))
+            .and_then(|path| path.canonicalize().ok())
+            .is_some_and(|path| path == std::path::Path::new(&root.codebase)),
+    };
+    if instance.resolved_version.is_none() || !same_codebase {
         bail!("artifact evidence must belong to the resolved instance and its codebase");
     }
     let observed = instance.origin == crate::model::Origin::ObservedArtifact
@@ -210,7 +262,11 @@ pub(crate) fn verify_artifact(
         && instance.python_lock.as_ref().is_none_or(|lock| {
             lock.source_eligible && lock.sha256.iter().any(|hash| hash == &artifact.sha256)
         });
-    if !observed && !verified_wheel {
+    let verified_archive = artifact
+        .installed_archive
+        .as_ref()
+        .is_some_and(|archive| super::archive::matches_lock(archive, instance, artifact));
+    if !observed && !verified_wheel && !verified_archive {
         bail!("artifact digest is not bound to the monitored instance");
     }
     let artifact_root = artifact_root(artifact, snapshot, store)?;
@@ -357,6 +413,7 @@ mod tests {
             path: "installed.bin".into(),
             sha256: instance.provenance.sha256.clone(),
             installed_wheel: None,
+            installed_archive: None,
         };
         assert!(
             verify_artifact(
@@ -502,6 +559,7 @@ mod tests {
             path: "example.whl".into(),
             sha256: digest.clone(),
             installed_wheel: None,
+            installed_archive: None,
         };
         assert!(
             verify_artifact(

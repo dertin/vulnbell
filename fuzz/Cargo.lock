@@ -2246,6 +2246,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "clap",
+ "flate2",
  "fs2",
  "globset",
  "hex",

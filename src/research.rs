@@ -7,10 +7,11 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
-use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
+mod archive;
 pub(crate) mod automation;
 mod contracts;
+mod installed;
 pub(crate) mod release;
 mod reopen;
 mod retraction;
@@ -18,10 +19,10 @@ mod scope;
 mod validation;
 mod wheel;
 pub use contracts::{
-    ArtifactEvidence, ArtifactLocation, ArtifactScopeSource, Assessment, EventKind,
-    FollowSuggestion, InstalledWheelEvidence, NotApplicableReason, ResearchBatch,
-    ResearchComponent, ResearchEvent, ResearchPlan, ResearchTarget, ReviewCoverage, SeenEvent,
-    SourceContinuation, SourceReview,
+    ArchiveEcosystem, ArtifactEvidence, ArtifactLocation, ArtifactScopeSource, Assessment,
+    EventKind, FollowSuggestion, InstalledArchiveEvidence, InstalledScopeEvidence,
+    NotApplicableReason, ResearchBatch, ResearchComponent, ResearchEvent, ResearchPlan,
+    ResearchTarget, ReviewCoverage, SeenEvent, SourceContinuation, SourceReview,
 };
 pub use reopen::{reopen, reopen_recheck};
 use retraction::can_retract;
@@ -66,13 +67,7 @@ pub(crate) fn select_instances<'a>(
 #[cfg(test)]
 mod index_tests;
 
-#[derive(Deserialize)]
-struct RecordedEvent {
-    assessment: Assessment,
-    #[serde(default)]
-    not_applicable_reason: Option<NotApplicableReason>,
-    rationale: String,
-}
+use contracts::RecordedEvent;
 pub fn plan_page(store: &Store, after: &str, limit: usize) -> Result<ResearchPlan> {
     if !(1..=20).contains(&limit) {
         bail!("research page size must be 1..20");
@@ -576,14 +571,6 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
             bail!("not_applicable requires not_applicable_reason, and only it accepts one");
         }
         validate_source_facts(&event.source_facts, event.not_applicable_reason)?;
-        if let Some(artifact) = &event.artifact_evidence {
-            if event.not_applicable_reason != Some(NotApplicableReason::ComponentNotInBuild)
-                || event.instance_ids.len() != 1
-            {
-                bail!("artifact evidence requires component_not_in_build and exactly one instance");
-            }
-            validation::verify_artifact(artifact, &snapshot, &event.instance_ids, store)?;
-        }
         *assessments
             .entry(
                 serde_json::to_value(event.assessment)?
@@ -649,6 +636,24 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
             && active_cases.get(&case_id).is_some_and(|case| {
                 case.decision != Decision::Retracted && can_retract(case, event, store)
             });
+        let existing = active_cases.get(&case_id);
+        if existing.is_none()
+            && event.not_applicable_reason == Some(NotApplicableReason::ComponentNotInBuild)
+            && event.artifact_evidence.is_none()
+        {
+            bail!(
+                "component_not_in_build requires an existing case with registered artifact and scope evidence"
+            );
+        }
+        if let Some(artifact) = &event.artifact_evidence
+            && (artifact.installed_wheel.is_some() || artifact.installed_archive.is_some())
+        {
+            let case = existing.context(
+                "installed package evidence requires an existing case with a registered scope note",
+            )?;
+            validation::verify_scope_evidence(artifact, case, store)?;
+        }
+        let verified_artifact = validation::verify_event_artifact(event, &snapshot, store)?;
         if same_content && same_reading && !pending_retraction {
             duplicates += 1;
             continue;
@@ -672,7 +677,6 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
             Some(event.url.clone()),
             EvidenceKind::Context,
         )?;
-        let existing = active_cases.get(&case_id);
         let mut open_questions = vec![event.rationale.clone()];
         let (decision, coverage_detail) = match (event.assessment, existing) {
             (_, Some(previous)) if !previous.claims.is_empty() => {
@@ -707,13 +711,10 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
                 }
                 if let Some(artifact) = &event.artifact_evidence {
                     validation::verify_scope_evidence(artifact, previous, store)?;
-                    let verified = validation::verify_content_after_artifact_verified(
-                        artifact,
-                        &snapshot,
-                        &event.instance_ids,
-                        store,
-                    )?;
-                    validation::verify_artifact_scope(artifact, &snapshot, &verified)?;
+                    let verified = verified_artifact
+                        .as_ref()
+                        .context("artifact verification is missing")?;
+                    validation::verify_artifact_scope(artifact, &snapshot, verified)?;
                 }
                 (
                     Some(Decision::Retracted),

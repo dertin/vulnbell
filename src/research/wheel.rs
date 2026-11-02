@@ -1,11 +1,11 @@
-use super::{ArtifactEvidence, InstalledWheelEvidence};
+use super::{ArtifactEvidence, InstalledScopeEvidence};
 use crate::model::Snapshot;
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
     io::Read,
-    path::{Component, Path, PathBuf},
+    path::{Component, Path},
 };
 
 const MAX_FILES: usize = 20_000;
@@ -18,7 +18,7 @@ mod structure;
 /// Compare a wheel with the installed files without extracting or executing either.
 pub(super) fn verify_content(
     artifact: &ArtifactEvidence,
-    installed: &InstalledWheelEvidence,
+    installed: &InstalledScopeEvidence,
     snapshot: &Snapshot,
     store: &crate::store::Store,
 ) -> Result<HashSet<String>> {
@@ -150,33 +150,12 @@ pub(super) fn verify_content(
         if read_total != entry.size() {
             bail!("wheel entry has an invalid size");
         }
-        let mut file = crate::discovery::open_file(root, installed_file)?;
-        let before = file.metadata()?;
-        if !before.is_file() || before.len() != read_total {
-            bail!("installed file differs from the wheel");
-        }
-        let mut actual = Sha256::new();
-        let mut installed_total = 0_u64;
-        loop {
-            let count = file.read(&mut buffer)?;
-            if count == 0 {
-                break;
-            }
-            installed_total += count as u64;
-            if installed_total > before.len() {
-                bail!("installed file changed during verification");
-            }
-            actual.update(&buffer[..count]);
-        }
-        let after = file.metadata()?;
-        if installed_total != before.len()
-            || before.len() != after.len()
-            || before.modified()? != after.modified()?
-            || expected.finalize() != actual.finalize()
-        {
-            bail!("installed file differs from the wheel or changed during verification");
-        }
-        observed_files.push((installed_file.to_owned(), after.len(), after.modified()?));
+        observed_files.push(super::installed::verify_file(
+            root,
+            installed_file,
+            read_total,
+            expected.finalize().into(),
+        )?);
         if is_metadata {
             metadata = Some(content);
         }
@@ -220,161 +199,19 @@ pub(super) fn verify_content(
     {
         bail!("wheel metadata does not match the monitored package and version");
     }
-    for (path, size, modified) in observed_files {
-        let current = crate::discovery::open_file(root, &path)?.metadata()?;
-        if !current.is_file() || current.len() != size || current.modified()? != modified {
-            bail!("installed files changed during verification");
-        }
-    }
+    super::installed::verify_unchanged(root, &observed_files)?;
     Ok(package_roots)
-}
-
-pub(super) fn verify_scope(
-    artifact: &ArtifactEvidence,
-    installed: &InstalledWheelEvidence,
-    snapshot: &Snapshot,
-    package_roots: &HashSet<String>,
-) -> Result<()> {
-    if installed.absent_paths.is_empty() || installed.absent_paths.len() > 32 {
-        bail!("installed wheel evidence requires 1..32 absent paths or file patterns");
-    }
-    let root = &snapshot
-        .codebase_revisions
-        .get(artifact.codebase)
-        .context("artifact codebase is outside the monitor")?
-        .codebase;
-    let source = &installed.scope_source;
-    if source.line == 0
-        || source.path.len() > MAX_PATH_BYTES
-        || source.line_sha256.len() != 64
-        || !source
-            .line_sha256
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        || crate::tools::citations::line_hash(root, &source.path, source.line)?
-            != source.line_sha256
-    {
-        bail!("installed wheel build scope source is unavailable or has changed");
-    }
-    if installed.absent_paths.iter().any(|path| {
-        path.split('/')
-            .next()
-            .is_none_or(|first| !package_roots.contains(first))
-    }) {
-        bail!("absent paths must be inside a package root present in the wheel");
-    }
-    check_absent(root, installed)
 }
 
 #[cfg(test)]
 fn verify(
     artifact: &ArtifactEvidence,
-    installed: &InstalledWheelEvidence,
+    installed: &InstalledScopeEvidence,
     snapshot: &Snapshot,
     store: &crate::store::Store,
 ) -> Result<()> {
     let roots = verify_content(artifact, installed, snapshot, store)?;
-    verify_scope(artifact, installed, snapshot, &roots)
-}
-
-fn check_absent(root: &str, installed: &InstalledWheelEvidence) -> Result<()> {
-    let mut unique = HashSet::new();
-    for name in &installed.absent_paths {
-        if name.len() > MAX_PATH_BYTES
-            || !unique.insert(name)
-            || name.contains('\\')
-            || name.chars().any(char::is_control)
-        {
-            bail!("absent paths must be distinct portable relative paths");
-        }
-        let parts: Vec<&str> = name.split('/').collect();
-        if parts
-            .iter()
-            .any(|part| part.is_empty() || *part == "." || *part == "..")
-        {
-            bail!("absent path is not a safe relative path");
-        }
-        let path = Path::new(name);
-        if path.as_os_str().is_empty()
-            || path.components().any(|part| match part {
-                Component::Normal(name) => name.to_str().is_none_or(crate::discovery::private_name),
-                _ => true,
-            })
-        {
-            bail!("absent path is not a safe relative path");
-        }
-        let pattern = parts.last().copied().context("absent path is empty")?;
-        let has_pattern = pattern.contains(['*', '?']);
-        if parts[..parts.len() - 1]
-            .iter()
-            .any(|part| part.contains(['*', '?', '[', ']']))
-            || pattern.contains(['[', ']'])
-            || (has_pattern
-                && pattern
-                    .chars()
-                    .filter(|ch| !matches!(ch, '*' | '?'))
-                    .count()
-                    < 3)
-        {
-            bail!("wildcards are allowed only in a specific final path component");
-        }
-        let mut relative = PathBuf::from(&installed.root);
-        let mut missing = false;
-        let traversal = if has_pattern {
-            path.parent().context("pattern needs a parent directory")?
-        } else {
-            path
-        };
-        for part in traversal.components() {
-            relative.push(part.as_os_str());
-            let current = Path::new(root).join(&relative);
-            match std::fs::symlink_metadata(&current) {
-                Ok(metadata) if metadata.file_type().is_symlink() => {
-                    bail!("absent path contains a symlink")
-                }
-                Ok(_) => {
-                    crate::discovery::checked_path(
-                        root,
-                        relative.to_str().context("path is not UTF-8")?,
-                    )?;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    missing = true;
-                    break;
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
-        if has_pattern && !missing {
-            let directory = crate::discovery::checked_path(
-                root,
-                relative.to_str().context("path is not UTF-8")?,
-            )?;
-            let matcher = globset::GlobBuilder::new(pattern)
-                .literal_separator(true)
-                .case_insensitive(cfg!(windows))
-                .build()?
-                .compile_matcher();
-            for (index, entry) in std::fs::read_dir(directory)?.enumerate() {
-                if index >= MAX_FILES {
-                    bail!("absence check exceeds the directory entry limit");
-                }
-                let entry = entry?;
-                let name = entry.file_name();
-                let name = name
-                    .to_str()
-                    .context("absence check cannot inspect a non-UTF-8 filename")?;
-                if matcher.is_match(name) {
-                    bail!("a path matching the absent pattern exists in the installed directory");
-                }
-            }
-            missing = true;
-        }
-        if !missing {
-            bail!("a path claimed absent exists in the installed directory");
-        }
-    }
-    Ok(())
+    super::installed::verify_scope(artifact, installed, snapshot, &roots)
 }
 
 #[cfg(test)]
