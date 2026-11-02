@@ -3,6 +3,59 @@ use crate::{
     model::{Case, Decision, EvidenceKind, Instance},
     store::Store,
 };
+use std::collections::HashMap;
+
+#[derive(Clone, Hash, PartialEq, Eq)]
+struct BindingKey {
+    instance_id: String,
+    codebase: usize,
+    location: super::ArtifactLocation,
+    path: String,
+    sha256: String,
+    installed_root: Option<String>,
+}
+
+impl BindingKey {
+    fn new(artifact: &super::ArtifactEvidence) -> Self {
+        Self {
+            instance_id: artifact.instance_id.clone(),
+            codebase: artifact.codebase,
+            location: artifact.location,
+            path: artifact.path.clone(),
+            sha256: artifact.sha256.clone(),
+            installed_root: artifact
+                .installed_wheel
+                .as_ref()
+                .map(|wheel| wheel.root.clone()),
+        }
+    }
+}
+
+struct CachedBinding {
+    artifact: super::ArtifactEvidence,
+    verified: Option<validation::VerifiedArtifact>,
+}
+
+#[derive(Default)]
+pub(crate) struct RetractionCache {
+    entries: HashMap<BindingKey, CachedBinding>,
+}
+
+impl RetractionCache {
+    pub(super) fn refresh(&mut self, snapshot: &crate::model::Snapshot, store: &Store) {
+        for entry in self.entries.values_mut() {
+            if entry.verified.is_some() {
+                entry.verified = validation::verify_artifact_content(
+                    &entry.artifact,
+                    snapshot,
+                    std::slice::from_ref(&entry.artifact.instance_id),
+                    store,
+                )
+                .ok();
+            }
+        }
+    }
+}
 
 pub(super) fn can_retract(case: &Case, event: &ResearchEvent, store: &Store) -> bool {
     static ADVISORY_ID: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
@@ -100,6 +153,7 @@ pub(super) fn can_retract(case: &Case, event: &ResearchEvent, store: &Store) -> 
     })
 }
 
+#[cfg(test)]
 pub(crate) fn retraction_valid(
     case: &Case,
     instances: &[Instance],
@@ -111,16 +165,16 @@ pub(crate) fn retraction_valid(
         instances,
         revisions,
         store,
-        &mut std::collections::HashMap::new(),
+        &mut RetractionCache::default(),
     )
 }
 
-fn retraction_valid_cached(
+pub(crate) fn retraction_valid_cached(
     case: &Case,
     instances: &[Instance],
     revisions: &[crate::codebase_revision::CodebaseRevision],
     store: &Store,
-    cache: &mut std::collections::HashMap<super::ArtifactEvidence, bool>,
+    cache: &mut RetractionCache,
 ) -> bool {
     let Some(evidence) = case
         .evidence
@@ -152,7 +206,7 @@ fn retraction_valid_cached(
         return false;
     };
     if !event.instance_ids.contains(&artifact.instance_id)
-        || validation::verify_observed_artifact(artifact, case).is_err()
+        || validation::verify_scope_evidence(artifact, case, store).is_err()
     {
         return false;
     }
@@ -174,8 +228,21 @@ fn retraction_valid_cached(
         partial: false,
         alert_status: String::new(),
     };
-    *cache.entry(artifact.clone()).or_insert_with(|| {
-        validation::verify_artifact(artifact, &snapshot, &event.instance_ids, store).is_ok()
+    let binding = cache
+        .entries
+        .entry(BindingKey::new(artifact))
+        .or_insert_with(|| CachedBinding {
+            artifact: artifact.clone(),
+            verified: validation::verify_artifact_content(
+                artifact,
+                &snapshot,
+                &event.instance_ids,
+                store,
+            )
+            .ok(),
+        });
+    binding.verified.as_ref().is_some_and(|verified| {
+        validation::verify_artifact_scope(artifact, &snapshot, verified).is_ok()
     })
 }
 
@@ -184,8 +251,15 @@ pub fn project_retractions(
     snapshot: &crate::model::Snapshot,
     store: &Store,
 ) -> crate::model::Snapshot {
+    project_retractions_with_cache(snapshot, store, &mut RetractionCache::default())
+}
+
+pub(crate) fn project_retractions_with_cache(
+    snapshot: &crate::model::Snapshot,
+    store: &Store,
+    cache: &mut RetractionCache,
+) -> crate::model::Snapshot {
     let mut projected = snapshot.clone();
-    let mut cache = std::collections::HashMap::new();
     let active: std::collections::HashSet<&str> = snapshot
         .instances
         .iter()
@@ -193,19 +267,7 @@ pub fn project_retractions(
         .collect();
     for pass in 0..2 {
         if pass == 1 {
-            for (artifact, valid) in &mut cache {
-                if *valid
-                    && validation::verify_artifact(
-                        artifact,
-                        snapshot,
-                        std::slice::from_ref(&artifact.instance_id),
-                        store,
-                    )
-                    .is_err()
-                {
-                    *valid = false;
-                }
-            }
+            cache.refresh(snapshot, store);
         }
         for case in &mut projected.cases {
             if case.decision == Decision::Retracted
@@ -218,7 +280,7 @@ pub fn project_retractions(
                     &snapshot.instances,
                     &snapshot.codebase_revisions,
                     store,
-                    &mut cache,
+                    cache,
                 )
             {
                 case.decision = Decision::Review;
@@ -234,4 +296,45 @@ pub fn project_retractions(
         }
     }
     projected
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BindingKey;
+    use crate::research::{
+        ArtifactEvidence, ArtifactLocation, ArtifactScopeSource, InstalledWheelEvidence,
+    };
+
+    #[test]
+    fn shared_binding_excludes_case_scope_but_keeps_artifact_identity() {
+        let mut artifact = ArtifactEvidence {
+            instance_id: "instance".into(),
+            codebase: 0,
+            location: ArtifactLocation::MonitorWorkspace,
+            path: "example.whl".into(),
+            sha256: "a".repeat(64),
+            installed_wheel: Some(InstalledWheelEvidence {
+                root: "site".into(),
+                absent_paths: vec!["example/one".into()],
+                scope_evidence_id: "note-one".into(),
+                scope_complete: true,
+                scope_source: ArtifactScopeSource {
+                    path: "Dockerfile".into(),
+                    line: 1,
+                    line_sha256: "b".repeat(64),
+                },
+            }),
+        };
+        let first = BindingKey::new(&artifact);
+        let wheel = artifact.installed_wheel.as_mut().unwrap();
+        wheel.scope_evidence_id = "note-two".into();
+        wheel.absent_paths = vec!["example/two".into()];
+        wheel.scope_source.line = 2;
+        assert!(first == BindingKey::new(&artifact));
+        artifact.installed_wheel.as_mut().unwrap().root = "other-site".into();
+        assert!(first != BindingKey::new(&artifact));
+        artifact.installed_wheel.as_mut().unwrap().root = "site".into();
+        artifact.sha256 = "c".repeat(64);
+        assert!(first != BindingKey::new(&artifact));
+    }
 }

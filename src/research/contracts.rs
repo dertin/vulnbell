@@ -73,14 +73,52 @@ pub enum EventKind {
     Advisory,
     Commit,
 }
-/// A file from the monitored installed artifact, identified without executing it.
+/// A checksummed artifact and optional evidence of its installed contents.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactEvidence {
     pub instance_id: String,
     pub codebase: usize,
+    pub location: ArtifactLocation,
     pub path: String,
     pub sha256: String,
+    /// Exact installed wheel files and paths checked within the monitored codebase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_wheel: Option<InstalledWheelEvidence>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactLocation {
+    /// Path relative to the selected codebase.
+    Codebase,
+    /// Path relative to the monitor profile's directory.
+    MonitorWorkspace,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
+#[serde(deny_unknown_fields)]
+pub struct InstalledWheelEvidence {
+    /// Codebase-relative installed package directory.
+    pub root: String,
+    /// Paths or bounded filename patterns relative to the installed directory checked for absence.
+    pub absent_paths: Vec<String>,
+    /// Case evidence describing why this directory represents the assessed build or test scope.
+    pub scope_evidence_id: String,
+    /// The source and note support this installation for every in-scope build using the instance.
+    pub scope_complete: bool,
+    /// Current source line supporting the scope described in the case evidence.
+    pub scope_source: ArtifactScopeSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactScopeSource {
+    pub path: String,
+    /// One-based line number.
+    pub line: usize,
+    /// SHA-256 of the line without its line ending.
+    pub line_sha256: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

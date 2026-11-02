@@ -40,9 +40,30 @@ The plan's `follow_suggestions` lists up to 100 deferred instances with an appli
      Cite the version/tag evidence in the rationale. `fixed_in_monitored_version` requires `source_facts.fixed_in`, and `affects_other_version` requires `source_facts.affected_versions`. The CLI counts these without opening a case. Eligible agent-only cases can be retracted after reassessment; official advisories and current actionable or review assessments remain open. Retraction never means dismissal. For `component_not_in_build`, provide `artifact_evidence` with the selected instance ID, codebase index, relative artifact path and SHA-256. The CLI checks the file and its binding to the monitored instance; if the installed artifact is unavailable or cannot be verified, keep the case in review.
    - When the affected range is unknown or ambiguous, use `review` and state what is missing.
 7. Get `vulnbell schema research --json` and produce a `ResearchBatch` JSON. Its project/snapshot/window must match the current research plan. For each event, set `reviewed_instance_ids` to the examined candidates and `instance_ids` to the relevant subset. Record stable provider IDs, original HTTPS URLs, original `updated_at`, a bounded excerpt and an evidence-based rationale written in the profile's `report.language`. Titles and excerpts stay as the source wrote them.
-   To reassess an existing informational case, reopen its upstream with `research --reopen <upstream> --since <RFC3339> --recheck`, rerun `tools hits --recheck`, record a fresh decision, and import with `tools draft --recheck --import`. For an absent component, include `artifact_evidence` in the decision: `instance_id`, zero-based `codebase`, relative `path`, and the file's `sha256`. Retraction requires an observed artifact whose recorded digest matches the file. A deployment declaration, lockfile, matching wheel or written note alone does not establish installation. If the installed artifact cannot be verified, leave the case in review. The CLI retains the case history and evidence.
+   To reassess an existing informational case, reopen its upstream with `research --reopen <upstream> --since <RFC3339> --recheck`, rerun `tools hits --recheck`, record a fresh decision, and import with `tools draft --recheck --import`. For an absent component, provide `artifact_evidence` with the selected `instance_id`, zero-based `codebase`, `location` (`codebase` or `monitor_workspace`), relative `path` and file `sha256`. The monitor workspace is the profile's directory; the installed directory and source citation are relative to the selected codebase. Never execute the artifact.
 
-   Current inventory does not record installed artifact observations. A `component_not_in_build` assessment therefore cannot retract an existing case from a lockfile or profile alone; keep it in review until independently recorded artifact evidence is available.
+   For a Python wheel, also provide `installed_wheel`: `root` is the observed installation directory, `absent_paths` lists the relevant package-relative paths or filename patterns, `scope_evidence_id` is a registered case note explaining why that directory represents every in-scope build using the instance, `scope_complete: true` records that assessment, and `scope_source` contains a supporting codebase `path`, one-based `line`, and `line_sha256`. Use `tools citations` to check the source and obtain the line hash. Wildcards `*` and `?` are accepted only in the last path component; inspect the applicable platform and ABI names. The CLI checks the exact wheel against recorded PyPI metadata, checks a lock hash when a lock exists, compares the wheel's installed files and verifies each absence. It does not infer that the selected directory is used by the application, covers every target, or excludes alternate import paths and overlays: establish those facts from the codebase and explain them in the scope note. A missing file alone cannot establish that a compiled binary omits the affected code. If the artifact, build scope, or affected behavior is uncertain, keep the case in review.
+
+   Wheel inspection is limited to 20,000 entries, 512 MiB expanded data, 4,096 bytes per path, 8 MiB of entry names and 8 MiB of ZIP extra fields. It excludes symlinks and special files and does not support ZIP64 end records, multi-disk archives, alternate Unicode path fields or wheel `.data` relocation. Source lines are limited to 4 MiB files. Record unsupported or unavailable evidence as a review limitation. A declaration, lockfile, wheel hash or note alone does not establish installation or deployment. After a lock appears, disappears or changes, rescan and reassess the current instance; preserve the prior case and evidence. The CLI retains retracted case history in JSON.
+
+   Example `artifact_evidence` for an eligible Python observation:
+
+   ```json
+   {
+     "instance_id": "<instance-id>",
+     "codebase": 0,
+     "location": "monitor_workspace",
+     "path": "artifacts/example.whl",
+     "sha256": "<wheel-sha256>",
+     "installed_wheel": {
+       "root": "build/site-packages",
+       "absent_paths": ["example/_native*.so"],
+       "scope_evidence_id": "<registered-case-evidence-id>",
+       "scope_complete": true,
+       "scope_source": {"path": "Dockerfile", "line": 12, "line_sha256": "<source-line-sha256>"}
+     }
+   }
+   ```
    - Use `assessment: review` for a plausible or uncertain security hypothesis on the monitored version.
    - Use `informational` only when the event concerns code present in the monitored build and requires no action. Use `not_applicable` with `component_not_in_build` if the module, backend or platform is absent. For multi-runtime repositories, inspect the actual installed artifact or wheel/image file list without installing or executing it, and cite the artifact and evidence in the rationale. For example, a Python protobuf wheel using upb does not include the C++ runtime in `src/google/protobuf/*.h` or the `pyext` extension; verify the exact wheel before deciding. Apply the same reasoning to gRPC bindings and MLflow server versus client.
    - A `closed_unmerged` pull request is not a fix. Leave `source_facts.fix_reference` empty unless another commit actually contains the change.

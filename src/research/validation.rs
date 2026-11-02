@@ -2,19 +2,112 @@ use super::NotApplicableReason;
 use crate::model::SourceFacts;
 use anyhow::{Context, Result, bail};
 
-pub(crate) fn verify_observed_artifact(
+#[cfg(test)]
+thread_local! {
+    static CONTENT_VERIFICATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn content_verifications() -> usize {
+    CONTENT_VERIFICATIONS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+pub(super) fn reset_content_verifications() {
+    CONTENT_VERIFICATIONS.with(|count| count.set(0));
+}
+
+pub(crate) fn verify_scope_evidence(
     artifact: &super::ArtifactEvidence,
     case: &crate::model::Case,
+    store: &crate::store::Store,
 ) -> Result<()> {
     let instance = case
         .instances
         .iter()
         .find(|instance| instance.id == artifact.instance_id)
         .context("artifact instance is not in the case")?;
-    if instance.origin == crate::model::Origin::ObservedArtifact {
-        return Ok(());
+    let Some(installed) = artifact.installed_wheel.as_ref() else {
+        if instance.origin == crate::model::Origin::ObservedArtifact {
+            return Ok(());
+        }
+        bail!("a lockfile or a note alone does not establish which artifact was installed");
+    };
+    if !installed.scope_complete {
+        bail!("installed wheel does not cover every in-scope build for this instance");
     }
-    bail!("a lockfile or a note alone does not establish which artifact was installed")
+    let note = case
+        .evidence
+        .iter()
+        .find(|evidence| {
+            evidence.id == installed.scope_evidence_id && evidence.source == "local_impact_evidence"
+        })
+        .context("installed wheel needs a registered note describing the assessed build scope")?;
+    if !store.evidence_exists(note)? {
+        bail!("installed wheel scope evidence is unavailable or corrupt");
+    }
+    let bytes = crate::read_limited(
+        &store.directory.join("evidence").join(&note.sha256),
+        64 * 1024,
+    )?;
+    let text =
+        std::str::from_utf8(&bytes).context("installed wheel scope evidence must be UTF-8")?;
+    if text.trim().len() < 20 || text.contains('\0') {
+        bail!("installed wheel scope evidence must describe the reviewed build");
+    }
+    Ok(())
+}
+
+#[derive(Clone)]
+pub(crate) enum VerifiedArtifact {
+    Observed,
+    InstalledWheel(std::collections::HashSet<String>),
+}
+
+pub(crate) fn verify_artifact_content(
+    artifact: &super::ArtifactEvidence,
+    snapshot: &crate::model::Snapshot,
+    instance_ids: &[String],
+    store: &crate::store::Store,
+) -> Result<VerifiedArtifact> {
+    #[cfg(test)]
+    CONTENT_VERIFICATIONS.with(|count| count.set(count.get() + 1));
+    verify_artifact(artifact, snapshot, instance_ids, store)?;
+    verify_content_after_artifact_verified(artifact, snapshot, instance_ids, store)
+}
+
+pub(crate) fn verify_content_after_artifact_verified(
+    artifact: &super::ArtifactEvidence,
+    snapshot: &crate::model::Snapshot,
+    instance_ids: &[String],
+    store: &crate::store::Store,
+) -> Result<VerifiedArtifact> {
+    if let Some(installed) = &artifact.installed_wheel {
+        let roots = super::wheel::verify_content(artifact, installed, snapshot, store)?;
+        verify_artifact(artifact, snapshot, instance_ids, store)?;
+        Ok(VerifiedArtifact::InstalledWheel(roots))
+    } else if !snapshot.instances.iter().any(|instance| {
+        instance.id == artifact.instance_id
+            && instance.origin == crate::model::Origin::ObservedArtifact
+    }) {
+        bail!("retraction requires an observed artifact or a verified installed wheel");
+    } else {
+        Ok(VerifiedArtifact::Observed)
+    }
+}
+
+pub(crate) fn verify_artifact_scope(
+    artifact: &super::ArtifactEvidence,
+    snapshot: &crate::model::Snapshot,
+    verified: &VerifiedArtifact,
+) -> Result<()> {
+    match (&artifact.installed_wheel, verified) {
+        (Some(installed), VerifiedArtifact::InstalledWheel(roots)) => {
+            super::wheel::verify_scope(artifact, installed, snapshot, roots)
+        }
+        (None, VerifiedArtifact::Observed) => Ok(()),
+        _ => bail!("artifact scope does not match the verified installation"),
+    }
 }
 
 pub(crate) fn verify_artifact(
@@ -25,7 +118,9 @@ pub(crate) fn verify_artifact(
 ) -> Result<()> {
     use sha2::{Digest, Sha256};
     use std::io::Read;
-    if !instance_ids.contains(&artifact.instance_id)
+    if artifact.path.is_empty()
+        || artifact.path.len() > 4096
+        || !instance_ids.contains(&artifact.instance_id)
         || artifact.sha256.len() != 64
         || !artifact
             .sha256
@@ -52,14 +147,25 @@ pub(crate) fn verify_artifact(
     {
         bail!("artifact evidence must belong to the resolved instance and its codebase");
     }
-    let observed = matches!(
-        instance.origin,
-        crate::model::Origin::ObservedArtifact | crate::model::Origin::Deployed
-    ) && instance.provenance.sha256 == artifact.sha256;
+    let observed = instance.origin == crate::model::Origin::ObservedArtifact
+        && instance.provenance.sha256 == artifact.sha256;
     let verified_wheel = artifact.path.to_ascii_lowercase().ends_with(".whl")
         && instance.identity_evidence.iter().any(|evidence| {
-            if evidence.source != "registry_hash_match"
+            if !matches!(evidence.source.as_str(), "registry_hash_match" | "registry")
                 || !store.evidence_exists(evidence).unwrap_or(false)
+                || !evidence
+                    .url
+                    .as_deref()
+                    .and_then(|value| url::Url::parse(value).ok())
+                    .is_some_and(|url| {
+                        url.scheme() == "https"
+                            && url.host_str() == Some("pypi.org")
+                            && url.username().is_empty()
+                            && url.password().is_none()
+                            && url.port().is_none()
+                            && url.query().is_none()
+                            && url.fragment().is_none()
+                    })
             {
                 return false;
             }
@@ -68,6 +174,26 @@ pub(crate) fn verify_artifact(
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
                 .and_then(|document| {
+                    let purl: packageurl::PackageUrl<'_> =
+                        instance.purl.as_deref()?.parse().ok()?;
+                    if purl.ty() != "pypi"
+                        || purl.namespace().is_some()
+                        || crate::identity::normalize_pypi(
+                            document.pointer("/info/name")?.as_str()?,
+                        ) != crate::identity::normalize_pypi(purl.name())
+                        || document
+                            .pointer("/info/version")?
+                            .as_str()?
+                            .parse::<pep508_rs::pep440_rs::Version>()
+                            .ok()?
+                            != instance
+                                .resolved_version
+                                .as_deref()?
+                                .parse::<pep508_rs::pep440_rs::Version>()
+                                .ok()?
+                    {
+                        return None;
+                    }
                     document
                         .get("urls")
                         .and_then(serde_json::Value::as_array)
@@ -81,15 +207,15 @@ pub(crate) fn verify_artifact(
                     })
                 })
         })
-        && instance
-            .python_lock
-            .as_ref()
-            .is_some_and(|lock| lock.sha256.iter().any(|hash| hash == &artifact.sha256));
+        && instance.python_lock.as_ref().is_none_or(|lock| {
+            lock.source_eligible && lock.sha256.iter().any(|hash| hash == &artifact.sha256)
+        });
     if !observed && !verified_wheel {
         bail!("artifact digest is not bound to the monitored instance");
     }
-    crate::discovery::checked_path(&root.codebase, &artifact.path)?;
-    let mut file = crate::discovery::open_file(&root.codebase, &artifact.path)?;
+    let artifact_root = artifact_root(artifact, snapshot, store)?;
+    crate::discovery::checked_path(&artifact_root, &artifact.path)?;
+    let mut file = crate::discovery::open_file(&artifact_root, &artifact.path)?;
     let before = file.metadata()?;
     if !before.is_file() || before.len() > 512 * 1024 * 1024 {
         bail!("artifact evidence must be a regular file within the 512 MiB limit");
@@ -117,6 +243,33 @@ pub(crate) fn verify_artifact(
         bail!("artifact evidence does not match the monitored file");
     }
     Ok(())
+}
+
+pub(super) fn artifact_root(
+    artifact: &super::ArtifactEvidence,
+    snapshot: &crate::model::Snapshot,
+    store: &crate::store::Store,
+) -> Result<String> {
+    match artifact.location {
+        super::ArtifactLocation::Codebase => Ok(snapshot
+            .codebase_revisions
+            .get(artifact.codebase)
+            .context("artifact codebase is outside the monitor")?
+            .codebase
+            .clone()),
+        super::ArtifactLocation::MonitorWorkspace => {
+            let profile = store
+                .meta("profile_path")?
+                .context("monitor profile path is unavailable")?;
+            let path = std::path::Path::new(&profile).canonicalize()?;
+            Ok(path
+                .parent()
+                .context("monitor profile has no directory")?
+                .to_str()
+                .context("monitor path is not UTF-8")?
+                .to_owned())
+        }
+    }
 }
 
 pub(crate) fn validate_source_facts(
@@ -200,8 +353,10 @@ mod tests {
         let mut evidence = crate::research::ArtifactEvidence {
             instance_id: instance.id.clone(),
             codebase: 0,
+            location: crate::research::ArtifactLocation::Codebase,
             path: "installed.bin".into(),
             sha256: instance.provenance.sha256.clone(),
+            installed_wheel: None,
         };
         assert!(
             verify_artifact(
@@ -317,16 +472,17 @@ mod tests {
         let digest = crate::digest(b"observed artifact");
         let registry = store
             .record_evidence(
-                serde_json::json!({"urls":[{"digests":{"sha256":digest}}]})
+                serde_json::json!({"info":{"name":"example","version":"1.0"},"urls":[{"digests":{"sha256":digest}}]})
                     .to_string()
                     .as_bytes(),
                 "registry_hash_match",
-                None,
+                Some("https://pypi.org/pypi/example/1.0/json".into()),
                 crate::model::EvidenceKind::Identity,
             )
             .unwrap();
         let mut locked = instance.clone();
         locked.origin = crate::model::Origin::Locked;
+        locked.purl = Some("pkg:pypi/example".into());
         locked.identity_evidence.push(registry);
         locked.python_lock = Some(crate::model::PythonLock {
             sha256: vec![digest.clone()],
@@ -342,8 +498,10 @@ mod tests {
         let wheel = crate::research::ArtifactEvidence {
             instance_id: instance.id.clone(),
             codebase: 0,
+            location: crate::research::ArtifactLocation::Codebase,
             path: "example.whl".into(),
             sha256: digest.clone(),
+            installed_wheel: None,
         };
         assert!(
             verify_artifact(
@@ -354,7 +512,7 @@ mod tests {
             )
             .is_ok()
         );
-        assert!(verify_observed_artifact(&wheel, &locked_case).is_err());
+        assert!(verify_scope_evidence(&wheel, &locked_case, &store).is_err());
         let note = store
             .record_evidence(
                 format!("Installed version 1.0 from example.whl with sha256 {digest}").as_bytes(),
@@ -364,9 +522,9 @@ mod tests {
             )
             .unwrap();
         locked_case.evidence.push(note);
-        assert!(verify_observed_artifact(&wheel, &locked_case).is_err());
+        assert!(verify_scope_evidence(&wheel, &locked_case, &store).is_err());
         locked_case.instances[0].origin = crate::model::Origin::Deployed;
-        assert!(verify_observed_artifact(&wheel, &locked_case).is_err());
+        assert!(verify_scope_evidence(&wheel, &locked_case, &store).is_err());
         drop(store);
         std::fs::remove_dir_all(crate::store::data_root().join(project)).unwrap();
     }

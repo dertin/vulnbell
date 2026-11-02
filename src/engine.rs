@@ -241,6 +241,7 @@ fn scan_inner(
         .map(|instance| instance.id.as_str())
         .collect();
     let current_ids: HashSet<String> = cases.iter().map(|case| case.case_id.clone()).collect();
+    let mut retraction_cache = crate::research::RetractionCache::default();
     for mut previous in previous_cases {
         if merged_previous_ids.contains(&previous.case_id)
             || current_ids.contains(&previous.case_id)
@@ -253,11 +254,12 @@ fn scan_inner(
                 &codebase_revisions,
             )
             || (previous.decision == Decision::Retracted
-                && !crate::research::retraction_valid(
+                && !crate::research::retraction_valid_cached(
                     &previous,
                     &instances,
                     &codebase_revisions,
                     store,
+                    &mut retraction_cache,
                 ));
         if !previous
             .instances
@@ -366,7 +368,7 @@ fn scan_inner(
     let partial = coverage
         .iter()
         .any(|item| !matches!(item.state, CoverageState::Checked | CoverageState::Disabled));
-    Ok(Snapshot {
+    let snapshot = Snapshot {
         schema_version: 1,
         id: snapshot_id,
         project_id: profile.project_id.to_string(),
@@ -379,7 +381,12 @@ fn scan_inner(
         cases,
         partial,
         alert_status: "pending".into(),
-    })
+    };
+    Ok(crate::research::project_retractions_with_cache(
+        &snapshot,
+        store,
+        &mut retraction_cache,
+    ))
 }
 
 pub(crate) fn preserve_observation_ids(

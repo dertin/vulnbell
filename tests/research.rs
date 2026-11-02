@@ -558,6 +558,9 @@ fn scoped_event_stays_current_until_a_reviewed_candidate_changes() {
 #[path = "research/retraction.rs"]
 mod retraction;
 
+#[path = "research/wheel.rs"]
+mod wheel;
+
 #[test]
 fn research_case_reopens_against_the_current_version_after_an_upgrade() {
     let directory = tempfile::tempdir().unwrap();

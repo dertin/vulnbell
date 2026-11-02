@@ -16,15 +16,21 @@ mod reopen;
 mod retraction;
 mod scope;
 mod validation;
+mod wheel;
 pub use contracts::{
-    ArtifactEvidence, Assessment, EventKind, FollowSuggestion, NotApplicableReason, ResearchBatch,
+    ArtifactEvidence, ArtifactLocation, ArtifactScopeSource, Assessment, EventKind,
+    FollowSuggestion, InstalledWheelEvidence, NotApplicableReason, ResearchBatch,
     ResearchComponent, ResearchEvent, ResearchPlan, ResearchTarget, ReviewCoverage, SeenEvent,
     SourceContinuation, SourceReview,
 };
 pub use reopen::{reopen, reopen_recheck};
 use retraction::can_retract;
 pub use retraction::project_retractions;
+#[cfg(test)]
 pub(crate) use retraction::retraction_valid;
+pub(crate) use retraction::{
+    RetractionCache, project_retractions_with_cache, retraction_valid_cached,
+};
 pub(crate) use validation::validate_source_facts;
 
 pub(crate) type InstanceIndex<'a> = HashMap<&'a str, Vec<(usize, &'a Instance)>>;
@@ -700,7 +706,14 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
                     bail!("component_not_in_build retraction requires verified artifact evidence");
                 }
                 if let Some(artifact) = &event.artifact_evidence {
-                    validation::verify_observed_artifact(artifact, previous)?;
+                    validation::verify_scope_evidence(artifact, previous, store)?;
+                    let verified = validation::verify_content_after_artifact_verified(
+                        artifact,
+                        &snapshot,
+                        &event.instance_ids,
+                        store,
+                    )?;
+                    validation::verify_artifact_scope(artifact, &snapshot, &verified)?;
                 }
                 (
                     Some(Decision::Retracted),

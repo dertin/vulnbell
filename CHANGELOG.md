@@ -4,6 +4,7 @@
 
 - Summarize informational cases by audience and preserve evidence in JSON.
 - Record GitHub pull request closure and allow evidence-bound retraction of inapplicable agent observations.
+- Verify scoped installed Python wheels and recheck recorded observations when dependency inventory changes.
 - Record agent-reviewed codebase security findings separately from dependency advisories, with checked locations and revision tracking.
 - Support scoped symbol navigation through current CodeGraph indexes and record multiple source locations for codebase findings.
 - Track code review scope and progress, support scheduled review, and evaluate agent observations against private labels.

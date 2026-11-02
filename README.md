@@ -95,6 +95,8 @@ The research plan suggests evidence-backed deferred advisories without expanding
 
 VulnBell inventories Python requirements files (`requirements*.txt`, `.in`, `.lock`) and supported uv, Poetry, PDM, Pipenv and `pylock.toml` lockfiles locally. For a reviewed public PyPI requirements lock, set `python.verify_pypi_hashes: true` to authorize package-name queries. VulnBell verifies an exact release hash before assigning a public identity. Alternate or ambiguous source directives keep entries local. Structured Python locks and other unverified declarations remain local candidates. Requirements includes and uncertain sources keep generic discovery local. A matched hash does not establish installation or deployment.
 
+For an eligible upstream observation, VulnBell can compare an exact PyPI wheel with a scoped installed directory and check specific absent paths without running package code. The reviewer must establish why that directory represents the assessed build; an unavailable artifact or unsupported wheel layout remains in review. See the [upstream research guide](skills/vulnbell/references/upstream-research.md).
+
 [Coverage details](docs/coverage.md) · [General discovery](docs/discovery.md)
 
 ## CLI and review workflow
