@@ -153,7 +153,7 @@ impl<'a> Http<'a> {
                 .request(method.clone(), url.clone())
                 .header("Accept", accept_for(&url));
             if url.host_str() == Some("api.github.com") {
-                request = request.header("X-GitHub-Api-Version", "2022-11-28");
+                request = request.header("X-GitHub-Api-Version", "2026-03-10");
                 if github_auth::authenticated_endpoint(&url) {
                     let credentials = self
                         .github_credentials

@@ -12,6 +12,7 @@ fn issue(title: &str, body: &str) -> Item {
         updated_at: "2026-10-20T00:00:00Z".into(),
         body: body.into(),
         closes: vec![],
+        closure: None,
         advisory: None,
     }
 }

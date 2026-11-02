@@ -90,6 +90,7 @@ fn actual_opencode_reads_codebase_with_synthetic_local_model() {
         project_id: profile.project_id.to_string(),
         data_root,
         receipt: jobs.join(format!("acceptance-{}.json", uuid::Uuid::new_v4())),
+        required_codebase: None,
     };
     let directory = tempfile::tempdir().unwrap();
     let adapter = OpenCodeAdapter {

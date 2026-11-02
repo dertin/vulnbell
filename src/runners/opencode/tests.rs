@@ -78,6 +78,7 @@ fn scoped_tools_are_granted_only_to_the_matching_role() {
         project_id: "fixture".into(),
         data_root: directory.path().join("data"),
         receipt: directory.path().join("receipt"),
+        required_codebase: None,
     };
     let source_session = Session::new(
         &adapter,
@@ -90,6 +91,10 @@ fn scoped_tools_are_granted_only_to_the_matching_role() {
     assert_eq!(source_session.settings["permission"]["*"], "deny");
     assert_eq!(
         source_session.settings["permission"]["vulnbell_codebase_codebase_read"],
+        "allow"
+    );
+    assert_eq!(
+        source_session.settings["permission"]["vulnbell_codebase_codebase_symbols"],
         "allow"
     );
     assert!(
@@ -158,6 +163,7 @@ fn actual_opencode_connects_scoped_codebase_tools() {
         project_id: project.project_id.to_string(),
         data_root,
         receipt: jobs.join("opencode-test-receipt.json"),
+        required_codebase: None,
     };
     let directory = tempfile::tempdir().unwrap();
     let adapter = adapter(&executable);

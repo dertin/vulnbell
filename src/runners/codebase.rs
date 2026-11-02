@@ -14,6 +14,7 @@ const FILE_LIMIT: u64 = 512 * 1024;
 const MAX_FILES: usize = 20_000;
 const SEARCH_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_MESSAGE: usize = 1024 * 1024;
+pub(crate) mod graph;
 static CREDENTIAL_URL: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r#"(?i)\b[a-z][a-z0-9+.-]*://[^\s/"'<>]*@"#)
         .expect("static credential URL pattern")
@@ -21,6 +22,8 @@ static CREDENTIAL_URL: LazyLock<regex::Regex> = LazyLock::new(|| {
 
 fn private_manifest(name: &str) -> bool {
     discovery::requirements_file(name)
+        || inventory::python_lock_file(name)
+        || name.to_ascii_lowercase().ends_with(".lock")
         || name.eq_ignore_ascii_case("composer.json")
         || inventory::native_inventory_file(name)
 }
@@ -33,6 +36,8 @@ struct Arguments {
     path: Option<String>,
     #[serde(default)]
     query: Option<String>,
+    #[serde(default)]
+    relation: Option<String>,
     #[serde(default)]
     offset: Option<usize>,
     #[serde(default)]
@@ -58,11 +63,22 @@ fn visible(entry: &DirEntry) -> bool {
         && (entry.depth() == 0 || !private_manifest(&entry.file_name().to_string_lossy()))
 }
 
-pub(crate) fn preflight(store: &Store) -> Result<()> {
+pub(crate) fn preflight_codebase(store: &Store, codebase: usize) -> Result<()> {
     store.ensure_codebases_current()?;
+    preflight_source(store, codebase)?;
+    store.ensure_codebases_current()?;
+    Ok(())
+}
+
+fn preflight_source(store: &Store, codebase: usize) -> Result<()> {
     let started = Instant::now();
     let mut remaining = 1024 * 1024_u64;
-    for revision in store.latest()?.codebase_revisions {
+    let snapshot = store.latest()?;
+    let revision = snapshot
+        .codebase_revisions
+        .get(codebase)
+        .context("codebase index outside the monitored scope")?;
+    {
         let root = Path::new(&revision.codebase);
         let mut walk = WalkBuilder::new(root);
         walk.hidden(false)
@@ -112,11 +128,18 @@ pub(crate) fn preflight(store: &Store) -> Result<()> {
             }
         }
     }
-    store.ensure_codebases_current()?;
     Ok(())
 }
 
 fn paths(root: &Path, prefix: Option<&str>) -> Result<(Vec<String>, bool)> {
+    paths_in_scope(root, prefix, false)
+}
+
+fn paths_in_scope(
+    root: &Path,
+    prefix: Option<&str>,
+    include_manifests: bool,
+) -> Result<(Vec<String>, bool)> {
     let prefix = prefix.map(Path::new);
     if let Some(prefix) = prefix {
         if prefix.as_os_str().is_empty()
@@ -141,7 +164,11 @@ fn paths(root: &Path, prefix: Option<&str>) -> Result<(Vec<String>, bool)> {
         .follow_links(false)
         .require_git(false)
         .filter_entry(move |entry| {
-            if !visible(entry) {
+            if !(if include_manifests {
+                visible_base(entry)
+            } else {
+                visible(entry)
+            }) {
                 return false;
             }
             let Some(prefix) = &prefix else {
@@ -211,6 +238,58 @@ fn file_text(root: &str, relative: &str) -> Result<String> {
     Ok(content)
 }
 
+/// Hash the complete visible source scope without exposing source contents.
+pub(crate) fn source_fingerprint(root: &str) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    const FINGERPRINT_TOTAL_LIMIT: u64 = 1024 * 1024 * 1024;
+    let (files, complete) = paths_in_scope(Path::new(root), None, true)?;
+    if !complete {
+        bail!("source fingerprint exceeds the file limit or has inaccessible paths");
+    }
+    let mut entries = Vec::with_capacity(files.len());
+    let mut total = 0_u64;
+    for path in files {
+        let mut file = discovery::open_file(root, &path)?;
+        let before = file.metadata()?;
+        if !before.is_file() {
+            bail!("source fingerprint contains an unavailable file");
+        }
+        if before.len() > FINGERPRINT_TOTAL_LIMIT.saturating_sub(total) {
+            bail!("source fingerprint exceeds the 1 GiB total input limit");
+        }
+        let mut digest = Sha256::new();
+        let mut bytes = [0_u8; 64 * 1024];
+        let mut length = 0_u64;
+        loop {
+            let read = file.read(&mut bytes)?;
+            if read == 0 {
+                break;
+            }
+            length += read as u64;
+            if length > before.len() {
+                bail!("source changed during fingerprinting");
+            }
+            digest.update(&bytes[..read]);
+        }
+        let after = file.metadata()?;
+        if before.len() != after.len()
+            || before.modified()? != after.modified()?
+            || length != before.len()
+        {
+            bail!("source changed during fingerprinting");
+        }
+        total += length;
+        entries.push((path, hex::encode(digest.finalize())));
+    }
+    Ok(crate::digest(&serde_json::to_vec(&entries)?))
+}
+
+pub(crate) fn source_visible(root: &str, path: &str) -> bool {
+    paths(Path::new(root), Some(path)).is_ok_and(|(files, complete)| {
+        complete && files.iter().any(|file| file == path) && file_text(root, path).is_ok()
+    })
+}
+
 pub(crate) fn ensure_visible_batch(
     store: &Store,
     citations: &[crate::tools::citations::Citation],
@@ -239,14 +318,7 @@ pub(crate) fn ensure_visible_batch(
 
 fn execute(store: &Store, roots: &[String], name: &str, args: Arguments) -> Result<Value> {
     store.ensure_codebases_current()?;
-    let volatile = store
-        .latest()?
-        .codebase_revisions
-        .iter()
-        .any(|revision| revision.state != crate::codebase_revision::RepositoryState::Git);
-    if volatile {
-        preflight(store)?;
-    }
+    preflight_source(store, args.codebase)?;
     let root = roots
         .get(args.codebase)
         .context("codebase index is outside the monitor")?;
@@ -258,7 +330,7 @@ fn execute(store: &Store, roots: &[String], name: &str, args: Arguments) -> Resu
                 bail!("offset is outside the file list");
             }
             let end = offset.saturating_add(50).min(files.len());
-            json!({"paths":&files[offset..end],"next_offset":(end < files.len()).then_some(end),"complete":complete})
+            json!({"paths":&files[offset..end],"next_offset":(end < files.len()).then_some(end),"complete":complete,"limitations":if complete { vec![] } else { vec!["file_limit_or_inaccessible_path"] },"excluded":"private, ignored, dependency, index and build output paths"})
         }
         "codebase_read" => {
             let path = args.path.context("path is required")?;
@@ -291,28 +363,36 @@ fn execute(store: &Store, roots: &[String], name: &str, args: Arguments) -> Resu
             let mut matches = Vec::new();
             let mut inspected = 0;
             let mut exhausted = !complete;
+            let mut limitations = std::collections::BTreeSet::new();
+            if !complete {
+                limitations.insert("file_limit_or_inaccessible_path");
+            }
             for path in &files {
                 let text = match file_text(root, path) {
                     Ok(text) => text,
                     Err(_) => {
                         exhausted = true;
+                        limitations.insert("unreadable_or_excluded_file");
                         continue;
                     }
                 };
                 inspected += text.len() as u64;
                 if inspected > SEARCH_BYTES {
                     exhausted = true;
+                    limitations.insert("byte_limit");
                     break;
                 }
                 for (line, content) in text.lines().enumerate() {
                     if content.contains(&query) {
                         if content.len() > 1000 {
                             exhausted = true;
+                            limitations.insert("line_length_limit");
                             continue;
                         }
                         matches.push(json!({"path":path,"line":line+1,"text":content,"sha256":crate::digest(content.as_bytes())}));
                         if matches.len() == 20 {
                             exhausted = true;
+                            limitations.insert("match_limit");
                             break;
                         }
                     }
@@ -321,16 +401,18 @@ fn execute(store: &Store, roots: &[String], name: &str, args: Arguments) -> Resu
                     break;
                 }
             }
-            json!({"matches":matches,"complete":!exhausted})
+            json!({"matches":matches,"complete":!exhausted,"limitations":limitations,"excluded":"private, ignored, dependency, index and build output paths"})
+        }
+        "codebase_symbols" => {
+            let query = args.query.context("query is required")?;
+            graph::search(root, &query, &files, args.relation.as_deref(), roots)?
         }
         _ => bail!("unknown source tool"),
     };
     if serde_json::to_vec(&result)?.len() > 24 * 1024 {
         bail!("result exceeds the bounded agent response; narrow the request");
     }
-    if volatile {
-        preflight(store)?;
-    }
+    preflight_source(store, args.codebase)?;
     store.ensure_codebases_current()?;
     Ok(result)
 }
@@ -339,7 +421,6 @@ fn execute(store: &Store, roots: &[String], name: &str, args: Arguments) -> Resu
 pub fn serve_codebase(project: &Path, receipt: Option<&Path>) -> Result<()> {
     let profile = profile::load(project)?;
     let store = Store::open(&profile.project_id.to_string())?;
-    preflight(&store)?;
     if let Some(receipt) = receipt {
         let jobs = store.directory.join("jobs").canonicalize()?;
         let parent = receipt
@@ -356,7 +437,7 @@ pub fn serve_codebase(project: &Path, receipt: Option<&Path>) -> Result<()> {
         .into_iter()
         .map(|revision| revision.codebase)
         .collect();
-    let schema = json!({"type":"object","properties":{"codebase":{"type":"integer","minimum":0},"path":{"type":"string"},"query":{"type":"string"},"offset":{"type":"integer","minimum":0},"start_line":{"type":"integer","minimum":1},"line_count":{"type":"integer","minimum":1,"maximum":100}},"required":["codebase"],"additionalProperties":false});
+    let schema = json!({"type":"object","properties":{"codebase":{"type":"integer","minimum":0},"path":{"type":"string"},"query":{"type":"string"},"relation":{"type":"string","enum":["callers","callees"]},"offset":{"type":"integer","minimum":0},"start_line":{"type":"integer","minimum":1},"line_count":{"type":"integer","minimum":1,"maximum":100}},"required":["codebase"],"additionalProperties":false});
     let tool = |name, description| json!({"name":name,"description":description,"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false},"inputSchema":schema});
     let tools = json!([
         tool(
@@ -370,6 +451,10 @@ pub fn serve_codebase(project: &Path, receipt: Option<&Path>) -> Result<()> {
         tool(
             "codebase_search",
             "Find a literal string in selected codebase files; an optional path narrows the subtree. complete=false means the search was bounded or skipped files."
+        ),
+        tool(
+            "codebase_symbols",
+            "Find a symbol or its callers/callees using an existing current CodeGraph index; set relation to callers or callees. Locations are navigation hints; read source to verify."
         )
     ]);
     super::serve_mcp(
@@ -377,14 +462,41 @@ pub fn serve_codebase(project: &Path, receipt: Option<&Path>) -> Result<()> {
         MAX_MESSAGE,
         tools,
         |name, arguments| {
-            let result = execute(&store, &roots, name, serde_json::from_value(arguments)?)?;
-            if let Some(receipt) =
-                receipt.filter(|_| matches!(name, "codebase_read" | "codebase_search"))
-            {
+            let arguments: Arguments = serde_json::from_value(arguments)?;
+            let codebase = arguments.codebase;
+            let result = execute(&store, &roots, name, arguments)?;
+            let source_returned = match name {
+                "codebase_read" => result.get("lines"),
+                "codebase_search" => result.get("matches"),
+                _ => None,
+            }
+            .and_then(Value::as_array)
+            .is_some_and(|items| !items.is_empty());
+            if let Some(receipt) = receipt.filter(|_| source_returned) {
+                let mut read: Vec<usize> = if receipt.exists() {
+                    let value: Value =
+                        serde_json::from_slice(&crate::read_limited(receipt, 4096)?)?;
+                    if value.get("project_id").and_then(Value::as_str)
+                        != Some(&profile.project_id.to_string())
+                    {
+                        bail!("source receipt belongs to another project");
+                    }
+                    serde_json::from_value(
+                        value
+                            .get("codebases_read")
+                            .cloned()
+                            .context("source receipt is incomplete")?,
+                    )?
+                } else {
+                    Vec::new()
+                };
+                if !read.contains(&codebase) {
+                    read.push(codebase);
+                }
                 crate::atomic_write(
                     receipt,
                     &serde_json::to_vec(
-                        &json!({"schema_version":1,"project_id":profile.project_id.to_string(),"source_read":true}),
+                        &json!({"schema_version":1,"project_id":profile.project_id.to_string(),"source_read":true,"codebases_read":read}),
                     )?,
                 )?;
             }
@@ -397,6 +509,18 @@ pub fn serve_codebase(project: &Path, receipt: Option<&Path>) -> Result<()> {
 mod tests {
     use super::{file_text, paths};
     use std::fs;
+
+    #[test]
+    fn fingerprint_streams_large_files_and_tracks_manifests() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("fixture.bin"), vec![0_u8; 5 * 1024 * 1024]).unwrap();
+        fs::write(dir.path().join("requirements.txt"), "example==1\n").unwrap();
+        let canonical = dir.path().canonicalize().unwrap();
+        let root = canonical.to_str().unwrap();
+        let first = super::source_fingerprint(root).unwrap();
+        fs::write(dir.path().join("requirements.txt"), "example==2\n").unwrap();
+        assert_ne!(super::source_fingerprint(root).unwrap(), first);
+    }
 
     #[test]
     fn source_inventory_skips_private_ignored_and_dependency_trees() {
@@ -420,6 +544,14 @@ mod tests {
             "# synthetic lockfile\n",
         )
         .unwrap();
+        for name in [
+            "requirements.lock",
+            "uv.lock",
+            "pylock.app.toml",
+            "unknown.lock",
+        ] {
+            fs::write(directory.path().join(name), "synthetic private content").unwrap();
+        }
         fs::create_dir(directory.path().join("node_modules")).unwrap();
         fs::write(
             directory.path().join("node_modules/package.js"),
@@ -438,6 +570,10 @@ mod tests {
             "requirements-dev.txt",
             "composer.json",
             "Cargo.lock",
+            "requirements.lock",
+            "uv.lock",
+            "pylock.app.toml",
+            "unknown.lock",
             "ignored.rs",
             "node_modules/package.js",
             "target/generated.rs",
@@ -446,6 +582,14 @@ mod tests {
             assert!(!files.iter().any(|path| path == forbidden), "{forbidden}");
         }
         let root = directory.path().canonicalize().unwrap();
+        for name in [
+            "requirements.lock",
+            "uv.lock",
+            "pylock.app.toml",
+            "unknown.lock",
+        ] {
+            assert!(file_text(root.to_str().unwrap(), name).is_err(), "{name}");
+        }
         assert_eq!(
             paths(&root, Some("source.rs")).unwrap().0,
             vec!["source.rs"]

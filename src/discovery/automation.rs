@@ -163,6 +163,7 @@ impl Session<'_> {
             Request {
                 github_upstream: None,
                 codebase_project: None,
+                required_codebase: None,
                 directory: &self.work,
                 output: &output,
                 prompt,

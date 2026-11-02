@@ -56,6 +56,8 @@ pub struct ItemDecision {
     /// Required with `not_applicable`; forbidden otherwise.
     #[serde(default)]
     pub not_applicable_reason: Option<NotApplicableReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_evidence: Option<crate::research::ArtifactEvidence>,
     pub rationale: String,
     #[serde(default)]
     pub source_facts: SourceFacts,
@@ -449,6 +451,7 @@ fn target_events(
                 Reading {
                     assessment: decision.assessment,
                     reason: decision.not_applicable_reason,
+                    artifact_evidence: decision.artifact_evidence.as_ref(),
                     rationale: &decision.rationale,
                     facts: &decision.source_facts,
                     instance_ids: &decision.instance_ids,
@@ -460,6 +463,7 @@ fn target_events(
                 Reading {
                     assessment: outcome.assessment,
                     reason: outcome.reason,
+                    artifact_evidence: None,
                     rationale: &outcome.rationale,
                     facts: &outcome.facts,
                     instance_ids: &outcome.instance_ids,
@@ -486,6 +490,7 @@ fn target_events(
 struct Reading<'a> {
     assessment: Assessment,
     reason: Option<NotApplicableReason>,
+    artifact_evidence: Option<&'a crate::research::ArtifactEvidence>,
     rationale: &'a str,
     facts: &'a SourceFacts,
     instance_ids: &'a [String],
@@ -545,6 +550,7 @@ fn event(
         updated_at: item.updated_at.clone(),
         assessment: reading.assessment,
         not_applicable_reason: reading.reason,
+        artifact_evidence: reading.artifact_evidence.cloned(),
         rationale: reading.rationale.to_owned(),
         source_facts: facts,
     })

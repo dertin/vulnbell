@@ -6,6 +6,9 @@ pub mod advisories;
 pub mod cases;
 pub mod challenge;
 pub mod citations;
+pub mod code_evaluate;
+pub mod code_findings;
+pub mod code_review;
 pub mod draft;
 pub mod evaluate;
 pub mod hits;
@@ -64,6 +67,9 @@ pub struct Item {
     pub title: String,
     #[serde(default)]
     pub state: String,
+    /// Provider-confirmed pull request closure state, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closure: Option<PullRequestClosure>,
     #[serde(default)]
     pub labels: Vec<String>,
     /// The source's RFC3339 update time, or commit time for commits.
@@ -76,6 +82,14 @@ pub struct Item {
     pub closes: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub advisory: Option<RepositoryAdvisory>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PullRequestClosure {
+    Open,
+    Merged,
+    ClosedUnmerged,
 }
 
 /// A security advisory published in the upstream repository.

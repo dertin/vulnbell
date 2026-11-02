@@ -27,6 +27,8 @@ pub struct FindingCheck {
     pub references: Vec<FindingReference>,
     pub local_checks: Vec<LocalCheck>,
     pub impact: Option<ImpactResult>,
+    /// A recorded impact cannot be reused and must be reassessed under the current questions.
+    pub impact_reassessment_required: bool,
     /// Evidence-bound review disposition; it never represents a sandbox attestation.
     pub review_handoff: Option<crate::tools::cases::ReviewHandoff>,
     /// A prior disposition is no longer current or its evidence cannot be validated.
@@ -104,6 +106,11 @@ pub(super) fn finding_check(case: &Case, store: &Store, language: Language) -> F
     references.sort_by(|a, b| a.url.cmp(&b.url));
     references.dedup_by(|a, b| a.url == b.url);
     let impact = crate::impact::latest(case, store);
+    let impact_reassessment_required = impact.is_none()
+        && case
+            .evidence
+            .iter()
+            .any(|item| item.source == "impact_assessment");
     let review_handoff = crate::tools::cases::current_handoff(case, store);
     // The same evidence is inspected for every instance. Validate it once per case, while
     // retaining the original newest-first ordering and failure behavior for each instance.
@@ -285,6 +292,7 @@ pub(super) fn finding_check(case: &Case, store: &Store, language: Language) -> F
         references,
         local_checks,
         impact,
+        impact_reassessment_required,
         review_handoff,
         review_handoff_stale,
         open_challenges: crate::tools::challenge::open(case, store),
@@ -382,7 +390,7 @@ pub(super) fn markdown(
     let mut text = words.verification_intro.to_owned();
     for finding in findings {
         text.push_str(&format!(
-            "### {} — {}\n\n",
+            "### {} - {}\n\n",
             inline(&finding.case_id),
             text::decision(language, finding.decision)
         ));
@@ -539,7 +547,11 @@ pub(super) fn markdown(
                 text.push_str(&format!("  - **{label}:** {verdict}\n{body}"));
             }
         } else {
-            text.push_str(words.impact_not_assessed_long);
+            if finding.decision == Decision::Informational {
+                text.push_str(&format!("- {}\n", words.informational_context));
+            } else {
+                text.push_str(words.impact_unassessed_reader);
+            }
         }
         text.push('\n');
     }

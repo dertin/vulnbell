@@ -1,6 +1,128 @@
 use super::*;
 
 #[test]
+fn concurrent_fact_change_cannot_attach_notes_or_apply_impact_and_verdict() {
+    let (_directory, project, mut store, expected, reference) = human_fixture();
+    let mut updated = expected.clone();
+    updated.facts_sha256 = "new-facts".into();
+    store.save_case(&updated).unwrap();
+    let staged = store
+        .record_evidence(
+            b"staged note for prior facts",
+            "local_impact_evidence",
+            None,
+            EvidenceKind::Context,
+        )
+        .unwrap();
+    let submission = ImpactSubmission {
+        schema_version: 1,
+        question_set_sha256: impact::question_set_sha256(),
+        case_id: expected.case_id.clone(),
+        facts_sha256: expected.facts_sha256.clone(),
+        answers: Vec::new(),
+    };
+    assert!(
+        impact::assess_if_current(
+            &mut store,
+            &expected.case_id,
+            submission,
+            &expected,
+            vec![staged.clone()]
+        )
+        .is_err()
+    );
+    let verdict = crate::model::Verdict {
+        schema_version: 1,
+        case_id: expected.case_id.clone(),
+        codebase_revisions: expected.codebase_revisions.clone(),
+        facts_sha256: expected.facts_sha256.clone(),
+        applicability: Applicability::Unknown,
+        verification: Verification::Inconclusive,
+        decision: Decision::Review,
+        rationale: "Prior facts require review.".into(),
+        advisory_translation: None,
+        evidence: vec![reference],
+    };
+    assert!(
+        crate::engine::triage_if_current(
+            &mut store,
+            &expected.case_id,
+            verdict,
+            &expected,
+            vec![staged.clone()]
+        )
+        .is_err()
+    );
+    let current = store.case(&expected.case_id).unwrap();
+    assert_eq!(current.facts_sha256, "new-facts");
+    assert!(
+        !current
+            .evidence
+            .iter()
+            .any(|item| item.sha256 == staged.sha256)
+    );
+    drop(store);
+    fs::remove_dir_all(crate::store::data_root().join(project)).unwrap();
+}
+
+#[test]
+fn incompatible_closed_impact_is_replanned_for_source_review() {
+    let (_directory, project, store, mut case, reference) = human_fixture();
+    let old_result = impact::previous(&case, &store).unwrap().unwrap();
+    let mut old = serde_json::to_value(old_result).unwrap();
+    old.as_object_mut().unwrap().remove("question_set_sha256");
+    let evidence = store
+        .record_evidence(
+            &serde_json::to_vec(&old).unwrap(),
+            "impact_assessment",
+            None,
+            EvidenceKind::Context,
+        )
+        .unwrap();
+    let index = case
+        .evidence
+        .iter()
+        .position(|item| item.source == "impact_assessment")
+        .unwrap();
+    case.evidence[index] = evidence;
+    case.decision = Decision::Informational;
+    case.applicability = Applicability::NotAffected;
+    let verdict = crate::model::Verdict {
+        schema_version: 1,
+        case_id: case.case_id.clone(),
+        codebase_revisions: case.codebase_revisions.clone(),
+        facts_sha256: case.facts_sha256.clone(),
+        applicability: case.applicability,
+        verification: case.verification,
+        decision: case.decision,
+        rationale: "Previous assessment excluded production.".into(),
+        advisory_translation: None,
+        evidence: vec![reference],
+    };
+    case.evidence.push(
+        store
+            .record_evidence(
+                &serde_json::to_vec(&verdict).unwrap(),
+                "agent_verdict",
+                None,
+                EvidenceKind::Context,
+            )
+            .unwrap(),
+    );
+    assert!(impact::previous(&case, &store).unwrap().is_none());
+    let context = source_review_context(&case, &store).unwrap();
+    let plan = source_plan(&case, &store, &context).unwrap().unwrap().plan;
+    assert!(
+        plan.targets[0]
+            .questions
+            .iter()
+            .any(|question| question.id == ImpactQuestionId::AffectedFeatureUsed)
+    );
+    drop(store);
+    fs::remove_dir_all(crate::store::data_root().join(project)).unwrap();
+}
+
+#[test]
 fn changed_attestation_recalculates_impact_without_losing_human_answers() {
     let (directory, project, mut store, mut case, _) = human_fixture();
     let linked = store
@@ -108,6 +230,7 @@ fn source_notes_and_assessment_commit_with_concurrent_case_evidence() {
         }],
     });
     let submission = || ImpactSubmission {
+        question_set_sha256: crate::impact::question_set_sha256(),
         schema_version: 1,
         case_id: expected.case_id.clone(),
         facts_sha256: expected.facts_sha256.clone(),

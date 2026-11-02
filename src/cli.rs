@@ -35,6 +35,9 @@ pub(super) enum Commands {
     Doctor {
         #[arg(long)]
         json: bool,
+        /// Tailor recommendations to the latest inventory for this monitor.
+        #[arg(long)]
+        project: Option<PathBuf>,
     },
     /// List monitored projects, scans, schedules, skipped runs and reports.
     Status {
@@ -48,7 +51,7 @@ pub(super) enum Commands {
     },
     /// Print a versioned JSON Schema generated from the Rust contract.
     Schema {
-        #[arg(value_parser=["profile","verdict","case","test","attestation","impact","report","research","discovery","runner","snapshot","schedule","status","decisions","impact-batch","verdict-batch","scope-batch","handoff-batch","citations","challenge","items"])]
+        #[arg(value_parser=["profile","verdict","case","test","attestation","impact","report","audit-report","research","discovery","runner","snapshot","schedule","status","decisions","impact-batch","verdict-batch","scope-batch","handoff-batch","citations","challenge","items","code-finding","code-review","code-evaluation-labels","code-evaluation-observations"])]
         contract: String,
         #[arg(long)]
         json: bool,
@@ -224,12 +227,18 @@ pub(super) enum AssessmentCommands {
         json: bool,
         #[arg(long,default_value="manager",value_parser=["manager","cyber","audit"])]
         audience: String,
+        /// Detail for closed cases; defaults to summary for manager/cyber and full for audit.
+        #[arg(long, value_enum)]
+        closed: Option<vulnbell::output::ClosedMode>,
         /// Write a self-contained PDF using a local Chromium-based browser.
         #[arg(long, conflicts_with = "json")]
         pdf: Option<PathBuf>,
         /// Use an edited Markdown report as the PDF's main text.
-        #[arg(long, requires = "pdf")]
+        #[arg(long, requires_all = ["pdf", "custom_reason"])]
         from_markdown: Option<PathBuf>,
+        /// Briefly explain why the Markdown was edited.
+        #[arg(long, requires = "from_markdown")]
+        custom_reason: Option<String>,
         /// Chromium-based browser executable; otherwise search common names in PATH.
         #[arg(long, requires = "pdf")]
         pdf_browser: Option<PathBuf>,
@@ -237,6 +246,27 @@ pub(super) enum AssessmentCommands {
 }
 #[derive(Subcommand)]
 pub(super) enum ToolCommands {
+    /// Compare source-review observations with independent private labels.
+    CodeEvaluate {
+        #[arg(long)]
+        labels: PathBuf,
+        #[arg(long)]
+        observations: PathBuf,
+    },
+    /// Record the scope and progress of an independent codebase review.
+    CodeReview {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        from: PathBuf,
+    },
+    /// Record an agent-reviewed codebase finding with a verified source location.
+    CodeFinding {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        from: PathBuf,
+    },
     /// Record a separate evidence-backed challenge of a current case assessment.
     Challenge {
         #[arg(long)]

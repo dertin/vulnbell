@@ -29,6 +29,72 @@ fn lockfile_hash_changes_keep_mappings_and_declaration_changes_invalidate_them()
 }
 
 #[test]
+fn cpe_mapping_requires_and_rechecks_public_advisory_evidence() {
+    let project = uuid::Uuid::new_v4().to_string();
+    let mut store = Store::open(&project).unwrap();
+    let profile: crate::profile::Profile = serde_saphyr::from_str(&format!("schema: 1\nproject_id: {project}\nname: sources\ncomponents:\n  - ref: pkg:pypi/example\n    version: '1.0.0'\n")).unwrap();
+    let instance = Instance::declared(&profile.components[0]);
+    store
+        .save_snapshot(&crate::model::Snapshot {
+            codebase_revisions: Vec::new(),
+            schema_version: 1,
+            id: uuid::Uuid::new_v4().to_string(),
+            project_id: project.clone(),
+            profile_sha256: "test".into(),
+            started_at: crate::now(),
+            finished_at: crate::now(),
+            instances: vec![instance.clone()],
+            coverage: vec![],
+            cases: vec![],
+            partial: true,
+            alert_status: "test".into(),
+        })
+        .unwrap();
+    let doc = record_document(
+        &store,
+        "https://example.org/advisory",
+        b"cpe:2.3:a:example:product",
+    )
+    .unwrap();
+    let mut observation = IdentityObservation {
+        instance_id: instance.id.clone(),
+        fingerprint: fingerprint(&instance),
+        version: None,
+        cpe_product: Some("cpe:2.3:a:example:product".into()),
+        rationale: "Advisory identifies the product".into(),
+        sources: SOURCE_KINDS
+            .iter()
+            .map(|kind| SourceMapping {
+                kind: *kind,
+                state: MappingState::Mapped,
+                url: Some("https://example.org/advisory".into()),
+                detail: "Official advisory".into(),
+                evidence: vec![EvidenceReference {
+                    id: doc.id.clone(),
+                    sha256: doc.sha256.clone(),
+                }],
+            })
+            .collect(),
+    };
+    observation.cpe_product = Some("cpe:2.3:a:other:product".into());
+    assert!(import(&mut store, "test", vec![observation.clone()]).is_err());
+    observation.cpe_product = Some("cpe:2.3:a:example:product".into());
+    import(&mut store, "test", vec![observation]).unwrap();
+    let mut instances = vec![instance.clone()];
+    apply(&store, "test", &mut instances).unwrap();
+    assert_eq!(
+        instances[0].cpe_product.as_deref(),
+        Some("cpe:2.3:a:example:product")
+    );
+    std::fs::remove_file(store.directory.join("evidence").join(&doc.sha256)).unwrap();
+    let mut instances = vec![instance];
+    apply(&store, "test", &mut instances).unwrap();
+    assert_eq!(instances[0].cpe_product, None);
+    drop(store);
+    std::fs::remove_dir_all(crate::store::data_root().join(project)).unwrap();
+}
+
+#[test]
 fn mapped_sources_require_acquired_evidence_and_every_category() {
     let directory = tempfile::tempdir().unwrap();
     let project = uuid::Uuid::new_v4().to_string();

@@ -71,6 +71,7 @@ pub struct ImpactTarget {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct ImpactPlan {
     pub schema_version: u32,
+    pub question_set_sha256: String,
     pub case_id: String,
     pub codebase_revisions: Vec<crate::codebase_revision::CodebaseRevision>,
     pub facts_sha256: String,
@@ -93,6 +94,7 @@ pub struct ImpactAnswer {
 #[serde(deny_unknown_fields)]
 pub struct ImpactSubmission {
     pub schema_version: u32,
+    pub question_set_sha256: String,
     pub case_id: String,
     pub facts_sha256: String,
     pub answers: Vec<ImpactAnswer>,
@@ -108,8 +110,10 @@ pub struct InstanceImpact {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ImpactResult {
     pub schema_version: u32,
+    pub question_set_sha256: String,
     pub case_id: String,
     pub codebase_revisions: Vec<crate::codebase_revision::CodebaseRevision>,
     pub facts_sha256: String,
@@ -137,6 +141,7 @@ pub(crate) fn plan_selected(
     let confirmed = confirmed_instances(case, store);
     ImpactPlan {
         schema_version: 1,
+        question_set_sha256: question_set_sha256(),
         case_id: case.case_id.clone(),
         codebase_revisions: case.codebase_revisions.clone(),
         facts_sha256: case.facts_sha256.clone(),
@@ -221,6 +226,7 @@ fn assess_checked(
     let instances = assess_instances(&case, store, &submission.answers)?;
     let result = ImpactResult {
         schema_version: 1,
+        question_set_sha256: question_set_sha256(),
         case_id: case.case_id.clone(),
         codebase_revisions: case.codebase_revisions.clone(),
         facts_sha256: case.facts_sha256.clone(),
@@ -237,6 +243,11 @@ fn assess_checked(
     let evidence =
         store.record_evidence(&bytes, "impact_assessment", None, EvidenceKind::Context)?;
     case.evidence.push(evidence);
+    if case.decision == crate::model::Decision::Retracted {
+        case.decision = crate::model::Decision::Review;
+        case.applicability = crate::model::Applicability::Unknown;
+        case.verification = Verification::Inconclusive;
+    }
     case.updated_at = result.assessed_at.clone();
     store.save_case(&case)?;
     Ok(result)
@@ -287,17 +298,22 @@ pub(crate) fn valid_attestations(case: &Case, store: &Store) -> Vec<String> {
         .collect()
 }
 
+/// Binds answers to the exact questions and evidence requirements presented to the reviewer.
+pub fn question_set_sha256() -> String {
+    crate::digest(&serde_json::to_vec(&questions()).expect("impact questions serialize"))
+}
+
 pub(crate) fn questions() -> Vec<ImpactQuestion> {
     vec![
         ImpactQuestion {
             id: ImpactQuestionId::ArtifactDeployed,
-            prompt: "Is this exact version present in a deployed or shipped artifact?".into(),
-            evidence_needed: "Evidence identifying the exact shipped artifact or deployment, such as an artifact inventory or deployment record. A lockfile or isolated sandbox test alone does not establish shipment or deployment.".into(),
+            prompt: "If already known, is this exact version present in a deployed or shipped artifact?".into(),
+            evidence_needed: "Optional context: an artifact inventory or deployment record. Do not investigate deployment just to assess codebase risk; a lockfile or isolated sandbox test alone does not establish deployment.".into(),
         },
         ImpactQuestion {
             id: ImpactQuestionId::AffectedFeatureUsed,
-            prompt: "Does the project call or enable the affected function, module, or protocol?".into(),
-            evidence_needed: "Source location, configuration, call path, or a codebase-copy sandbox result.".into(),
+            prompt: "Does an in-scope project configuration, including local development or tests, call or enable the affected function, module, or protocol?".into(),
+            evidence_needed: "Source location, configuration, call path, or a codebase-copy sandbox result. Identify test-only paths without excluding them solely because production use is unconfirmed.".into(),
         },
         ImpactQuestion {
             id: ImpactQuestionId::UntrustedInputReachesFeature,
@@ -373,6 +389,7 @@ fn validate_submission(
     submission: &ImpactSubmission,
 ) -> Result<()> {
     if submission.schema_version != 1
+        || submission.question_set_sha256 != question_set_sha256()
         || submission.case_id != id
         || submission.facts_sha256 != case.facts_sha256
     {
@@ -467,18 +484,17 @@ fn assess_instance(
     let open_questions = questions()
         .into_iter()
         .filter(|question| {
-            values
-                .get(&question.id)
-                .is_none_or(|answer| *answer == ImpactAnswerValue::Unknown)
+            question.id != ImpactQuestionId::ArtifactDeployed
+                && values
+                    .get(&question.id)
+                    .is_none_or(|answer| *answer == ImpactAnswerValue::Unknown)
         })
         .map(|question| question.id)
         .collect::<Vec<_>>();
     let negative = answers.iter().find(|answer| {
         matches!(
             answer.question,
-            ImpactQuestionId::ArtifactDeployed
-                | ImpactQuestionId::AffectedFeatureUsed
-                | ImpactQuestionId::RequiredConditionsPresent
+            ImpactQuestionId::AffectedFeatureUsed | ImpactQuestionId::RequiredConditionsPresent
         ) && answer.answer == ImpactAnswerValue::No
     });
     let strong_negative = negative.is_some_and(|answer| {
@@ -488,7 +504,6 @@ fn assess_instance(
             .any(|reference| is_non_applicability(case, store, instance_id, reference))
     });
 
-    let deployed = values.get(&ImpactQuestionId::ArtifactDeployed);
     let used = values.get(&ImpactQuestionId::AffectedFeatureUsed);
     let input = values.get(&ImpactQuestionId::UntrustedInputReachesFeature);
     let conditions = values.get(&ImpactQuestionId::RequiredConditionsPresent);
@@ -515,8 +530,7 @@ fn assess_instance(
             ImpactVerdict::NeedsEvidence,
             "The exact version is not confirmed affected by authoritative evidence or a successful local reproduction.",
         )
-    } else if deployed == Some(&ImpactAnswerValue::Yes)
-        && used == Some(&ImpactAnswerValue::Yes)
+    } else if used == Some(&ImpactAnswerValue::Yes)
         && input == Some(&ImpactAnswerValue::Yes)
         && matches!(
             conditions,
@@ -526,30 +540,22 @@ fn assess_instance(
     {
         (
             ImpactVerdict::UrgentUpdate,
-            "The affected feature is deployed, reachable from untrusted input, its prerequisites hold, and no fix or mitigation is present.",
+            "The affected feature is in scope, reachable from untrusted input, its prerequisites hold, and no fix or mitigation is recorded.",
         )
-    } else if deployed == Some(&ImpactAnswerValue::Yes)
-        && used == Some(&ImpactAnswerValue::Yes)
-        && mitigated == Some(&ImpactAnswerValue::No)
-        && input != Some(&ImpactAnswerValue::No)
-    {
+    } else if used == Some(&ImpactAnswerValue::Yes) && input != Some(&ImpactAnswerValue::No) {
         (
             ImpactVerdict::PriorityUpdate,
-            "The affected feature is deployed without a mitigation; input reachability or another prerequisite is not fully closed.",
+            "The affected feature is in scope and no mitigation is established; verify any remaining reachability or prerequisites.",
         )
-    } else if deployed == Some(&ImpactAnswerValue::Yes)
-        && used == Some(&ImpactAnswerValue::Yes)
-        && input == Some(&ImpactAnswerValue::No)
-        && mitigated == Some(&ImpactAnswerValue::No)
-    {
+    } else if used == Some(&ImpactAnswerValue::Yes) && input == Some(&ImpactAnswerValue::No) {
         (
             ImpactVerdict::RoutineUpdate,
-            "The affected feature is deployed, but current evidence does not show untrusted input reaching it.",
+            "The affected feature is in scope, but current evidence does not show untrusted input reaching it.",
         )
     } else {
         (
             ImpactVerdict::NeedsEvidence,
-            "The library finding is known, but project deployment or reachability is not established.",
+            "The library finding is known, but use of the affected feature in the reviewed codebase is not established.",
         )
     };
 
@@ -670,11 +676,14 @@ fn read_result(case: &Case, store: &Store, evidence: &Evidence) -> Result<Option
         &store.directory.join("evidence").join(&evidence.sha256),
         MAX_IMPACT_RESULT_BYTES as u64,
     )?;
-    let result: ImpactResult = serde_json::from_slice(&bytes)?;
+    let Ok(result) = serde_json::from_slice::<ImpactResult>(&bytes) else {
+        return Ok(None);
+    };
     if result.schema_version != 1 || result.case_id != case.case_id {
         bail!("invalid or mismatched impact assessment");
     }
-    if result.facts_sha256 != case.facts_sha256
+    if result.question_set_sha256 != question_set_sha256()
+        || result.facts_sha256 != case.facts_sha256
         || !crate::codebase_revision::same_revisions(
             &result.codebase_revisions,
             &case.codebase_revisions,
@@ -688,6 +697,7 @@ fn read_result(case: &Case, store: &Store, evidence: &Evidence) -> Result<Option
         &case.case_id,
         &ImpactSubmission {
             schema_version: result.schema_version,
+            question_set_sha256: result.question_set_sha256.clone(),
             case_id: result.case_id.clone(),
             facts_sha256: result.facts_sha256.clone(),
             answers: result.answers.clone(),

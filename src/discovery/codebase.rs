@@ -62,8 +62,17 @@ fn file_classification(parent: &str, name: &str) -> Option<(&'static str, &'stat
             "requirements may contain private package identities or source paths; review locally",
         ));
     }
+    if crate::inventory::python_lock_file(name) {
+        return Some(("excluded", NATIVE_INVENTORY));
+    }
     if crate::inventory::native_inventory_file(name) {
         return Some(("excluded", NATIVE_INVENTORY));
+    }
+    if name.to_ascii_lowercase().ends_with(".lock") {
+        return Some((
+            "unavailable",
+            "unrecognized lockfile may contain private package identities or sources; review locally",
+        ));
     }
     if name == "composer.json" {
         return Some((
@@ -98,8 +107,10 @@ fn file_classification(parent: &str, name: &str) -> Option<(&'static str, &'stat
 
 pub(crate) fn requirements_file(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
-    (name.starts_with("requirements") || name.starts_with("constraints"))
-        && (name.ends_with(".txt") || name.ends_with(".in"))
+    !name.ends_with(".py.lock")
+        && !name.ends_with(".pyw.lock")
+        && (name.starts_with("requirements") || name.starts_with("constraints"))
+        && (name.ends_with(".txt") || name.ends_with(".in") || name.ends_with(".lock"))
 }
 
 fn inline_markers(name: &str) -> Option<&'static [&'static str]> {
@@ -584,10 +595,14 @@ fn read_slice(root: &str, relative: &str, id: &str, offset: u64) -> Result<FileS
     if Path::new(relative)
         .file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(requirements_file)
+        .is_some_and(|name| {
+            requirements_file(name)
+                || crate::inventory::python_lock_file(name)
+                || name.to_ascii_lowercase().ends_with(".lock")
+        })
     {
         bail!(
-            "requirements may contain private package identities or source paths; review locally"
+            "dependency input may contain private package identities or source paths; review locally"
         );
     }
     if Path::new(relative)
@@ -730,7 +745,7 @@ pub(super) fn import(
                     .file_name()
                     .and_then(|v| v.to_str())
                     .unwrap_or("");
-                if ![
+                let supported_manifest = [
                     "pom.xml",
                     "Cargo.toml",
                     "package.json",
@@ -739,6 +754,17 @@ pub(super) fn import(
                     "go.mod",
                 ]
                 .contains(&name)
+                    || name == ".pre-commit-config.yaml"
+                    || name == ".pre-commit-config.yml"
+                    || name == "Dockerfile"
+                    || name.starts_with("Dockerfile-")
+                    || ["docker-compose", "compose"].iter().any(|prefix| {
+                        name.strip_prefix(prefix).is_some_and(|suffix| {
+                            (suffix.is_empty() || suffix.starts_with(['.', '-']))
+                                && (name.ends_with(".yml") || name.ends_with(".yaml"))
+                        })
+                    });
+                if !supported_manifest
                     || !observation
                         .direct_rationale
                         .as_ref()

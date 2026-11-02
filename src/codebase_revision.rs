@@ -62,7 +62,7 @@ impl CodebaseRevision {
     }
 }
 
-fn git_command(path: &Path) -> Command {
+pub(crate) fn git_command(path: &Path) -> Command {
     let mut command = Command::new("git");
     command.current_dir(path).args([
         "--no-optional-locks",
@@ -231,10 +231,12 @@ fn git_status(codebase: &Path, repository: &Path, commit: &str) -> Result<Vec<u8
         )?;
     }
     let worktree_config = git_worktree_config(codebase)?;
-    let output_paths: Vec<String> = crate::inventory::EXCLUDED_DIRECTORIES
+    let mut output_paths: Vec<String> = crate::inventory::EXCLUDED_DIRECTORIES
         .iter()
         .map(|name| format!(":(exclude,glob)**/{name}/**"))
         .collect();
+    output_paths.push(":(exclude,glob)**/.codegraph/**".into());
+    output_paths.push(":(exclude,glob)**/.codegraph-*/**".into());
     let shadow_command = || {
         let mut command = git_command(codebase);
         for (name, value) in &worktree_config {
@@ -264,7 +266,10 @@ fn git_status(codebase: &Path, repository: &Path, commit: &str) -> Result<Vec<u8
             bail!("invalid Git index entry");
         }
         let path = std::str::from_utf8(&entry[2..])?;
-        if private_path(path)? {
+        let codegraph_index = Path::new(path).components().any(|component| {
+            matches!(component, Component::Normal(name) if name == ".codegraph" || name.to_string_lossy().starts_with(".codegraph-"))
+        });
+        if private_path(path)? || codegraph_index {
             excluded.push(format!(":(top,exclude,literal){path}"));
             if excluded.len() > MAX_CHANGED_FILES {
                 bail!("too many excluded paths");
@@ -619,9 +624,14 @@ mod tests {
         };
         run(&["init"]);
         fs::write(dir.path().join("sample.txt"), "test").unwrap();
+        fs::create_dir(dir.path().join(".codegraph")).unwrap();
+        fs::write(dir.path().join(".codegraph/index.db"), b"old index").unwrap();
         run(&["add", "."]);
         run(&["commit", "-m", "fixture"]);
         let commit = run(&["rev-parse", "HEAD"]);
+        fs::write(dir.path().join(".codegraph/index.db"), b"index").unwrap();
+        fs::create_dir(dir.path().join(".codegraph-temp")).unwrap();
+        fs::write(dir.path().join(".codegraph-temp/index.db"), b"temporary").unwrap();
         assert!(
             git_status(dir.path(), dir.path(), &commit)
                 .unwrap()

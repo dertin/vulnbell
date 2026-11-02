@@ -132,10 +132,10 @@ fn render_discovery(report: &MorningReport, detailed_sources: bool) -> String {
             let repository_url = repository.and_then(|source| source.url.as_deref());
             let repository_cell = match repository {
                 Some(source) if source.state == MappingState::Mapped => {
-                    inline(repository_url.unwrap_or("—"))
+                    inline(repository_url.unwrap_or("-"))
                 }
                 Some(source) => fill(words.repository_unavailable, &[&inline(&source.detail)]),
-                None => "—".to_owned(),
+                None => "-".to_owned(),
             };
             let mut others = Vec::new();
             let mut releases = None;
@@ -192,7 +192,7 @@ fn render_discovery(report: &MorningReport, detailed_sources: bool) -> String {
         }
         for row in rows {
             let unmapped = if row.unmapped.is_empty() {
-                "—".to_owned()
+                "-".to_owned()
             } else {
                 row.unmapped.clone()
             };
@@ -208,7 +208,7 @@ fn render_discovery(report: &MorningReport, detailed_sources: bool) -> String {
                         inline(reference),
                         row.repository,
                         if others.is_empty() {
-                            "—".to_owned()
+                            "-".to_owned()
                         } else {
                             others.join("; ")
                         },
@@ -239,7 +239,7 @@ fn render_discovery(report: &MorningReport, detailed_sources: bool) -> String {
                 fill(words.components_examples, &[&row.members.len(), &examples]),
                 row.repository,
                 if others.is_empty() {
-                    "—".to_owned()
+                    "-".to_owned()
                 } else {
                     others.join("; ")
                 },

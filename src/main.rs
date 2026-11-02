@@ -55,34 +55,64 @@ fn distinct_output(output: &std::path::Path, input: &std::path::Path) -> Result<
     }
     Ok(())
 }
+struct ReportMode<'a> {
+    audience: &'a str,
+    closed: Option<vulnbell::output::ClosedMode>,
+}
+
 fn report(
     project: &std::path::Path,
     json: bool,
-    audience: &str,
+    mode: ReportMode<'_>,
     pdf: Option<std::path::PathBuf>,
     from_markdown: Option<std::path::PathBuf>,
+    custom_reason: Option<String>,
     pdf_browser: Option<std::path::PathBuf>,
 ) -> Result<()> {
+    let ReportMode { audience, closed } = mode;
     let (_, store) = store_for(project)?;
+    let _lock = store.lock()?;
     let mut snapshot = store.latest()?;
     snapshot.cases = store.cases()?;
+    let snapshot = vulnbell::research::project_retractions(&snapshot, &store);
     if audience == "audit" {
         if pdf.is_some() {
             bail!("PDF export requires the manager or cyber report");
         }
         if json {
-            emit(&snapshot)?;
+            let retracted = vulnbell::output::retracted_cases(&snapshot, &store)?;
+            emit(&vulnbell::output::AuditReport {
+                snapshot,
+                retracted,
+            })?;
         } else {
-            print(&vulnbell::output::markdown(&snapshot))?;
+            print(&vulnbell::output::audit_markdown_with_closed(
+                &snapshot,
+                &store,
+                closed.unwrap_or(vulnbell::output::ClosedMode::Full),
+            )?)?;
         }
     } else {
-        let mut report = vulnbell::output::morning_report(&snapshot, &store, audience)?;
-        let pending = vulnbell::tools::cases::pending(&store)?;
+        let mut report = vulnbell::output::morning_report_current(&snapshot, &store, audience)?;
+        report.closed = closed.unwrap_or(vulnbell::output::ClosedMode::Summary);
+        let pending = vulnbell::tools::cases::pending_from_report(&store, &snapshot, &report)?;
         vulnbell::output::add_research_coverage(&mut report, &pending);
         if json {
+            vulnbell::output::enrich_report_json(&mut report, &snapshot, &store)?;
             emit(&report)?;
         } else {
+            vulnbell::output::prepare_report_paths(&mut report, &store)?;
             let custom = from_markdown.is_some();
+            let reason = custom_reason.as_deref().map(str::trim);
+            if custom
+                && !reason.is_some_and(|reason| {
+                    !reason.is_empty()
+                        && reason.len() <= 500
+                        && !reason.chars().any(char::is_control)
+                })
+            {
+                bail!("custom reason must contain 1 to 500 bytes without control characters");
+            }
             let markdown = match from_markdown {
                 Some(path) => String::from_utf8(vulnbell::read_limited(&path, 16 * 1024 * 1024)?)
                     .context("Markdown must be UTF-8")?,
@@ -93,23 +123,29 @@ fn report(
                         snapshot.partial,
                         report.language,
                     ),
-                    vulnbell::output::morning_markdown(&report),
+                    vulnbell::output::morning_markdown(&report)?,
                 ),
+            };
+            let markdown = vulnbell::output::normalize_report_paths(&report, &markdown)?;
+            let markdown = if custom {
+                vulnbell::output::custom_report_branding(&markdown, report.language)?
+            } else {
+                markdown
             };
             if let Some(path) = pdf {
                 let mut input = String::new();
                 if custom {
-                    input.push_str(match report.language {
-                        profile::Language::Es => "> **Contenido personalizado:** el texto fue proporcionado por el usuario y no fue validado por VulnBell.\n\n",
-                        profile::Language::En => "> **Custom content:** the text was supplied by the user and was not validated by VulnBell.\n\n",
-                    });
+                    input.push_str(&vulnbell::output::custom_content_notice(
+                        report.language,
+                        reason.unwrap_or_default(),
+                    ));
                 }
-                input.push_str(&vulnbell::output::pdf_report_body(&markdown, &report));
-                let document = vulnbell::output::pdf_markdown(
+                input.push_str(&vulnbell::output::pdf_report_body(&markdown, &report)?);
+                let document = vulnbell::output::prepared_pdf_markdown(
                     &input,
                     &snapshot.cases,
                     &store,
-                    report.language,
+                    &report,
                 )?;
                 vulnbell::output::write_pdf(&document, &path, pdf_browser.as_deref())?;
             }
@@ -142,8 +178,8 @@ fn run() -> Result<i32> {
                 &serde_json::json!({"schema_version":1,"version":env!("CARGO_PKG_VERSION"),"installed":directories}),
             )?;
         }
-        Commands::Doctor { json } => {
-            let report = vulnbell::operations::doctor()?;
+        Commands::Doctor { json, project } => {
+            let report = vulnbell::operations::doctor(project.as_deref())?;
             if json {
                 emit(&report)?;
             } else {
@@ -170,9 +206,11 @@ fn run() -> Result<i32> {
                 project_id: uuid::Uuid::new_v4(),
                 name: "my-monitor".into(),
                 codebases: Vec::new(),
+                scheduled_code_review: false,
                 components: Vec::new(),
                 discovery: Default::default(),
                 research: Default::default(),
+                python: Default::default(),
                 schedule: None,
                 alerts: Default::default(),
                 report: Default::default(),
@@ -206,6 +244,18 @@ fn run() -> Result<i32> {
                 "impact" => {
                     serde_json::to_value(schemars::schema_for!(vulnbell::impact::ImpactSubmission))?
                 }
+                "code-finding" => serde_json::to_value(schemars::schema_for!(
+                    vulnbell::tools::code_findings::Submission
+                ))?,
+                "code-review" => serde_json::to_value(schemars::schema_for!(
+                    vulnbell::tools::code_review::Submission
+                ))?,
+                "code-evaluation-labels" => serde_json::to_value(schemars::schema_for!(
+                    vulnbell::tools::code_evaluate::Labels
+                ))?,
+                "code-evaluation-observations" => serde_json::to_value(schemars::schema_for!(
+                    vulnbell::tools::code_evaluate::Observations
+                ))?,
                 "schedule" => serde_json::to_value(schemars::schema_for!(
                     vulnbell::scheduler::ScheduleConfig
                 ))?,
@@ -220,6 +270,9 @@ fn run() -> Result<i32> {
                 }
                 "report" => {
                     serde_json::to_value(schemars::schema_for!(vulnbell::output::MorningReport))?
+                }
+                "audit-report" => {
+                    serde_json::to_value(schemars::schema_for!(vulnbell::output::AuditReport))?
                 }
                 "snapshot" => {
                     serde_json::to_value(schemars::schema_for!(vulnbell::model::Snapshot))?
@@ -476,10 +529,23 @@ fn run() -> Result<i32> {
             project,
             json,
             audience,
+            closed,
             pdf,
             from_markdown,
+            custom_reason,
             pdf_browser,
-        }) => report(&project, json, &audience, pdf, from_markdown, pdf_browser)?,
+        }) => report(
+            &project,
+            json,
+            ReportMode {
+                audience: &audience,
+                closed,
+            },
+            pdf,
+            from_markdown,
+            custom_reason,
+            pdf_browser,
+        )?,
         Commands::Run { project, now } => {
             let profile = profile::load(&project)?;
             emit(&vulnbell::scheduler::run(&profile, &project, now)?)?;
@@ -607,6 +673,34 @@ fn run() -> Result<i32> {
 }
 fn run_tool(command: ToolCommands) -> Result<i32> {
     match command {
+        ToolCommands::CodeEvaluate {
+            labels,
+            observations,
+        } => {
+            let labels =
+                serde_json::from_slice(&vulnbell::read_limited(&labels, 8 * 1024 * 1024)?)?;
+            let observations =
+                serde_json::from_slice(&vulnbell::read_limited(&observations, 8 * 1024 * 1024)?)?;
+            emit(&vulnbell::tools::code_evaluate::evaluate(
+                labels,
+                observations,
+            )?)?;
+            Ok(0)
+        }
+        ToolCommands::CodeReview { project, from } => {
+            let (_, store) = store_for(&project)?;
+            let bytes = vulnbell::read_limited(&from, 64 * 1024)?;
+            let submission = serde_json::from_slice(&bytes)?;
+            emit(&vulnbell::tools::code_review::record(&store, submission)?)?;
+            Ok(0)
+        }
+        ToolCommands::CodeFinding { project, from } => {
+            let (_, store) = store_for(&project)?;
+            let bytes = vulnbell::read_limited(&from, 64 * 1024)?;
+            let submission = serde_json::from_slice(&bytes)?;
+            emit(&vulnbell::tools::code_findings::record(&store, submission)?)?;
+            Ok(0)
+        }
         ToolCommands::Challenge { project, from } => {
             let (_, mut store) = store_for(&project)?;
             let bytes = vulnbell::read_limited(&from, 128 * 1024)?;

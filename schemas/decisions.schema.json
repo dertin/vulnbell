@@ -1,5 +1,103 @@
 {
   "$defs": {
+    "ArchiveEcosystem": {
+      "enum": [
+        "cargo",
+        "npm"
+      ],
+      "type": "string"
+    },
+    "ArtifactEvidence": {
+      "additionalProperties": false,
+      "description": "A checksummed artifact and optional evidence of its installed contents.",
+      "properties": {
+        "codebase": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "installed_archive": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InstalledArchiveEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Installed Cargo or npm package checked against its lockfile archive."
+        },
+        "installed_wheel": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InstalledScopeEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exact installed wheel files and paths checked within the monitored codebase."
+        },
+        "instance_id": {
+          "type": "string"
+        },
+        "location": {
+          "$ref": "#/$defs/ArtifactLocation"
+        },
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "instance_id",
+        "codebase",
+        "location",
+        "path",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "ArtifactLocation": {
+      "oneOf": [
+        {
+          "const": "codebase",
+          "description": "Path relative to the selected codebase.",
+          "type": "string"
+        },
+        {
+          "const": "monitor_workspace",
+          "description": "Path relative to the monitor profile's directory.",
+          "type": "string"
+        }
+      ]
+    },
+    "ArtifactScopeSource": {
+      "additionalProperties": false,
+      "properties": {
+        "line": {
+          "description": "One-based line number.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "line_sha256": {
+          "description": "SHA-256 of the line without its line ending.",
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "line",
+        "line_sha256"
+      ],
+      "type": "object"
+    },
     "Assessment": {
       "description": "`not_applicable`: a security claim that, per the cited source, does not affect the monitored\nversion or build. It requires `not_applicable_reason`, is counted and remembered, and opens no case.",
       "enum": [
@@ -61,6 +159,58 @@
       ],
       "type": "object"
     },
+    "InstalledArchiveEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "ecosystem": {
+          "$ref": "#/$defs/ArchiveEcosystem"
+        },
+        "scope": {
+          "$ref": "#/$defs/InstalledScopeEvidence"
+        }
+      },
+      "required": [
+        "ecosystem",
+        "scope"
+      ],
+      "type": "object"
+    },
+    "InstalledScopeEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "absent_paths": {
+          "description": "Paths or bounded filename patterns relative to the installed directory checked for absence.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "root": {
+          "description": "Codebase-relative installed package or source directory.",
+          "type": "string"
+        },
+        "scope_complete": {
+          "description": "The source and note support this installation for every in-scope build using the instance.",
+          "type": "boolean"
+        },
+        "scope_evidence_id": {
+          "description": "Case evidence describing why this directory represents the assessed build or test scope.",
+          "type": "string"
+        },
+        "scope_source": {
+          "$ref": "#/$defs/ArtifactScopeSource",
+          "description": "Current source line supporting the scope described in the case evidence."
+        }
+      },
+      "required": [
+        "root",
+        "absent_paths",
+        "scope_evidence_id",
+        "scope_complete",
+        "scope_source"
+      ],
+      "type": "object"
+    },
     "ItemDecision": {
       "additionalProperties": false,
       "properties": {
@@ -68,6 +218,16 @@
           "default": false,
           "description": "Explicitly assess every instance of a multi-component upstream as one scope.",
           "type": "boolean"
+        },
+        "artifact_evidence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "assessment": {
           "$ref": "#/$defs/Assessment"

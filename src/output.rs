@@ -1,5 +1,5 @@
 use crate::{
-    model::{Decision, Snapshot, SourceFacts},
+    model::{CoverageState, Decision, Snapshot, SourceFacts},
     profile::{Language, Profile},
     store::Store,
 };
@@ -8,17 +8,145 @@ use hmac::{Hmac, KeyInit, Mac};
 use rusqlite::params;
 use sha2::Sha256;
 use text::fill;
+mod audit;
+pub(crate) mod branding;
 mod details;
 mod discovery;
+mod history;
 mod markdown;
 mod pdf;
+mod report_paths;
 pub(crate) use pdf::browser_path;
 pub(crate) mod text;
 mod verification;
+pub use audit::{audit_markdown, audit_markdown_with_closed, markdown};
 pub use details::AdvisoryDetail;
 pub use discovery::discovery_markdown;
+pub use history::{AuditReport, enrich_json as enrich_report_json, retracted_cases};
 use markdown::inline;
+
+pub fn custom_content_notice(language: Language, reason: &str) -> String {
+    let reason = inline(reason);
+    match language {
+        Language::Es => format!(
+            "> **Contenido personalizado:** el texto fue editado fuera de VulnBell y no fue validado por la CLI. Motivo indicado: {reason}.\n\n"
+        ),
+        Language::En => format!(
+            "> **Custom content:** the text was edited outside VulnBell and was not validated by the CLI. Stated reason: {reason}.\n\n"
+        ),
+    }
+}
 pub use markdown::{morning_markdown, verification_markdown};
+
+pub fn custom_report_branding(markdown: &str, language: Language) -> Result<String> {
+    branding::custom(markdown, language)
+}
+
+pub fn report_codebase_paths(text: &str, roots: &[String]) -> String {
+    report_paths::relative_paths(text, roots.iter().map(String::as_str))
+}
+
+fn report_codebase_roots(snapshot: &Snapshot) -> Vec<String> {
+    snapshot
+        .codebase_revisions
+        .iter()
+        .chain(
+            snapshot
+                .cases
+                .iter()
+                .flat_map(|case| &case.codebase_revisions),
+        )
+        .map(|revision| revision.codebase.clone())
+        .collect()
+}
+
+fn report_codebase_roots_with_history(
+    existing_roots: &[String],
+    expected_project_id: &str,
+    store: &Store,
+) -> Result<Vec<String>> {
+    const MAX_SNAPSHOTS: usize = 10_000;
+    const MAX_ROOTS: usize = 1_024;
+    let mut roots: std::collections::BTreeSet<String> = existing_roots.iter().cloned().collect();
+    let mut statement = store.connection.prepare(
+        "SELECT id, json_extract(body, '$.id'), json_extract(body, '$.project_id'), \
+         json_extract(body, '$.schema_version'), json_extract(body, '$.codebase_revisions') \
+         FROM snapshots LIMIT 10001",
+    )?;
+    let mut rows = statement.query([])?;
+    let mut count = 0;
+    while let Some(row) = rows.next().context("invalid historical snapshot JSON")? {
+        count += 1;
+        if count > MAX_SNAPSHOTS {
+            bail!("historical snapshot limit exceeded; cannot safely render portable report paths");
+        }
+        let id: String = row.get(0)?;
+        let recorded_id: String = row.get(1).context("historical snapshot ID is missing")?;
+        let project_id: String = row
+            .get(2)
+            .context("historical snapshot project is missing")?;
+        let schema: u32 = row
+            .get(3)
+            .context("historical snapshot schema is missing")?;
+        let revisions: String = row
+            .get(4)
+            .context("historical codebase revisions are missing")?;
+        if id != recorded_id || project_id != expected_project_id || schema != 1 {
+            bail!(
+                "historical snapshot metadata is incompatible; cannot safely render portable report paths"
+            );
+        }
+        let revisions: Vec<crate::codebase_revision::CodebaseRevision> =
+            serde_json::from_str(&revisions).context("invalid historical codebase revisions")?;
+        roots.extend(revisions.into_iter().map(|revision| revision.codebase));
+        if roots.len() > MAX_ROOTS {
+            bail!("historical codebase limit exceeded; cannot safely render portable report paths");
+        }
+    }
+    if roots.len() > MAX_ROOTS {
+        bail!("codebase limit exceeded; cannot safely render portable report paths");
+    }
+    Ok(roots.into_iter().collect())
+}
+
+/// Load and validate historical path metadata once before producing a shareable report.
+pub fn prepare_report_paths(report: &mut MorningReport, store: &Store) -> Result<()> {
+    ensure_morning_report_store(report, store)?;
+    if !report.codebase_paths_ready {
+        let roots = report_codebase_roots_with_history(
+            &report.codebase_path_roots,
+            &report.project_id,
+            store,
+        )?;
+        report.codebase_path_roots = roots;
+        report.codebase_paths_ready = true;
+    }
+    Ok(())
+}
+
+fn ensure_morning_report_store(report: &MorningReport, store: &Store) -> Result<()> {
+    ensure_report_store(&report.project_id, store)?;
+    if report.store_directory != store.directory {
+        bail!("report and store use different local state directories");
+    }
+    Ok(())
+}
+
+fn ensure_report_store(project_id: &str, store: &Store) -> Result<()> {
+    if store.directory.file_name().and_then(|name| name.to_str()) != Some(project_id) {
+        bail!("report and store refer to different projects");
+    }
+    Ok(())
+}
+
+pub fn normalize_report_paths(report: &MorningReport, text: &str) -> Result<String> {
+    if !report.codebase_paths_ready {
+        bail!(
+            "report paths have not been prepared; validate historical snapshots before rendering"
+        );
+    }
+    Ok(report_codebase_paths(text, &report.codebase_path_roots))
+}
 
 /// Report research coverage from current checkpoints, separately from the scan snapshot.
 pub fn add_research_coverage(
@@ -32,7 +160,7 @@ pub fn add_research_coverage(
     {
         let detail = match report.language {
             Language::Es => format!(
-                "{} ventanas upstream pendientes; {} observaciones desactualizadas requieren un nuevo scan; alcance de fuentes sin resolver: {}; codebase cambiada o no disponible: {}",
+                "{} ventanas upstream pendientes; {} observaciones desactualizadas requieren un nuevo escaneo; alcance de fuentes sin resolver: {}; codebase cambiada o no disponible: {}",
                 pending.research_open.len(),
                 pending.stale_observations,
                 if pending.tracker_scope_unresolved {
@@ -83,9 +211,11 @@ pub fn delivery_status_markdown(
     let discovery = pending.discovery_open.is_some();
     match language {
         crate::profile::Language::Es => format!(
-            "> **Cobertura o revisión incompleta:** verificaciones pendientes: {}; veredictos pendientes: {}; ventanas upstream pendientes: {}; observaciones desactualizadas: {}; descubrimiento pendiente: {}; alcance de fuentes sin resolver: {}; codebase cambiada o sin identificar: {}; scan parcial: {}. Consulte `vulnbell tools pending` para el detalle.\n\n",
+            "> **Cobertura o revisión incompleta:** verificaciones pendientes: {}; veredictos pendientes: {}; hallazgos de código por reevaluar: {}; revisiones de código pendientes: {}; ventanas upstream pendientes: {}; observaciones desactualizadas: {}; descubrimiento pendiente: {}; alcance de fuentes sin resolver: {}; codebase cambiada o sin identificar: {}; escaneo parcial: {}. Consulte `vulnbell tools pending` para el detalle.\n\n",
             pending.verification_pending.len(),
             pending.verdict_missing.len(),
+            pending.code_findings_pending.len(),
+            pending.code_reviews_pending.len(),
             pending.research_open.len(),
             pending.stale_observations,
             if discovery { "sí" } else { "no" },
@@ -102,9 +232,11 @@ pub fn delivery_status_markdown(
             if scan_partial { "sí" } else { "no" },
         ),
         crate::profile::Language::En => format!(
-            "> **Incomplete coverage or review:** {} pending verifications, {} verdicts, {} upstream windows and {} stale observations; discovery pending: {}; tracker scope unresolved: {}; codebase changed or unidentified: {}; partial scan: {}. See `vulnbell tools pending` for details.\n\n",
+            "> **Incomplete coverage or review:** {} pending verifications, {} verdicts, {} code findings to reassess, {} code reviews pending, {} upstream windows and {} stale observations; discovery pending: {}; tracker scope unresolved: {}; codebase changed or unidentified: {}; partial scan: {}. See `vulnbell tools pending` for details.\n\n",
             pending.verification_pending.len(),
             pending.verdict_missing.len(),
+            pending.code_findings_pending.len(),
+            pending.code_reviews_pending.len(),
             pending.research_open.len(),
             pending.stale_observations,
             if discovery { "yes" } else { "no" },
@@ -122,7 +254,7 @@ pub fn delivery_status_markdown(
         ),
     }
 }
-pub use pdf::{pdf_markdown, report_body as pdf_report_body, write_pdf};
+pub use pdf::{prepared_pdf_markdown, report_body as pdf_report_body, write_pdf};
 pub use text::report_language;
 pub use verification::{FindingCheck, FindingReference, LocalCheck, LocalResult};
 
@@ -188,50 +320,20 @@ pub fn notify(profile: &Profile, snapshot: &Snapshot, store: &Store) -> Result<S
         "delivered={sent}; deduplicated by case facts and decision"
     ))
 }
-pub fn markdown(snapshot: &Snapshot) -> String {
-    let mut report = format!(
-        "# VulnBell\n\nProject: `{}`\n\nScan: {}\n\nCoverage: **{}**. Alerts: {}\n\n{} instances; {} cases.\n\n",
-        snapshot.project_id,
-        snapshot.finished_at,
-        if snapshot.partial {
-            "partial"
-        } else {
-            "checked"
-        },
-        snapshot.alert_status,
-        snapshot.instances.len(),
-        snapshot.cases.len()
-    );
-    report.push_str(&markdown::codebase_revisions_markdown(
-        &crate::codebase_revision::compare(&snapshot.codebase_revisions),
-        false,
-        Language::En,
-    ));
-    for case in &snapshot.cases {
-        report.push_str(&format!(
-            "- `{}`: {:?}; {:?}; {:?}\n",
-            case.case_id, case.decision, case.applicability, case.verification
-        ));
-    }
-    report.push_str("\n## Coverage\n\n");
-    for coverage in &snapshot.coverage {
-        report.push_str(&format!(
-            "- {} / `{}`: {:?} — {}\n",
-            coverage.source,
-            coverage.scope,
-            coverage.state,
-            coverage.detail.replace(['\n', '\r'], " ")
-        ));
-    }
-    report
-}
-
 #[derive(serde::Serialize, schemars::JsonSchema)]
 pub struct MorningReport {
+    /// Local roots used only to render portable report references.
+    #[serde(skip)]
+    codebase_path_roots: Vec<String>,
+    #[serde(skip)]
+    codebase_paths_ready: bool,
+    #[serde(skip)]
+    store_directory: std::path::PathBuf,
     /// Current report contract distinguishes candidates from explicitly required checks.
     #[schemars(range(min = 1, max = 1))]
     pub schema_version: u32,
     pub audience: String,
+    pub closed: ClosedMode,
     /// Report language from the profile; the generated sentences in this report use it.
     pub language: Language,
     pub project_id: String,
@@ -247,10 +349,20 @@ pub struct MorningReport {
     pub codebase_scope_changed: bool,
     pub inventory: Vec<MonitoredComponent>,
     pub actionable: Vec<HandoffItem>,
+    /// Agent-reviewed codebase findings, separate from dependency advisories.
+    pub code_findings: Vec<CodeFinding>,
+    /// Recorded independent codebase reviews; an absent entry means none was recorded.
+    pub code_reviews: Vec<crate::tools::code_review::Review>,
+    pub scheduled_code_review: bool,
     pub needs_review: Vec<HandoffItem>,
     pub informational_count: usize,
+    pub informational: Vec<InformationalSummary>,
+    /// Closed case details and evidence, regardless of Markdown detail mode.
+    pub closed_cases: Vec<crate::model::Case>,
+    /// Retracted cases and their recorded revisions, retained for audit.
+    pub retracted: Vec<RetractedCase>,
     pub dismissed_count: usize,
-    /// Upstream events the agent assessed as not affecting the monitored versions; no case is opened.
+    /// Recorded upstream non-applicability assessments, including cases later reopened.
     pub not_applicable_count: usize,
     pub coverage_gaps: Vec<crate::model::Coverage>,
     pub notification_status: String,
@@ -259,6 +371,40 @@ pub struct MorningReport {
     pub source_map: Vec<crate::discovery::IdentityObservation>,
     /// Open cases whose verification is unfinished; a deliverable report requires none.
     pub verification_pending: Vec<PendingVerification>,
+}
+#[derive(
+    Clone, Copy, Debug, serde::Serialize, schemars::JsonSchema, clap::ValueEnum, PartialEq, Eq,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ClosedMode {
+    Summary,
+    Full,
+    None,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct InformationalSummary {
+    pub case_id: String,
+    pub components: Vec<String>,
+    pub reason: String,
+    pub impact_assessed: bool,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct RetractedCase {
+    pub case: crate::model::Case,
+    pub history: Vec<crate::model::Case>,
+    pub research_events: Vec<crate::research::ResearchEvent>,
+    /// Missing, corrupt or undecodable evidence IDs; `agent_retraction_assessment:missing`
+    /// indicates that no retraction assessment was recorded.
+    pub evidence_gaps: Vec<String>,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct CodeFinding {
+    pub id: String,
+    pub finding: crate::tools::code_findings::Submission,
+    pub recorded_at: String,
+    pub current: bool,
+    pub source_removed: bool,
 }
 #[derive(serde::Serialize, schemars::JsonSchema, Debug, PartialEq, Eq, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
@@ -272,13 +418,15 @@ pub enum PendingReason {
     /// Recorded verification evidence could not be validated.
     InvalidVerificationEvidence,
 }
-#[derive(serde::Serialize, schemars::JsonSchema)]
+#[derive(Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct PendingVerification {
     pub case_id: String,
     pub reason: PendingReason,
 }
 fn pending_verification(check: &FindingCheck) -> Option<PendingReason> {
-    if !matches!(check.decision, Decision::Actionable | Decision::Review) {
+    if !matches!(check.decision, Decision::Actionable | Decision::Review)
+        && !check.impact_reassessment_required
+    {
         return None;
     }
     if check.impact.is_none() {
@@ -329,10 +477,15 @@ pub struct MonitoredComponent {
     pub reference: String,
     pub requested_version: Option<String>,
     pub resolved_version: Option<String>,
+    /// Canonical PURL with the resolved version, when both are known.
+    pub versioned_purl: Option<String>,
     pub origin: crate::model::Origin,
     pub codebase: Option<String>,
     pub path: Option<String>,
     pub line: Option<usize>,
+    pub direct: Option<bool>,
+    pub direct_source: Option<crate::model::SourceLine>,
+    pub dependency_parents: Vec<String>,
     pub upstream: Option<String>,
 }
 #[derive(serde::Serialize, schemars::JsonSchema)]
@@ -346,6 +499,7 @@ pub struct HandoffItem {
     pub recorded_verdict: Option<String>,
     pub summary: String,
     pub advisory_details: Vec<AdvisoryDetail>,
+    pub advisory_translation: Option<crate::model::AdvisoryTranslation>,
     pub detail_gaps: Vec<String>,
     pub applicability: crate::model::Applicability,
     pub verification: crate::model::Verification,
@@ -358,6 +512,16 @@ pub struct HandoffItem {
     pub source_facts: Vec<SourceFacts>,
 }
 pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Result<MorningReport> {
+    let projected = crate::research::project_retractions(snapshot, store);
+    morning_report_current(&projected, store, audience)
+}
+
+/// Render a snapshot whose retraction evidence has already been checked for this operation.
+pub fn morning_report_current(
+    snapshot: &Snapshot,
+    store: &Store,
+    audience: &str,
+) -> Result<MorningReport> {
     let (discovery, source_map, language) = match store.meta("profile_path")? {
         Some(path) => {
             let path = std::path::Path::new(&path);
@@ -408,20 +572,42 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
     let mut actionable = Vec::new();
     let mut needs_review = Vec::new();
     let mut informational_count = 0;
+    let mut informational = Vec::new();
     let mut dismissed_count = 0;
     for case in &snapshot.cases {
-        if !case
-            .instances
-            .iter()
-            .any(|instance| active_ids.contains(instance.id.as_str()))
+        if case.decision != Decision::Retracted
+            && !case
+                .instances
+                .iter()
+                .any(|instance| active_ids.contains(instance.id.as_str()))
         {
             continue;
         }
         match case.decision {
+            Decision::Retracted => continue,
             Decision::Informational | Decision::Dismissed
                 if crate::tools::cases::verdict_missing(case, store) => {}
             Decision::Informational => {
                 informational_count += 1;
+                informational.push(InformationalSummary {
+                    case_id: case.case_id.clone(),
+                    components: case
+                        .instances
+                        .iter()
+                        .map(|instance| {
+                            format!(
+                                "{} {}",
+                                instance.reference,
+                                instance
+                                    .resolved_version
+                                    .as_deref()
+                                    .unwrap_or(words.unresolved)
+                            )
+                        })
+                        .collect(),
+                    reason: case.open_questions.first().cloned().unwrap_or_default(),
+                    impact_assessed: crate::impact::latest(case, store).is_some(),
+                });
                 continue;
             }
             Decision::Dismissed => {
@@ -488,9 +674,19 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
             recorded_verdict: recorded_verdict(case, store, language),
             summary,
             advisory_details,
+            advisory_translation: crate::engine::current_verdict(case, store)
+                .and_then(|verdict| verdict.advisory_translation),
             detail_gaps,
-            applicability: case.applicability,
-            verification: case.verification,
+            applicability: if crate::tools::cases::verdict_missing(case, store) {
+                crate::model::Applicability::Unknown
+            } else {
+                case.applicability
+            },
+            verification: if crate::tools::cases::verdict_missing(case, store) {
+                crate::model::Verification::Inconclusive
+            } else {
+                case.verification
+            },
             known_exploited: case.claims.iter().any(|claim| claim.known_exploited),
             evidence_links: links,
             evidence_sha256: case
@@ -502,6 +698,16 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
                 .open_questions
                 .iter()
                 .map(|question| text::open_question(language, question))
+                .chain(
+                    (case.evidence.iter().any(|item| item.source == "impact_assessment")
+                        && crate::impact::latest(case, store).is_none())
+                    .then(|| match (language, crate::impact::previous(case, store).is_err()) {
+                        (Language::Es, true) => "La evaluación de impacto registrada o su evidencia no es válida; revise su integridad antes de continuar.".to_owned(),
+                        (Language::En, true) => "The recorded impact assessment or its evidence is invalid; check integrity before continuing.".to_owned(),
+                        (Language::Es, false) => "La evaluación de impacto registrada no está vigente o es incompatible; revise la evidencia y responda las preguntas actuales.".to_owned(),
+                        (Language::En, false) => "The recorded impact assessment is stale or incompatible; review the evidence and answer the current questions.".to_owned(),
+                    }),
+                )
                 .collect(),
             recommended_action: recommended_action.into(),
             source_facts: case
@@ -526,6 +732,7 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
     let finding_checks: Vec<FindingCheck> = snapshot
         .cases
         .iter()
+        .filter(|case| case.decision != Decision::Retracted)
         .filter(|case| {
             case.instances
                 .iter()
@@ -534,8 +741,12 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
         .map(|case| verification::finding_check(case, store, language))
         .collect();
     Ok(MorningReport {
+        codebase_path_roots: report_codebase_roots(snapshot),
+        codebase_paths_ready: false,
+        store_directory: store.directory.clone(),
         schema_version: 1,
         audience: audience.into(),
+        closed: if audience == "audit" { ClosedMode::Full } else { ClosedMode::Summary },
         language,
         project_id: snapshot.project_id.clone(),
         project_name: store
@@ -557,16 +768,42 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
                 reference: instance.reference.clone(),
                 requested_version: instance.requested_version.clone(),
                 resolved_version: instance.resolved_version.clone(),
+                versioned_purl: instance.purl.as_ref().zip(instance.resolved_version.as_ref()).and_then(|(purl, version)| {
+                    let mut purl: packageurl::PackageUrl<'_> = purl.parse().ok()?;
+                    purl.with_version(version.as_str()).ok()?;
+                    Some(purl.to_string())
+                }),
                 origin: instance.origin,
                 codebase: instance.provenance.codebase.clone(),
                 path: instance.provenance.path.clone(),
                 line: instance.provenance.line,
+                direct: instance.provenance.direct,
+                direct_source: instance.python_lock.as_ref().and_then(|lock| lock.direct_source.clone()),
+                dependency_parents: instance.python_lock.as_ref().map(|lock| lock.via.iter().filter(|entry| !entry.starts_with("-r ")).cloned().collect()).unwrap_or_default(),
                 upstream: instance.upstream.clone(),
             })
             .collect(),
         actionable,
+        scheduled_code_review: match store.meta("profile_path")? {
+            Some(path) => crate::profile::load(std::path::Path::new(&path))?.scheduled_code_review,
+            None => false,
+        },
+        code_reviews: crate::tools::code_review::current(store, snapshot)?,
+        code_findings: crate::tools::code_findings::current(store, snapshot)?
+            .into_iter()
+            .map(|entry| CodeFinding {
+                id: entry.id,
+                finding: entry.finding,
+                recorded_at: entry.recorded_at,
+                current: entry.current,
+                source_removed: entry.source_removed,
+            })
+            .collect(),
         needs_review,
         informational_count,
+        informational,
+        closed_cases: Vec::new(),
+        retracted: Vec::new(),
         dismissed_count,
         not_applicable_count: store.connection.query_row(
             "SELECT COUNT(*) FROM research_events WHERE json_extract(body,'$.assessment')='not_applicable'",
@@ -595,6 +832,10 @@ pub fn morning_report(snapshot: &Snapshot, store: &Store, audience: &str) -> Res
                     .filter(|summary| summary.enabled && !summary.complete)
                     .map(crate::discovery::coverage),
             )
+            .map(|mut coverage| {
+                coverage.detail = text::coverage_detail(language, &coverage.detail);
+                coverage
+            })
             .collect(),
         discovery,
         source_map,
@@ -630,7 +871,23 @@ fn provenance_label(instance: &crate::model::Instance, language: Language) -> St
         }
         (_, None) => words.profile_location.to_owned(),
     };
-    format!("{} {version} — {location}", instance.reference)
+    let direct_source = instance
+        .python_lock
+        .as_ref()
+        .and_then(|lock| lock.direct_source.as_ref());
+    match direct_source {
+        Some(source) => {
+            let label = match language {
+                Language::Es => "declaración directa",
+                Language::En => "direct declaration",
+            };
+            format!(
+                "{} {version} - {location}; {label}: {}:{}",
+                instance.reference, source.path, source.line
+            )
+        }
+        None => format!("{} {version} - {location}", instance.reference),
+    }
 }
 
 fn recorded_verdict(

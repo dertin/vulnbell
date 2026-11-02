@@ -1,0 +1,71 @@
+{
+  "$defs": {
+    "Status": {
+      "enum": [
+        "in_progress",
+        "partial",
+        "complete"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "codebase": {
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "gaps": {
+      "description": "Unreviewed areas and their reason, without source snippets or secrets.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "previous_revision": {
+      "description": "Last recorded review revision, or null when starting a new review.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "schema_version": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "scope": {
+      "description": "Concise reviewed areas or next work units, without source snippets or secrets.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "snapshot_id": {
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/Status"
+    },
+    "uncertainties": {
+      "default": [],
+      "description": "Unresolved reachability or context questions within the reviewed scope.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "snapshot_id",
+    "codebase",
+    "status",
+    "scope",
+    "gaps"
+  ],
+  "title": "Submission",
+  "type": "object"
+}

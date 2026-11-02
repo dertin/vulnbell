@@ -8,6 +8,9 @@
         "description": {
           "type": "string"
         },
+        "evidence_sha256": {
+          "type": "string"
+        },
         "fixed_versions": {
           "items": {
             "type": "string"
@@ -34,7 +37,28 @@
         "source",
         "advisory_id",
         "description",
+        "evidence_sha256",
         "fixed_versions"
+      ],
+      "type": "object"
+    },
+    "AdvisoryTranslation": {
+      "additionalProperties": false,
+      "properties": {
+        "language": {
+          "$ref": "#/$defs/Language"
+        },
+        "source_sha256": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_sha256",
+        "language",
+        "summary"
       ],
       "type": "object"
     },
@@ -45,6 +69,114 @@
         "possible",
         "unknown",
         "conflict"
+      ],
+      "type": "string"
+    },
+    "ArchiveEcosystem": {
+      "enum": [
+        "cargo",
+        "npm"
+      ],
+      "type": "string"
+    },
+    "ArtifactEvidence": {
+      "additionalProperties": false,
+      "description": "A checksummed artifact and optional evidence of its installed contents.",
+      "properties": {
+        "codebase": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "installed_archive": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InstalledArchiveEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Installed Cargo or npm package checked against its lockfile archive."
+        },
+        "installed_wheel": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InstalledScopeEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exact installed wheel files and paths checked within the monitored codebase."
+        },
+        "instance_id": {
+          "type": "string"
+        },
+        "location": {
+          "$ref": "#/$defs/ArtifactLocation"
+        },
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "instance_id",
+        "codebase",
+        "location",
+        "path",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "ArtifactLocation": {
+      "oneOf": [
+        {
+          "const": "codebase",
+          "description": "Path relative to the selected codebase.",
+          "type": "string"
+        },
+        {
+          "const": "monitor_workspace",
+          "description": "Path relative to the monitor profile's directory.",
+          "type": "string"
+        }
+      ]
+    },
+    "ArtifactScopeSource": {
+      "additionalProperties": false,
+      "properties": {
+        "line": {
+          "description": "One-based line number.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "line_sha256": {
+          "description": "SHA-256 of the line without its line ending.",
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "line",
+        "line_sha256"
+      ],
+      "type": "object"
+    },
+    "Assessment": {
+      "description": "`not_applicable`: a security claim that, per the cited source, does not affect the monitored\nversion or build. It requires `not_applicable_reason`, is counted and remembered, and opens no case.",
+      "enum": [
+        "review",
+        "informational",
+        "not_applicable",
+        "ignore"
       ],
       "type": "string"
     },
@@ -77,6 +209,189 @@
           "type": "string"
         }
       ]
+    },
+    "Case": {
+      "properties": {
+        "applicability": {
+          "$ref": "#/$defs/Applicability"
+        },
+        "case_id": {
+          "type": "string"
+        },
+        "claims": {
+          "items": {
+            "$ref": "#/$defs/Claim"
+          },
+          "type": "array"
+        },
+        "codebase_revisions": {
+          "description": "Git codebases that bound the facts and review for this case.",
+          "items": {
+            "$ref": "#/$defs/CodebaseRevision"
+          },
+          "type": "array"
+        },
+        "coverage": {
+          "items": {
+            "$ref": "#/$defs/Coverage"
+          },
+          "type": "array"
+        },
+        "decision": {
+          "$ref": "#/$defs/Decision"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "type": "array"
+        },
+        "facts_sha256": {
+          "type": "string"
+        },
+        "instances": {
+          "items": {
+            "$ref": "#/$defs/Instance"
+          },
+          "type": "array"
+        },
+        "open_questions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "project_id": {
+          "type": "string"
+        },
+        "sandbox": {
+          "$ref": "#/$defs/SandboxAvailability"
+        },
+        "schema_version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "snapshot_id": {
+          "type": "string"
+        },
+        "suggested_search_queries": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "updated_at": {
+          "type": "string"
+        },
+        "upstream_events": {
+          "items": {
+            "$ref": "#/$defs/UpstreamEvent"
+          },
+          "type": "array"
+        },
+        "verification": {
+          "$ref": "#/$defs/Verification"
+        }
+      },
+      "required": [
+        "schema_version",
+        "case_id",
+        "project_id",
+        "snapshot_id",
+        "codebase_revisions",
+        "instances",
+        "claims",
+        "upstream_events",
+        "evidence",
+        "coverage",
+        "applicability",
+        "verification",
+        "decision",
+        "facts_sha256",
+        "open_questions",
+        "suggested_search_queries",
+        "sandbox",
+        "updated_at"
+      ],
+      "type": "object"
+    },
+    "Claim": {
+      "properties": {
+        "aliases": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "applicability": {
+          "$ref": "#/$defs/Applicability"
+        },
+        "evidence": {
+          "$ref": "#/$defs/Evidence"
+        },
+        "id": {
+          "type": "string"
+        },
+        "instance_id": {
+          "type": "string"
+        },
+        "known_exploited": {
+          "type": "boolean"
+        },
+        "source": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "source",
+        "aliases",
+        "instance_id",
+        "summary",
+        "applicability",
+        "evidence",
+        "known_exploited"
+      ],
+      "type": "object"
+    },
+    "ClosedMode": {
+      "enum": [
+        "summary",
+        "full",
+        "none"
+      ],
+      "type": "string"
+    },
+    "CodeFinding": {
+      "properties": {
+        "current": {
+          "type": "boolean"
+        },
+        "finding": {
+          "$ref": "#/$defs/Submission"
+        },
+        "id": {
+          "type": "string"
+        },
+        "recorded_at": {
+          "type": "string"
+        },
+        "source_removed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "finding",
+        "recorded_at",
+        "current",
+        "source_removed"
+      ],
+      "type": "object"
     },
     "CodebaseComparison": {
       "properties": {
@@ -184,13 +499,22 @@
       "type": "string"
     },
     "Decision": {
-      "enum": [
-        "actionable",
-        "review",
-        "informational",
-        "dismissed"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "actionable",
+            "review",
+            "informational",
+            "dismissed"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "retracted",
+          "description": "An agent-only observation was subsequently found inapplicable.",
+          "type": "string"
+        }
+      ]
     },
     "DiscoverySummary": {
       "properties": {
@@ -263,6 +587,75 @@
       ],
       "type": "object"
     },
+    "Disposition": {
+      "enum": [
+        "actionable",
+        "review",
+        "resolved"
+      ],
+      "type": "string"
+    },
+    "EventKind": {
+      "enum": [
+        "issue",
+        "pull_request",
+        "merge_request",
+        "merge_proposal",
+        "comment",
+        "review",
+        "news",
+        "discussion",
+        "documentation",
+        "changelog",
+        "release",
+        "advisory",
+        "commit"
+      ],
+      "type": "string"
+    },
+    "Evidence": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/EvidenceKind"
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "sha256",
+        "source",
+        "observed_at",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "EvidenceKind": {
+      "enum": [
+        "identity",
+        "advisory",
+        "context",
+        "attestation",
+        "non_applicability"
+      ],
+      "type": "string"
+    },
     "EvidenceReference": {
       "additionalProperties": false,
       "properties": {
@@ -296,6 +689,10 @@
               "type": "null"
             }
           ]
+        },
+        "impact_reassessment_required": {
+          "description": "A recorded impact cannot be reused and must be reassessed under the current questions.",
+          "type": "boolean"
         },
         "local_checks": {
           "items": {
@@ -337,6 +734,7 @@
         "decision",
         "references",
         "local_checks",
+        "impact_reassessment_required",
         "review_handoff_stale",
         "open_challenges"
       ],
@@ -368,6 +766,16 @@
             "$ref": "#/$defs/AdvisoryDetail"
           },
           "type": "array"
+        },
+        "advisory_translation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AdvisoryTranslation"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "applicability": {
           "$ref": "#/$defs/Applicability"
@@ -562,6 +970,7 @@
       "type": "string"
     },
     "ImpactResult": {
+      "additionalProperties": false,
       "properties": {
         "answers": {
           "items": {
@@ -593,6 +1002,9 @@
           },
           "type": "array"
         },
+        "question_set_sha256": {
+          "type": "string"
+        },
         "schema_version": {
           "format": "uint32",
           "minimum": 0,
@@ -604,6 +1016,7 @@
       },
       "required": [
         "schema_version",
+        "question_set_sha256",
         "case_id",
         "codebase_revisions",
         "facts_sha256",
@@ -625,6 +1038,166 @@
         "needs_evidence"
       ],
       "type": "string"
+    },
+    "InformationalSummary": {
+      "properties": {
+        "case_id": {
+          "type": "string"
+        },
+        "components": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "impact_assessed": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "case_id",
+        "components",
+        "reason",
+        "impact_assessed"
+      ],
+      "type": "object"
+    },
+    "InstalledArchiveEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "ecosystem": {
+          "$ref": "#/$defs/ArchiveEcosystem"
+        },
+        "scope": {
+          "$ref": "#/$defs/InstalledScopeEvidence"
+        }
+      },
+      "required": [
+        "ecosystem",
+        "scope"
+      ],
+      "type": "object"
+    },
+    "InstalledScopeEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "absent_paths": {
+          "description": "Paths or bounded filename patterns relative to the installed directory checked for absence.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "root": {
+          "description": "Codebase-relative installed package or source directory.",
+          "type": "string"
+        },
+        "scope_complete": {
+          "description": "The source and note support this installation for every in-scope build using the instance.",
+          "type": "boolean"
+        },
+        "scope_evidence_id": {
+          "description": "Case evidence describing why this directory represents the assessed build or test scope.",
+          "type": "string"
+        },
+        "scope_source": {
+          "$ref": "#/$defs/ArtifactScopeSource",
+          "description": "Current source line supporting the scope described in the case evidence."
+        }
+      },
+      "required": [
+        "root",
+        "absent_paths",
+        "scope_evidence_id",
+        "scope_complete",
+        "scope_source"
+      ],
+      "type": "object"
+    },
+    "Instance": {
+      "properties": {
+        "cpe_product": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "identity_evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "type": "array"
+        },
+        "origin": {
+          "$ref": "#/$defs/Origin"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "purl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "python_lock": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PythonLock"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Locally recorded pip lock hashes and dependency annotations, before registry verification."
+        },
+        "ref": {
+          "type": "string"
+        },
+        "release": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReleaseDate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Verified registry metadata for this exact resolved version, when available."
+        },
+        "requested_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resolved_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "upstream": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "ref",
+        "origin",
+        "provenance",
+        "identity_evidence"
+      ],
+      "type": "object"
     },
     "InstanceImpact": {
       "properties": {
@@ -768,6 +1341,28 @@
             "null"
           ]
         },
+        "dependency_parents": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "direct": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "direct_source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceLine"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "instance_id": {
           "type": "string"
         },
@@ -808,14 +1403,41 @@
             "string",
             "null"
           ]
+        },
+        "versioned_purl": {
+          "description": "Canonical PURL with the resolved version, when both are known.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
         "instance_id",
         "ref",
-        "origin"
+        "origin",
+        "dependency_parents"
       ],
       "type": "object"
+    },
+    "NotApplicableReason": {
+      "oneOf": [
+        {
+          "const": "fixed_in_monitored_version",
+          "description": "The monitored resolved version already contains the fix.",
+          "type": "string"
+        },
+        {
+          "const": "affects_other_version",
+          "description": "Only other release lines or unreleased branches are affected.",
+          "type": "string"
+        },
+        {
+          "const": "component_not_in_build",
+          "description": "The affected module, feature or platform is absent from the monitored build.",
+          "type": "string"
+        }
+      ]
     },
     "OpenChallenge": {
       "properties": {
@@ -896,6 +1518,125 @@
       ],
       "type": "object"
     },
+    "Provenance": {
+      "properties": {
+        "artifact_integrity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "codebase": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "codebase_context_sha256": {
+          "description": "Fingerprint of the Git codebases reviewed with this inventory.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "direct": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "line": {
+          "description": "1-based line in `path` where the package entry or cited excerpt starts.\nDisplay-only: excluded from the context fingerprint so unrelated edits do not reopen cases.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resolution": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha256",
+        "observed_at"
+      ],
+      "type": "object"
+    },
+    "PythonLock": {
+      "properties": {
+        "direct_source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceLine"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sha256": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "source_eligible": {
+          "type": "boolean"
+        },
+        "via": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "via_complete": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "sha256",
+        "source_eligible",
+        "via",
+        "via_complete"
+      ],
+      "type": "object"
+    },
+    "ReleaseDate": {
+      "properties": {
+        "evidence": {
+          "$ref": "#/$defs/Evidence"
+        },
+        "published_at": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "published_at",
+        "evidence"
+      ],
+      "type": "object"
+    },
     "RepositoryState": {
       "enum": [
         "git",
@@ -903,6 +1644,183 @@
         "unavailable"
       ],
       "type": "string"
+    },
+    "ResearchEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_evidence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "assessment": {
+          "$ref": "#/$defs/Assessment"
+        },
+        "codebase_revisions": {
+          "description": "Codebase revisions recorded by the CLI at import time.",
+          "items": {
+            "$ref": "#/$defs/CodebaseRevision"
+          },
+          "type": "array"
+        },
+        "excerpt": {
+          "type": "string"
+        },
+        "external_id": {
+          "type": "string"
+        },
+        "instance_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/$defs/EventKind"
+        },
+        "not_applicable_reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NotApplicableReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Required with `not_applicable`; forbidden otherwise."
+        },
+        "provider": {
+          "type": "string"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "reviewed_instance_ids": {
+          "description": "Candidate instances examined when choosing the case scope.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "source_facts": {
+          "$ref": "#/$defs/SourceFacts",
+          "default": {
+            "affected_versions": "",
+            "fix_reference": "",
+            "fixed_in": "",
+            "identifiers": [],
+            "required_feature": ""
+          },
+          "description": "Answers to the research questions as the item states them. `fixed_in_monitored_version`\nrequires `fixed_in`, and `affects_other_version` requires `affected_versions`."
+        },
+        "title": {
+          "type": "string"
+        },
+        "updated_at": {
+          "description": "Original RFC3339 timestamp or YYYY-MM-DD when the source provides only a date.\nEmpty means unknown. Unknown/day precision keeps coverage partial and never advances checkpoints.",
+          "type": "string"
+        },
+        "upstream": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "upstream",
+        "instance_ids",
+        "reviewed_instance_ids",
+        "provider",
+        "external_id",
+        "kind",
+        "url",
+        "title",
+        "excerpt",
+        "updated_at",
+        "assessment",
+        "rationale"
+      ],
+      "type": "object"
+    },
+    "RetractedCase": {
+      "properties": {
+        "case": {
+          "$ref": "#/$defs/Case"
+        },
+        "evidence_gaps": {
+          "description": "Missing, corrupt or undecodable evidence IDs; `agent_retraction_assessment:missing`\nindicates that no retraction assessment was recorded.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "history": {
+          "items": {
+            "$ref": "#/$defs/Case"
+          },
+          "type": "array"
+        },
+        "research_events": {
+          "items": {
+            "$ref": "#/$defs/ResearchEvent"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "case",
+        "history",
+        "research_events",
+        "evidence_gaps"
+      ],
+      "type": "object"
+    },
+    "Review": {
+      "properties": {
+        "codebase_revision": {
+          "$ref": "#/$defs/CodebaseRevision"
+        },
+        "current": {
+          "type": "boolean"
+        },
+        "indexed_languages": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "recorded_at": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "source_fingerprint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "submission": {
+          "$ref": "#/$defs/Submission2"
+        }
+      },
+      "required": [
+        "revision",
+        "submission",
+        "indexed_languages",
+        "codebase_revision",
+        "recorded_at",
+        "current"
+      ],
+      "type": "object"
     },
     "ReviewHandoff": {
       "additionalProperties": false,
@@ -948,6 +1866,30 @@
         "note"
       ],
       "type": "object"
+    },
+    "SandboxAvailability": {
+      "properties": {
+        "available": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "available",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "Severity": {
+      "enum": [
+        "critical",
+        "high",
+        "medium",
+        "low"
+      ],
+      "type": "string"
     },
     "SourceFacts": {
       "additionalProperties": false,
@@ -998,6 +1940,64 @@
       ],
       "type": "string"
     },
+    "SourceLine": {
+      "properties": {
+        "line": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "line",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "SourceLocation": {
+      "additionalProperties": false,
+      "description": "An agent-reviewed codebase finding. Do not include credentials or source snippets.",
+      "properties": {
+        "codebase": {
+          "description": "Zero-based index in the latest scan's codebase revisions.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "line": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "line_sha256": {
+          "description": "SHA-256 of the inspected line, excluding its line ending.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Codebase-relative path and one-based line.",
+          "type": "string"
+        },
+        "review_revision": {
+          "description": "Revision of the review that inspected this codebase.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "codebase",
+        "review_revision",
+        "path",
+        "line",
+        "line_sha256"
+      ],
+      "type": "object"
+    },
     "SourceMapping": {
       "additionalProperties": false,
       "properties": {
@@ -1031,6 +2031,166 @@
       ],
       "type": "object"
     },
+    "Status": {
+      "enum": [
+        "in_progress",
+        "partial",
+        "complete"
+      ],
+      "type": "string"
+    },
+    "Submission": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis": {
+          "description": "Agent's evidence-bound reasoning; do not include code or credentials.",
+          "type": "string"
+        },
+        "category": {
+          "type": "string"
+        },
+        "codebase": {
+          "description": "Zero-based index in the latest scan's codebase revisions.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "disposition": {
+          "$ref": "#/$defs/Disposition"
+        },
+        "evidence": {
+          "default": [],
+          "description": "Additional source locations that support the analysis; source content is not copied.",
+          "items": {
+            "$ref": "#/$defs/SourceLocation"
+          },
+          "type": "array"
+        },
+        "finding_id": {
+          "description": "Existing finding ID when reassessing or moving a previously recorded finding.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "impact": {
+          "type": "string"
+        },
+        "line": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "line_sha256": {
+          "description": "SHA-256 of the inspected line; null only when the former file was removed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Codebase-relative path and one-based line; source content is not copied.",
+          "type": "string"
+        },
+        "recommendation": {
+          "type": "string"
+        },
+        "review_revision": {
+          "description": "Revision of the active code review whose source was inspected.",
+          "type": "string"
+        },
+        "schema_version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity"
+        },
+        "snapshot_id": {
+          "description": "ID of the scan the agent reviewed; stale submissions are rejected.",
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "snapshot_id",
+        "review_revision",
+        "codebase",
+        "path",
+        "line",
+        "category",
+        "title",
+        "severity",
+        "disposition",
+        "analysis",
+        "impact",
+        "recommendation"
+      ],
+      "type": "object"
+    },
+    "Submission2": {
+      "additionalProperties": false,
+      "properties": {
+        "codebase": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "gaps": {
+          "description": "Unreviewed areas and their reason, without source snippets or secrets.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "previous_revision": {
+          "description": "Last recorded review revision, or null when starting a new review.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "schema_version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "scope": {
+          "description": "Concise reviewed areas or next work units, without source snippets or secrets.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "snapshot_id": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "uncertainties": {
+          "default": [],
+          "description": "Unresolved reachability or context questions within the reviewed scope.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "schema_version",
+        "snapshot_id",
+        "codebase",
+        "status",
+        "scope",
+        "gaps"
+      ],
+      "type": "object"
+    },
     "TestContext": {
       "additionalProperties": false,
       "properties": {
@@ -1054,6 +2214,46 @@
       ],
       "type": "string"
     },
+    "UpstreamEvent": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "source_facts": {
+          "$ref": "#/$defs/SourceFacts"
+        },
+        "title": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "kind",
+        "id",
+        "url",
+        "title",
+        "sha256"
+      ],
+      "type": "object"
+    },
     "Verification": {
       "enum": [
         "source_confirmed",
@@ -1075,6 +2275,30 @@
     },
     "audience": {
       "type": "string"
+    },
+    "closed": {
+      "$ref": "#/$defs/ClosedMode"
+    },
+    "closed_cases": {
+      "description": "Closed case details and evidence, regardless of Markdown detail mode.",
+      "items": {
+        "$ref": "#/$defs/Case"
+      },
+      "type": "array"
+    },
+    "code_findings": {
+      "description": "Agent-reviewed codebase findings, separate from dependency advisories.",
+      "items": {
+        "$ref": "#/$defs/CodeFinding"
+      },
+      "type": "array"
+    },
+    "code_reviews": {
+      "description": "Recorded independent codebase reviews; an absent entry means none was recorded.",
+      "items": {
+        "$ref": "#/$defs/Review"
+      },
+      "type": "array"
     },
     "codebase_context_unrecorded": {
       "type": "boolean"
@@ -1119,6 +2343,12 @@
     "generated_at": {
       "type": "string"
     },
+    "informational": {
+      "items": {
+        "$ref": "#/$defs/InformationalSummary"
+      },
+      "type": "array"
+    },
     "informational_count": {
       "format": "uint",
       "minimum": 0,
@@ -1156,7 +2386,7 @@
       "type": "array"
     },
     "not_applicable_count": {
-      "description": "Upstream events the agent assessed as not affecting the monitored versions; no case is opened.",
+      "description": "Recorded upstream non-applicability assessments, including cases later reopened.",
       "format": "uint",
       "minimum": 0,
       "type": "integer"
@@ -1169,6 +2399,16 @@
     },
     "project_name": {
       "type": "string"
+    },
+    "retracted": {
+      "description": "Retracted cases and their recorded revisions, retained for audit.",
+      "items": {
+        "$ref": "#/$defs/RetractedCase"
+      },
+      "type": "array"
+    },
+    "scheduled_code_review": {
+      "type": "boolean"
     },
     "scheduler_id": {
       "type": [
@@ -1200,6 +2440,7 @@
   "required": [
     "schema_version",
     "audience",
+    "closed",
     "language",
     "project_id",
     "project_name",
@@ -1210,8 +2451,14 @@
     "codebase_scope_changed",
     "inventory",
     "actionable",
+    "code_findings",
+    "code_reviews",
+    "scheduled_code_review",
     "needs_review",
     "informational_count",
+    "informational",
+    "closed_cases",
+    "retracted",
     "dismissed_count",
     "not_applicable_count",
     "coverage_gaps",

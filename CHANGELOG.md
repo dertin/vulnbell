@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.4 - 2026-11-01
+
+- Improve PDF report typography, tables, finding pagination, notes and page footers.
+- Verify scoped Cargo and npm installed package archives against lockfile integrity before retracting inapplicable research signals.
+- Summarize informational cases by audience and preserve evidence in JSON.
+- Record GitHub pull request closure and allow evidence-bound retraction of inapplicable agent observations.
+- Verify scoped installed Python wheels and recheck recorded observations when dependency inventory changes.
+- Record agent-reviewed codebase security findings separately from dependency advisories, with checked locations and revision tracking.
+- Check tracked source locations in batches and update findings by ID to keep codebase reviews responsive.
+- Support scoped symbol navigation through current CodeGraph indexes and record multiple source locations for codebase findings.
+- Track code review scope and progress, support scheduled review, and evaluate agent observations against private labels.
+- Support documented manual resolution of references to moved repositories and research unavailable sources without treating them as safe.
+- Coordinate concurrent monitor initialization, scans and reports; use GitHub REST API version 2026-03-10.
+- Link to VulnBell at the beginning and end of Markdown and PDF reports.
+- Render known codebase paths as portable references in Markdown and PDF reports.
+- Assess codebase risk without making deployment confirmation a priority or non-applicability gate.
+- Bind impact assessments and batch decisions to the reviewed questions and case facts.
+- Recommend review tools by monitor inventory in `doctor`, including ecosystem scanners and structured-data readers.
+- Prioritize actionable findings and include remediation prompts, report-language summaries and reasons for edited PDF content.
+- Inventory Python requirements lockfiles and structured Python lock formats locally, retaining unverified source and environment coverage.
+- Keep recognized Python dependency inputs and unrecognized lockfiles out of agent discovery and source tools.
+- Verify authorized hash-pinned Python locks against PyPI, retain dependency provenance, and deduplicate matching declarations.
+- Localize coverage details and allow evidence-bound agent translations of advisory summaries.
+
 ## 0.1.3 - 2026-11-01
 
 - Let scheduled reviews read scoped codebase evidence and public GitHub records through bounded read-only tools.

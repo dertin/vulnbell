@@ -131,7 +131,7 @@ pub fn check(store: &Store, case_id: &str, batch: CitationBatch) -> Result<Citat
     })
 }
 
-fn line_hash(root: &str, path: &str, line: usize) -> Result<String> {
+pub(crate) fn line_hash(root: &str, path: &str, line: usize) -> Result<String> {
     let mut components = std::path::Path::new(path).components().peekable();
     while let Some(component) = components.next() {
         if components.peek().is_some()

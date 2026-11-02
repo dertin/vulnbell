@@ -387,7 +387,7 @@ fn github_accepts_a_linked_pull_request_from_the_issues_endpoint() {
     write(
         &fixture,
         &format!("{repo}/issues.page-1.json"),
-        r#"[{"number":1,"title":"Maintenance","html_url":"https://github.com/example/project/pull/1","state":"open","updated_at":"2026-10-20T00:00:00Z","labels":[],"body":"Fixes #42","pull_request":{}}]"#,
+        r#"[{"number":1,"title":"Maintenance","html_url":"https://github.com/example/project/pull/1","state":"closed","updated_at":"2026-10-20T00:00:00Z","labels":[],"body":"Fixes #42","pull_request":{"merged_at":null}}]"#,
     );
     for name in ["releases.page-1.json", "security-advisories.page-1.json"] {
         write(&fixture, &format!("{repo}/{name}"), "[]");
@@ -406,6 +406,10 @@ fn github_accepts_a_linked_pull_request_from_the_issues_endpoint() {
     let collected = raw::read_target(raw, &target);
     assert!(collected.complete(), "{:?}", collected.errors);
     assert_eq!(collected.linked_issues[0].kind, ItemKind::PullRequest);
+    assert_eq!(
+        collected.items[0].closure,
+        Some(crate::tools::PullRequestClosure::ClosedUnmerged)
+    );
     assert!(screen::screen(&collected.items[0], &collected.linked_issues[0].body).is_some());
     write(
         &fixture,
@@ -416,6 +420,8 @@ fn github_accepts_a_linked_pull_request_from_the_issues_endpoint() {
     assert!(!invalid.complete());
     assert!(!invalid.errors.is_empty());
 }
+
+mod closure;
 
 #[test]
 fn github_resolves_a_linked_discussion_outside_the_window() {
@@ -469,6 +475,82 @@ fn github_resolves_a_linked_discussion_outside_the_window() {
     assert!(in_window.complete(), "{:?}", in_window.missing);
     assert_eq!(in_window.linked_issues[0].key, "example/project#42");
     assert!(screen::screen(&in_window.items[0], &in_window.linked_issues[0].body).is_some());
+}
+
+#[test]
+fn github_moved_references_require_a_recorded_resolution() {
+    let directory = tempfile::tempdir().unwrap();
+    let target = target("https://github.com/example/project");
+    let fixture = directory.path().join(raw::window_directory(&target));
+    let repo = "github/example/project";
+    write(
+        &fixture,
+        &format!("{repo}/issues.page-1.json"),
+        r#"[{"number":1,"title":"Maintenance","html_url":"https://github.com/example/project/pull/1","state":"open","updated_at":"2026-10-20T00:00:00Z","labels":[],"body":"Fixes #42","pull_request":{}}]"#,
+    );
+    for name in ["releases.page-1.json", "security-advisories.page-1.json"] {
+        write(&fixture, &format!("{repo}/{name}"), "[]");
+    }
+    write(
+        &fixture,
+        &format!("{repo}/discussions.json"),
+        r#"[{"data":{"search":{"discussionCount":0,"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}]"#,
+    );
+    let issue = serde_json::json!({"number":42,"title":"Old report","html_url":"https://github.com/moved/project/issues/42","state":"closed","updated_at":"2025-01-01T00:00:00Z","labels":[],"body":"Details"});
+    let path = format!("{repo}/linked-issues/42.json");
+    write(&fixture, &path, &issue.to_string());
+    assert!(!raw::read_target(directory.path(), &target).complete());
+
+    let resolution_path = raw::manual_resolution_path(Path::new(repo), "example/project#42");
+    let mut resolution = serde_json::json!({"reference":"example/project#42","rationale":"Verified the original repository redirects to the current repository.","issue":issue});
+    write(
+        &fixture,
+        resolution_path.to_str().unwrap(),
+        &resolution.to_string(),
+    );
+    let collected = raw::read_target(directory.path(), &target);
+    assert!(collected.complete(), "{:?}", collected.errors);
+    assert_eq!(collected.linked_issues[0].key, "example/project#42");
+
+    resolution["issue"]["number"] = 43.into();
+    write(
+        &fixture,
+        resolution_path.to_str().unwrap(),
+        &resolution.to_string(),
+    );
+    assert!(!raw::read_target(directory.path(), &target).complete());
+
+    let discussion = serde_json::json!({"data":{"repository":{"discussion":{"number":42,"title":"Discussion","url":"https://github.com/moved/project/discussions/42","updatedAt":"2025-01-01T00:00:00Z","body":"Details","category":{"name":"Q&A"}}}}});
+    write(&fixture, &path, &discussion.to_string());
+    resolution["issue"] = discussion;
+    write(
+        &fixture,
+        resolution_path.to_str().unwrap(),
+        &resolution.to_string(),
+    );
+    let collected = raw::read_target(directory.path(), &target);
+    assert!(collected.complete(), "{:?}", collected.errors);
+    assert_eq!(collected.linked_issues[0].kind, ItemKind::Discussion);
+
+    write(
+        &fixture,
+        &format!("{repo}/issues.page-1.json"),
+        r#"[{"number":1,"title":"Maintenance","html_url":"https://github.com/example/project/pull/1","state":"open","updated_at":"2026-10-20T00:00:00Z","labels":[],"body":"Fixes https://github.com/old/project/issues/42","pull_request":{}}]"#,
+    );
+    let cross_path = format!("{repo}/linked-issues/old/project/42.json");
+    let issue = serde_json::json!({"number":42,"title":"Old report","html_url":"https://github.com/moved/project/issues/42","state":"closed","updated_at":"2025-01-01T00:00:00Z","labels":[],"body":"Details"});
+    write(&fixture, &cross_path, &issue.to_string());
+    let key = "https://github.com/old/project/issues/42";
+    let cross_resolution = raw::manual_resolution_path(Path::new(repo), key);
+    let resolution = serde_json::json!({"reference":key,"rationale":"Verified repository transfer.","issue":issue});
+    write(
+        &fixture,
+        cross_resolution.to_str().unwrap(),
+        &resolution.to_string(),
+    );
+    let collected = raw::read_target(directory.path(), &target);
+    assert!(collected.complete(), "{:?}", collected.errors);
+    assert_eq!(collected.linked_issues[0].key, key);
 }
 
 #[test]
@@ -660,7 +742,7 @@ fn github_cross_repository_issue_references_are_fetched_without_following_other_
         invalid
             .errors
             .iter()
-            .any(|error| error.contains("linked response URL"))
+            .any(|error| error.contains("requires manual research"))
     );
 }
 
@@ -900,36 +982,4 @@ fn github_responses_are_parsed_and_missing_files_name_their_request() {
     );
 }
 
-#[test]
-fn jira_v3_pages_follow_the_next_page_token() {
-    let directory = tempfile::tempdir().unwrap();
-    let raw_dir = directory.path();
-    let target = target("https://hibernate.atlassian.net/browse/HHH");
-    let fixture = raw_dir.join(raw::window_directory(&target));
-    write(
-        &fixture,
-        "jira/hibernate.atlassian.net/HHH.page-1.json",
-        r#"{"issues": [{"key": "HHH-1", "fields": {"summary": "SQL injection in order by", "updated": "2026-10-20T10:00:00.000+0000",
-            "status": {"name": "Open"}, "issuetype": {"name": "Bug"}, "labels": [],
-            "description": {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Crafted input"}]}]}}}],
-            "isLast": false, "nextPageToken": "abc=="}"#,
-    );
-    let first = raw::read_target(raw_dir, &target);
-    assert_eq!(first.items.len(), 1);
-    assert_eq!(
-        first.items[0].url,
-        "https://hibernate.atlassian.net/browse/HHH-1"
-    );
-    assert!(first.items[0].body.contains("Crafted input"));
-    assert_eq!(first.missing.len(), 1);
-    assert!(
-        first.missing[0]
-            .request
-            .ends_with("&nextPageToken=abc%3D%3D")
-    );
-    assert!(
-        first.missing[0]
-            .request
-            .contains("/rest/api/3/search/jql?jql=")
-    );
-}
+mod jira;

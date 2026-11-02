@@ -22,12 +22,16 @@ const MAX_PAGES: usize = 50;
 mod forge;
 mod github;
 mod jira;
+mod manual;
 #[cfg(test)]
 mod tests;
 
 use forge::{read_forgejo, read_gitlab};
 use github::{github_issues, github_linked_discussion, read_github};
 use jira::read_jira;
+#[cfg(test)]
+use manual::manual_resolution_path;
+use manual::{github_issue_reference, record_manual_github_issue};
 
 static CLOSES: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -517,9 +521,12 @@ fn read_linked_issues(
             && values[0].get("data").is_some()
         {
             match github_linked_discussion(values[0].clone(), &issue_prefix, &number) {
-                Ok(mut discussion) => {
+                Ok(Some(mut discussion)) => {
                     discussion.key = key;
                     result.linked_issues.push(discussion);
+                }
+                Ok(None) => {
+                    record_manual_github_issue(raw, target, &key, result);
                 }
                 Err(error) => result.errors.push(format!("{}: {error}", relative(&path))),
             }
@@ -543,6 +550,7 @@ fn read_linked_issues(
                             updated_at,
                             body: body(issue.description),
                             closes: Vec::new(),
+                            closure: None,
                             advisory: None,
                         })
                     })
@@ -568,10 +576,7 @@ fn read_linked_issues(
                 if (cross_repository || matches!(provider, Provider::GitHub { .. }))
                     && issue.url != format!("{issue_web_base}{resource}/{number}")
                 {
-                    result.errors.push(format!(
-                        "{}: linked response URL does not identify the requested issue",
-                        relative(&path)
-                    ));
+                    record_manual_github_issue(raw, target, &key, result);
                     continue;
                 }
                 issue.key = key;
@@ -584,137 +589,6 @@ fn read_linked_issues(
             Err(error) => result.errors.push(format!("{}: {error}", relative(&path))),
         }
     }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ManualGitHubIssue {
-    reference: String,
-    rationale: String,
-    issue: Value,
-}
-
-fn record_manual_github_issue(
-    raw: &mut RawReader<'_>,
-    target: &ResearchTarget,
-    key: &str,
-    result: &mut TargetItems,
-) {
-    let directory = result.provider.directory();
-    match manually_resolved_github_issue(raw, &directory, key) {
-        Ok(Some(issue)) => {
-            if !result.method.contains("manual linked issue resolutions") {
-                result
-                    .method
-                    .push_str("; manual linked issue resolutions recorded in raw");
-            }
-            result.linked_issues.push(issue);
-        }
-        Ok(None) => {
-            let path = window_directory(target).join(manual_resolution_path(&directory, key));
-            result.errors.push(format!(
-                "cross-repository reference requires manual research: {}; resolution: {}",
-                super::truncate_chars(key, 300),
-                relative(&path)
-            ));
-        }
-        Err(error) => result.errors.push(format!(
-            "manual linked issue {}: {error}",
-            super::truncate_chars(key, 300)
-        )),
-    }
-}
-
-fn manual_resolution_path(directory: &Path, key: &str) -> PathBuf {
-    directory
-        .join("linked-issues/manual")
-        .join(format!("{}.json", crate::digest(key.as_bytes())))
-}
-
-fn manually_resolved_github_issue(
-    raw: &mut RawReader<'_>,
-    directory: &Path,
-    key: &str,
-) -> Result<Option<Item>> {
-    let path = manual_resolution_path(directory, key);
-    let Some(values) = read_values(raw, &path)? else {
-        return Ok(None);
-    };
-    if values.len() != 1 {
-        bail!("expected one manual resolution");
-    }
-    let resolution: ManualGitHubIssue =
-        serde_json::from_value(values.into_iter().next().context("missing resolution")?)?;
-    if resolution.reference != key
-        || resolution.rationale.trim().is_empty()
-        || resolution.rationale.len() > 4000
-    {
-        bail!("manual resolution requires the exact reference and a bounded rationale");
-    }
-    let url = resolution
-        .issue
-        .get("html_url")
-        .and_then(Value::as_str)
-        .context("missing issue URL")?;
-    let (repository, number) = github_issue_reference(url).context("invalid GitHub issue URL")?;
-    let expected_number = key
-        .rsplit_once('#')
-        .map(|(_, number)| number)
-        .context("missing reference number")?;
-    if number != expected_number {
-        bail!("manual issue number does not match the reference");
-    }
-    let base = format!("https://github.com/{repository}/");
-    let mut issues = github_issues(vec![resolution.issue], &repository, &base)?;
-    if issues.len() != 1
-        || issues[0].kind != ItemKind::Issue
-        || issues[0].url != format!("{base}issues/{number}")
-        || issues[0].key != format!("{repository}#{number}")
-    {
-        bail!("manual response does not identify the selected GitHub issue");
-    }
-    let mut issue = issues.remove(0);
-    issue.key = key.to_owned();
-    Ok(Some(issue))
-}
-
-fn github_issue_reference(key: &str) -> Option<(String, String)> {
-    let (repository, number) = if key.starts_with("https://") {
-        let url = url::Url::parse(key).ok()?;
-        if url.scheme() != "https"
-            || url.host_str() != Some("github.com")
-            || !url.username().is_empty()
-            || url.password().is_some()
-            || url.port().is_some()
-            || url.query().is_some()
-            || url.fragment().is_some()
-        {
-            return None;
-        }
-        let parts: Vec<&str> = url.path_segments()?.collect();
-        if parts.len() != 4 || parts[2] != "issues" {
-            return None;
-        }
-        (format!("{}/{}", parts[0], parts[1]), parts[3].to_owned())
-    } else {
-        let (repository, number) = key.split_once('#')?;
-        (repository.to_owned(), number.to_owned())
-    };
-    let mut parts = repository.split('/');
-    let owner = parts.next()?;
-    let name = parts.next()?;
-    if parts.next().is_some()
-        || owner.len() > 100
-        || name.len() > 100
-        || !safe(owner)
-        || !safe(name)
-        || number.is_empty()
-        || number.len() > 20
-        || !number.bytes().all(|byte| byte.is_ascii_digit())
-    {
-        return None;
-    }
-    Some((repository, number))
 }
 
 fn utc_z(value: &str) -> String {

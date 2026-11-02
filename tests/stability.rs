@@ -134,6 +134,7 @@ fn reordered_feed_keys_and_daily_context_keep_the_recorded_verdict() {
         .find(|evidence| evidence.source == "osv")
         .unwrap();
     let verdict = Verdict {
+        advisory_translation: None,
         codebase_revisions: Vec::new(),
         schema_version: 1,
         case_id: case.case_id.clone(),
@@ -186,6 +187,13 @@ fn reordered_feed_keys_and_daily_context_keep_the_recorded_verdict() {
         .find(|item| item.case_id == case.case_id)
         .unwrap();
     assert_ne!(reopened.facts_sha256, case.facts_sha256);
+    assert_eq!(reopened.decision, Decision::Review);
+    assert!(
+        reopened
+            .evidence
+            .iter()
+            .any(|evidence| evidence.source == "agent_verdict")
+    );
     assert!(
         reopened
             .open_questions

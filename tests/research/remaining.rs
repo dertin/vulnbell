@@ -46,6 +46,7 @@ fn same_link_from_distinct_upstreams_preserves_each_case() {
                 Assessment::Review
             },
             not_applicable_reason: None,
+            artifact_evidence: None,
             rationale: "synthetic".into(),
             source_facts: Default::default(),
         })
@@ -73,7 +74,7 @@ fn same_link_from_distinct_upstreams_preserves_each_case() {
         ResearchBatch {
             schema_version: 1,
             project_id: project.clone(),
-            snapshot_id: plan.snapshot_id,
+            snapshot_id: plan.snapshot_id.clone(),
             sources: vec![],
             events: vec![],
         },
@@ -89,6 +90,53 @@ fn same_link_from_distinct_upstreams_preserves_each_case() {
                 && case.facts_sha256 == old.facts_sha256
                 && case.evidence.len() == old.evidence.len()))
     );
+    let target = &plan.targets[0];
+    let event = ResearchEvent {
+        codebase_revisions: Vec::new(),
+        upstream: target.upstream.clone(),
+        instance_ids: target.instance_ids.clone(),
+        reviewed_instance_ids: target.instance_ids.clone(),
+        provider: "github".into(),
+        external_id: "item-0".into(),
+        kind: EventKind::Issue,
+        url: url.into(),
+        title: "synthetic".into(),
+        excerpt: "synthetic".into(),
+        updated_at: target.until.clone(),
+        assessment: Assessment::NotApplicable,
+        not_applicable_reason: Some(NotApplicableReason::AffectsOtherVersion),
+        artifact_evidence: None,
+        rationale: "synthetic".into(),
+        source_facts: vulnbell::model::SourceFacts {
+            affected_versions: "0.x".into(),
+            ..Default::default()
+        },
+    };
+    vulnbell::research::import(
+        &mut store,
+        ResearchBatch {
+            schema_version: 1,
+            project_id: project.clone(),
+            snapshot_id: plan.snapshot_id,
+            sources: vec![SourceReview {
+                recheck_context_sha256: None,
+                upstream: target.upstream.clone(),
+                from: target.from.clone(),
+                until: target.until.clone(),
+                coverage: ReviewCoverage::Partial,
+                detail: "synthetic".into(),
+                continuation: None,
+            }],
+            events: vec![event],
+        },
+    )
+    .unwrap();
+    let mut snapshot = store.latest().unwrap();
+    snapshot.cases = store.cases().unwrap();
+    let retracted = vulnbell::output::retracted_cases(&snapshot, &store).unwrap();
+    assert_eq!(retracted.len(), 1);
+    assert_eq!(retracted[0].research_events.len(), 1);
+    assert_eq!(retracted[0].research_events[0].upstream, target.upstream);
     drop(store);
     fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
 }

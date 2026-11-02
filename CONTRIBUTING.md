@@ -11,6 +11,8 @@ cargo package --locked --allow-dirty
 
 Rust types define the data contracts. Generate schemas with `vulnbell schema <name> --json`; the test suite compares every published schema with its Rust type. Do not edit generated schemas by hand.
 
+PDF layout changes also need `cargo test --lib output::pdf::tests --locked -- --ignored`, with a Chromium-based browser and Poppler (`pdfinfo` and `pdftotext`).
+
 Parser and connector changes need success and failure fixtures. Sandbox changes need `cargo test --test sandbox_live --locked -- --ignored --nocapture` with Microsandbox ready. Agent tests that need provider access are optional local tests.
 
 Run `python3 -I -m unittest discover -s tests -p test_manifest_reader.py` for the optional structured-data helper. Discovery changes need resumable inventory, stale/fabricated evidence, source coverage and permission-boundary tests. Missing evidence must remain partial; imported agent observations cannot attest deployment or authorize active tests.

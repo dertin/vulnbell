@@ -194,6 +194,7 @@ fn context_hash(case: &Case) -> Result<String> {
         case.decision,
         case.applicability,
         case.verification,
+        crate::impact::question_set_sha256(),
     ))?))
 }
 
@@ -418,6 +419,7 @@ pub fn list(store: &Store, limit: usize, offset: usize, unworked: bool) -> Resul
     for case in store.cases()? {
         if !matches!(case.decision, Decision::Actionable | Decision::Review)
             && !challenged.contains(case.case_id.as_str())
+            && !missing.contains(case.case_id.as_str())
         {
             continue;
         }

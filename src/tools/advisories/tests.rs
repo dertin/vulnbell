@@ -39,6 +39,7 @@ fn relay_requires_review(resolution: Resolution) -> bool {
         updated_at: "2026-10-20T10:00:00+00:00".into(),
         body: "CVE-2026-12345".into(),
         closes: vec![],
+        closure: None,
         advisory: None,
     };
     let selected = HashSet::new();
@@ -184,6 +185,7 @@ fn repository_advisory_disposition_uses_normalized_or_uncertain_identity() {
             updated_at: "2026-10-20T10:00:00+00:00".into(),
             body: String::new(),
             closes: vec![],
+            closure: None,
             advisory: Some(crate::tools::RepositoryAdvisory {
                 ghsa_id: "GHSA-1234-1234-1234".into(),
                 cve_id: None,

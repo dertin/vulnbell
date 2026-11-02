@@ -73,6 +73,70 @@ pub enum EventKind {
     Advisory,
     Commit,
 }
+/// A checksummed artifact and optional evidence of its installed contents.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactEvidence {
+    pub instance_id: String,
+    pub codebase: usize,
+    pub location: ArtifactLocation,
+    pub path: String,
+    pub sha256: String,
+    /// Exact installed wheel files and paths checked within the monitored codebase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_wheel: Option<InstalledScopeEvidence>,
+    /// Installed Cargo or npm package checked against its lockfile archive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_archive: Option<InstalledArchiveEvidence>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactLocation {
+    /// Path relative to the selected codebase.
+    Codebase,
+    /// Path relative to the monitor profile's directory.
+    MonitorWorkspace,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
+#[serde(deny_unknown_fields)]
+pub struct InstalledScopeEvidence {
+    /// Codebase-relative installed package or source directory.
+    pub root: String,
+    /// Paths or bounded filename patterns relative to the installed directory checked for absence.
+    pub absent_paths: Vec<String>,
+    /// Case evidence describing why this directory represents the assessed build or test scope.
+    pub scope_evidence_id: String,
+    /// The source and note support this installation for every in-scope build using the instance.
+    pub scope_complete: bool,
+    /// Current source line supporting the scope described in the case evidence.
+    pub scope_source: ArtifactScopeSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
+#[serde(deny_unknown_fields)]
+pub struct InstalledArchiveEvidence {
+    pub ecosystem: ArchiveEcosystem,
+    pub scope: InstalledScopeEvidence,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchiveEcosystem {
+    Cargo,
+    Npm,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactScopeSource {
+    pub path: String,
+    /// One-based line number.
+    pub line: usize,
+    /// SHA-256 of the line without its line ending.
+    pub line_sha256: String,
+}
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResearchEvent {
@@ -96,6 +160,8 @@ pub struct ResearchEvent {
     /// Required with `not_applicable`; forbidden otherwise.
     #[serde(default)]
     pub not_applicable_reason: Option<NotApplicableReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_evidence: Option<ArtifactEvidence>,
     pub rationale: String,
     /// Answers to the research questions as the item states them. `fixed_in_monitored_version`
     /// requires `fixed_in`, and `affects_other_version` requires `affected_versions`.
@@ -186,4 +252,12 @@ pub struct FollowSuggestion {
     pub advisory_id: String,
     pub applicability: Applicability,
     pub evidence: crate::model::Evidence,
+}
+
+#[derive(Deserialize)]
+pub(super) struct RecordedEvent {
+    pub assessment: Assessment,
+    #[serde(default)]
+    pub not_applicable_reason: Option<NotApplicableReason>,
+    pub rationale: String,
 }

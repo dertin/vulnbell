@@ -75,6 +75,7 @@ pub(super) fn read_gitlab(
                 updated_at,
                 closes: closes(&text, &web_base, project),
                 body: body(Some(text)),
+                closure: None,
                 advisory: None,
             });
         }
@@ -120,6 +121,7 @@ pub(super) fn read_gitlab(
             updated_at,
             body: body(release.description),
             closes: Vec::new(),
+            closure: None,
             advisory: None,
         });
     }
@@ -197,6 +199,7 @@ pub(super) fn read_forgejo(
                 updated_at,
                 closes: closes(&text, &web_base, &prefix),
                 body: body(Some(text)),
+                closure: None,
                 advisory: None,
             });
         }
@@ -242,6 +245,7 @@ pub(super) fn read_forgejo(
             updated_at,
             body: body(release.body),
             closes: Vec::new(),
+            closure: None,
             advisory: None,
         });
     }

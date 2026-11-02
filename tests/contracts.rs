@@ -743,6 +743,38 @@ fn all_published_json_schemas_match_their_rust_contracts() {
             serde_json::to_value(schemars::schema_for!(vulnbell::output::MorningReport)).unwrap(),
         ),
         (
+            "audit-report",
+            serde_json::to_value(schemars::schema_for!(vulnbell::output::AuditReport)).unwrap(),
+        ),
+        (
+            "code-finding",
+            serde_json::to_value(schemars::schema_for!(
+                vulnbell::tools::code_findings::Submission
+            ))
+            .unwrap(),
+        ),
+        (
+            "code-review",
+            serde_json::to_value(schemars::schema_for!(
+                vulnbell::tools::code_review::Submission
+            ))
+            .unwrap(),
+        ),
+        (
+            "code-evaluation-labels",
+            serde_json::to_value(schemars::schema_for!(
+                vulnbell::tools::code_evaluate::Labels
+            ))
+            .unwrap(),
+        ),
+        (
+            "code-evaluation-observations",
+            serde_json::to_value(schemars::schema_for!(
+                vulnbell::tools::code_evaluate::Observations
+            ))
+            .unwrap(),
+        ),
+        (
             "snapshot",
             serde_json::to_value(schemars::schema_for!(vulnbell::model::Snapshot)).unwrap(),
         ),

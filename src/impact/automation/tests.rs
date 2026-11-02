@@ -85,6 +85,7 @@ fn human_fixture() -> (tempfile::TempDir, String, Store, Case, EvidenceReference
         &mut store,
         &case.case_id,
         ImpactSubmission {
+            question_set_sha256: crate::impact::question_set_sha256(),
             schema_version: 1,
             case_id: case.case_id.clone(),
             facts_sha256: case.facts_sha256.clone(),
@@ -311,6 +312,7 @@ fn source_review_binds_evidence_and_rejects_wrong_lines_and_deployment_claims() 
         &mut store,
         &case.case_id,
         ImpactSubmission {
+            question_set_sha256: crate::impact::question_set_sha256(),
             schema_version: 1,
             case_id: case.case_id.clone(),
             facts_sha256: case.facts_sha256.clone(),
@@ -324,6 +326,7 @@ fn source_review_binds_evidence_and_rejects_wrong_lines_and_deployment_claims() 
             &mut store,
             &case.case_id,
             ImpactSubmission {
+                question_set_sha256: crate::impact::question_set_sha256(),
                 schema_version: 1,
                 case_id: case.case_id.clone(),
                 facts_sha256: case.facts_sha256.clone(),
@@ -714,6 +717,7 @@ fn source_review_binds_evidence_and_rejects_wrong_lines_and_deployment_claims() 
             &mut store,
             &case.case_id,
             ImpactSubmission {
+                question_set_sha256: crate::impact::question_set_sha256(),
                 schema_version: 1,
                 case_id: case.case_id.clone(),
                 facts_sha256: case.facts_sha256.clone(),
@@ -773,6 +777,7 @@ fn source_review_binds_evidence_and_rejects_wrong_lines_and_deployment_claims() 
         &mut store,
         &case.case_id,
         ImpactSubmission {
+            question_set_sha256: crate::impact::question_set_sha256(),
             schema_version: 1,
             case_id: case.case_id.clone(),
             facts_sha256: case.facts_sha256.clone(),

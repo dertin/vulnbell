@@ -26,7 +26,7 @@ pub(crate) const EXCLUDED_DIRECTORIES: &[&str] = &[
 ];
 
 pub(crate) fn excluded_directory(name: &str) -> bool {
-    EXCLUDED_DIRECTORIES.contains(&name)
+    EXCLUDED_DIRECTORIES.contains(&name) || name == ".codegraph" || name.starts_with(".codegraph-")
 }
 
 pub(crate) fn excluded_path(path: &Path) -> bool {

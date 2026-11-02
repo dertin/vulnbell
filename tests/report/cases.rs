@@ -73,6 +73,7 @@ fn affected_verdict_requires_intact_claim_even_when_its_cited_note_is_intact() {
     };
     store.save_case(&case).unwrap();
     let verdict = |verification| Verdict {
+        advisory_translation: None,
         schema_version: 1,
         case_id: case.case_id.clone(),
         codebase_revisions: Vec::new(),
@@ -214,6 +215,7 @@ fn closed_cases_with_invalid_recorded_verdicts_return_to_review() {
                 &mut store,
                 &id,
                 Verdict {
+                    advisory_translation: None,
                     schema_version: 1,
                     case_id: id.clone(),
                     codebase_revisions: Vec::new(),
@@ -251,13 +253,59 @@ fn closed_cases_with_invalid_recorded_verdicts_return_to_review() {
         assert!(pending.verdict_missing.contains(id));
     }
     snapshot.cases = store.cases().unwrap();
-    let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    let mut report = prepared_report(&snapshot, &store, "cyber").unwrap();
     assert_eq!(report.informational_count, 1);
     assert_eq!(report.dismissed_count, 1);
     assert_eq!(report.needs_review.len(), corrupt.len());
     for (id, _, _) in &corrupt {
         assert!(report.needs_review.iter().any(|item| &item.case_id == id));
     }
+    let summary = vulnbell::output::morning_markdown(&report).unwrap();
+    assert!(summary.contains("| `auto-informational` |"));
+    assert!(summary.contains("Not impact-assessed: contextual case, no action required."));
+    let summary_pdf =
+        vulnbell::output::prepared_pdf_markdown(&summary, &snapshot.cases, &store, &report)
+            .unwrap();
+    assert!(!summary_pdf.contains("## auto-informational"));
+    assert!(summary_pdf.contains("## manual-informational-missing"));
+    report.closed = vulnbell::output::ClosedMode::None;
+    let none = vulnbell::output::morning_markdown(&report).unwrap();
+    assert!(!none.contains("| `auto-informational` |"));
+    report.closed = vulnbell::output::ClosedMode::Full;
+    let full = vulnbell::output::morning_markdown(&report).unwrap();
+    let full_pdf =
+        vulnbell::output::prepared_pdf_markdown(&full, &snapshot.cases, &store, &report).unwrap();
+    assert!(full_pdf.contains("## auto-informational"));
+    let audit = vulnbell::output::audit_markdown(&snapshot, &store).unwrap();
+    assert!(audit.contains("auto-informational"));
+    let audit_none = vulnbell::output::audit_markdown_with_closed(
+        &snapshot,
+        &store,
+        vulnbell::output::ClosedMode::None,
+    )
+    .unwrap();
+    assert!(!audit_none.contains("auto-informational"));
+    let directory = tempfile::tempdir().unwrap();
+    let profile = directory.path().join("vulnbell.yaml");
+    std::fs::write(
+        &profile,
+        format!("schema: 1\nproject_id: {project}\nname: fixture\nreport:\n  language: es\n"),
+    )
+    .unwrap();
+    store.register_project("fixture", &profile).unwrap();
+    let spanish = vulnbell::output::audit_markdown_with_closed(
+        &snapshot,
+        &store,
+        vulnbell::output::ClosedMode::Summary,
+    )
+    .unwrap();
+    assert!(spanish.contains("Proyecto:"));
+    assert!(spanish.contains("## Casos informativos"));
+    assert!(spanish.contains("## Cobertura"));
+    let spanish_report = prepared_report(&snapshot, &store, "cyber").unwrap();
+    let spanish = vulnbell::output::morning_markdown(&spanish_report).unwrap();
+    assert!(spanish.contains("Sin evaluación de impacto: caso de contexto, no requiere acción."));
+    assert!(!spanish.contains("`vulnbell impact`"));
     drop(store);
     std::fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
 }
@@ -344,6 +392,7 @@ fn contained_advisories_collapse_into_one_row_and_exposed_cases_keep_their_card(
             &mut store,
             case_id,
             vulnbell::impact::ImpactSubmission {
+                question_set_sha256: vulnbell::impact::question_set_sha256(),
                 schema_version: 1,
                 case_id: case_id.into(),
                 facts_sha256: "facts".into(),
@@ -381,10 +430,10 @@ fn contained_advisories_collapse_into_one_row_and_exposed_cases_keep_their_card(
         partial: false,
         alert_status: "local".into(),
     };
-    let mut report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    let mut report = prepared_report(&snapshot, &store, "cyber").unwrap();
     report.finding_checks.reverse();
     assert_eq!(report.actionable.len(), 2);
-    let markdown = vulnbell::output::morning_markdown(&report);
+    let markdown = vulnbell::output::morning_markdown(&report).unwrap();
     assert!(markdown.contains("**1** may be exposed in the project and **1** are not exposed"));
     assert!(markdown.contains("### SIG-exposed"));
     assert!(!markdown.contains("### SIG-contained"));
@@ -397,7 +446,7 @@ fn contained_advisories_collapse_into_one_row_and_exposed_cases_keep_their_card(
     );
     assert!(markdown.contains("| RUSTSEC-0001 | SIG-contained feature rationale. | 8.2.0 |"));
     assert!(markdown.contains("Update with priority to 8.2.0"));
-    assert!(markdown.contains("**Affected feature in use:** yes — SIG-exposed feature rationale."));
+    assert!(markdown.contains("**Affected feature in use:** yes - SIG-exposed feature rationale."));
     assert!(!markdown.contains("Generic case question."));
     assert!(!markdown.contains("**Local verification:** not run"));
     assert!(!markdown.contains("**Instance "));
@@ -488,6 +537,7 @@ fn unconfirmed_versions_need_a_review_disposition_without_requiring_a_test() {
             &mut store,
             case_id,
             vulnbell::impact::ImpactSubmission {
+                question_set_sha256: vulnbell::impact::question_set_sha256(),
                 schema_version: 1,
                 case_id: case_id.into(),
                 facts_sha256: "facts".into(),
@@ -501,10 +551,12 @@ fn unconfirmed_versions_need_a_review_disposition_without_requiring_a_test() {
             },
         )
         .unwrap();
-        assert_eq!(
-            result.verdict,
+        let expected = if case_id == "SIG-issue" {
             vulnbell::impact::ImpactVerdict::NeedsEvidence
-        );
+        } else {
+            vulnbell::impact::ImpactVerdict::PriorityUpdate
+        };
+        assert_eq!(result.verdict, expected);
         cases.push(store.case(case_id).unwrap());
     }
     let mut snapshot = Snapshot {
@@ -522,7 +574,7 @@ fn unconfirmed_versions_need_a_review_disposition_without_requiring_a_test() {
         alert_status: "local".into(),
     };
     let pending = |snapshot: &Snapshot, store: &Store| {
-        let report = vulnbell::output::morning_report(snapshot, store, "cyber").unwrap();
+        let report = prepared_report(snapshot, store, "cyber").unwrap();
         let needed: Vec<(String, bool)> = report
             .finding_checks
             .iter()
@@ -585,7 +637,7 @@ fn unconfirmed_versions_need_a_review_disposition_without_requiring_a_test() {
     .unwrap();
     let (_, open) = pending(&snapshot, &store);
     assert!(open.is_empty());
-    let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    let report = prepared_report(&snapshot, &store, "cyber").unwrap();
     let check = &report
         .finding_checks
         .iter()
@@ -608,7 +660,7 @@ fn unconfirmed_versions_need_a_review_disposition_without_requiring_a_test() {
     assert!(snapshot.cases[0].evidence.len() > old_evidence_count);
     let (_, open) = pending(&snapshot, &store);
     assert_eq!(open, ["SIG-issue"]);
-    let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    let report = prepared_report(&snapshot, &store, "cyber").unwrap();
     let check = &report
         .finding_checks
         .iter()
@@ -629,7 +681,7 @@ fn unconfirmed_versions_need_a_review_disposition_without_requiring_a_test() {
     issue.evidence.push(invalid);
     store.save_case(&issue).unwrap();
     snapshot.cases[0] = issue;
-    let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    let report = prepared_report(&snapshot, &store, "cyber").unwrap();
     assert_eq!(
         report.verification_pending[0].reason,
         vulnbell::output::PendingReason::InvalidVerificationEvidence

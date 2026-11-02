@@ -153,7 +153,7 @@ fn codebase_role_exposes_scoped_read_tools_without_web_or_shell() {
     assert!(!args.iter().any(|arg| arg == "code_mode_host"));
     assert!(!args.iter().any(|arg| arg.contains("vulnbell_github_")));
     assert!(args.iter().any(|arg| {
-        arg.contains("enabled_tools=[\"codebase_list\",\"codebase_read\",\"codebase_search\"]")
+        arg.contains("enabled_tools=[\"codebase_list\",\"codebase_read\",\"codebase_search\",\"codebase_symbols\"]")
     }));
     assert!(args.iter().any(|arg| arg.contains("--receipt")));
 }
@@ -207,6 +207,7 @@ fn actual_reader_preserves_the_security_claim_without_host_effects() {
     let result = adapter.execute(Request {
         github_upstream: None,
         codebase_project: None,
+        required_codebase: None,
         directory: &work,
         output: &output,
         prompt: &prompt,
@@ -273,6 +274,7 @@ fn actual_local_reader_has_no_web_or_host_tools() {
     let result = adapter.execute(Request {
         github_upstream: None,
         codebase_project: None,
+        required_codebase: None,
         directory: &work,
         output: &output,
         prompt: &prompt,
@@ -318,6 +320,7 @@ fn actual_public_reader_has_no_shell_or_personal_mcp_tools() {
         .execute(Request {
             github_upstream: None,
             codebase_project: None,
+            required_codebase: None,
             directory: work.path(),
             output: &output,
             prompt,
@@ -389,6 +392,7 @@ fn actual_public_reader_cannot_write_with_code_mode() {
         .execute(Request {
             github_upstream: None,
             codebase_project: None,
+            required_codebase: None,
             directory: &work,
             output: &output,
             prompt: &prompt,
@@ -443,6 +447,7 @@ fn actual_public_reader_fetches_current_release() {
     adapter(&executable).execute(Request {
         github_upstream: None,
         codebase_project: None,
+        required_codebase: None,
         directory: work.path(), output: &output,
         prompt: "Use the public web tool to open https://rust-lang.org/ and return the exact version shown under Get Started. If you cannot access it, return an empty string. Do not guess.",
         schema: Some(&schema), role: AgentRole::PublicResearch, seconds: 90,
@@ -484,6 +489,7 @@ fn actual_public_reader_searches_for_official_release_information() {
         .execute(Request {
             github_upstream: None,
             codebase_project: None,
+            required_codebase: None,
             directory: work.path(),
             output: &output,
             prompt: &prompt,

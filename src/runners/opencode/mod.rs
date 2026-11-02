@@ -105,6 +105,7 @@ impl Session {
                 "vulnbell_codebase_codebase_list",
                 "vulnbell_codebase_codebase_read",
                 "vulnbell_codebase_codebase_search",
+                "vulnbell_codebase_codebase_symbols",
             ] {
                 permissions.insert(name.into(), json!("allow"));
                 allowed_tools.push(name);

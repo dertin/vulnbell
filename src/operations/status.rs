@@ -169,8 +169,13 @@ pub fn status_markdown(report: &StatusReport) -> String {
             ));
         }
         if let Some(report) = &project.last_report {
+            let label = if project.schedule.last_job_outcome.as_deref() == Some("failed") {
+                "Last report (before failed job)"
+            } else {
+                "Last report"
+            };
             text.push_str(&format!(
-                "- Last report: {}\n",
+                "- {label}: {}\n",
                 one_line(&report.display().to_string())
             ));
         }

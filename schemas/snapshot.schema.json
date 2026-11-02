@@ -244,13 +244,22 @@
       "type": "string"
     },
     "Decision": {
-      "enum": [
-        "actionable",
-        "review",
-        "informational",
-        "dismissed"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "actionable",
+            "review",
+            "informational",
+            "dismissed"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "retracted",
+          "description": "An agent-only observation was subsequently found inapplicable.",
+          "type": "string"
+        }
+      ]
     },
     "Evidence": {
       "properties": {
@@ -323,6 +332,17 @@
             "string",
             "null"
           ]
+        },
+        "python_lock": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PythonLock"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Locally recorded pip lock hashes and dependency annotations, before registry verification."
         },
         "ref": {
           "type": "string"
@@ -437,6 +457,45 @@
       ],
       "type": "object"
     },
+    "PythonLock": {
+      "properties": {
+        "direct_source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceLine"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sha256": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "source_eligible": {
+          "type": "boolean"
+        },
+        "via": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "via_complete": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "sha256",
+        "source_eligible",
+        "via",
+        "via_complete"
+      ],
+      "type": "object"
+    },
     "ReleaseDate": {
       "properties": {
         "evidence": {
@@ -512,6 +571,27 @@
           "type": "string"
         }
       },
+      "type": "object"
+    },
+    "SourceLine": {
+      "properties": {
+        "line": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "line",
+        "sha256"
+      ],
       "type": "object"
     },
     "UpstreamEvent": {

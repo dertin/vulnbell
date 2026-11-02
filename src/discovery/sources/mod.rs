@@ -329,19 +329,29 @@ pub(super) fn apply(store: &Store, scope: &str, instances: &mut [Instance]) -> R
         if observation.fingerprint != fingerprint(instance) {
             continue;
         }
-        if observation.version.is_some() || observation.cpe_product.is_some() {
-            instance.identity_evidence.push(store.record_evidence(
+        let cpe = observation.cpe_product.as_ref().filter(|cpe| {
+            require_literal(store, &observation, SourceKind::Advisories, cpe).is_ok()
+        });
+        if observation.version.is_some() || cpe.is_some() {
+            let evidence = store.record_evidence(
                 &serde_json::to_vec(&serde_json::json!({"version":observation.version,"cpe_product":observation.cpe_product}))?,
                 "agent_product_mapping",
                 None,
                 EvidenceKind::Context,
-            )?);
+            )?;
+            if !instance
+                .identity_evidence
+                .iter()
+                .any(|item| item.sha256 == evidence.sha256)
+            {
+                instance.identity_evidence.push(evidence);
+            }
         }
         if let Some(version) = observation.version {
             instance.resolved_version = Some(version);
         }
-        if observation.cpe_product.is_some() {
-            instance.cpe_product = observation.cpe_product;
+        if let Some(cpe) = cpe {
+            instance.cpe_product = Some(cpe.clone());
         }
         for source in observation.sources {
             if source.kind == SourceKind::Repository

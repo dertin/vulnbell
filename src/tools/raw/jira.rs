@@ -185,6 +185,7 @@ pub(super) fn read_jira(
                 updated_at,
                 body: body(issue.fields.description.as_ref().map(jira_text)),
                 closes: Vec::new(),
+                closure: None,
                 advisory: None,
             });
         }

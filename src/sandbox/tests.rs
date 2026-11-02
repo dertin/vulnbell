@@ -61,6 +61,11 @@ fn new_attestation_requires_a_new_verdict_without_running_a_guest() {
                 partial: false,
                 alert_status: "none".into(),
             };
+            let mut retracted = case.clone();
+            retracted.decision = Decision::Retracted;
+            reopen_closed_case(&mut retracted);
+            assert_eq!(retracted.decision, Decision::Review);
+            assert_eq!(retracted.applicability, Applicability::Unknown);
             let mut store = Store::open(&project).unwrap();
             store.save_snapshot(&snapshot).unwrap();
             let source = store
@@ -77,6 +82,7 @@ fn new_attestation_requires_a_new_verdict_without_running_a_guest() {
                 &mut store,
                 &case.case_id,
                 Verdict {
+                    advisory_translation: None,
                     schema_version: 1,
                     case_id: case.case_id.clone(),
                     codebase_revisions: Vec::new(),
@@ -202,6 +208,7 @@ fn new_attestation_requires_a_new_verdict_without_running_a_guest() {
                 &mut store,
                 &case.case_id,
                 Verdict {
+                    advisory_translation: None,
                     schema_version: 1,
                     case_id: case.case_id.clone(),
                     codebase_revisions: Vec::new(),

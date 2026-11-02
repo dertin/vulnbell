@@ -178,7 +178,7 @@ pub fn scan(
                 "nvd",
                 &instance.id,
                 CoverageState::Unsupported,
-                "no validated CPE mapping; PURL is not a CPE",
+                "no validated CPE mapping; provide an exact CPE product with authoritative advisory evidence in source_map; PURL alone is not a CPE",
             ));
         }
     }

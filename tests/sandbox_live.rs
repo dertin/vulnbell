@@ -190,7 +190,7 @@ fn actual_microsandbox_blocks_network_host_access_and_forged_status() {
         .rev()
         .find(|evidence| evidence.kind == vulnbell::model::EvidenceKind::Attestation)
         .unwrap();
-    let verdict = vulnbell::model::Verdict { codebase_revisions: Vec::new(),schema_version:1,case_id:case.case_id.clone(),facts_sha256:case.facts_sha256.clone(),applicability:vulnbell::model::Applicability::NotAffected,verification:Verification::Disproven,decision:vulnbell::model::Decision::Dismissed,rationale:"Synthetic precondition is absent; the same script detects the distinct positive control. Limited to this tested hypothesis.".into(),evidence:vec![vulnbell::model::EvidenceReference {id:attestation.id.clone(),sha256:attestation.sha256.clone()}]};
+    let verdict = vulnbell::model::Verdict { advisory_translation: None, codebase_revisions: Vec::new(),schema_version:1,case_id:case.case_id.clone(),facts_sha256:case.facts_sha256.clone(),applicability:vulnbell::model::Applicability::NotAffected,verification:Verification::Disproven,decision:vulnbell::model::Decision::Dismissed,rationale:"Synthetic precondition is absent; the same script detects the distinct positive control. Limited to this tested hypothesis.".into(),evidence:vec![vulnbell::model::EvidenceReference {id:attestation.id.clone(),sha256:attestation.sha256.clone()}]};
     let dismissed = vulnbell::engine::triage(&mut store, &case.case_id, verdict).unwrap();
     assert_eq!(dismissed.decision, vulnbell::model::Decision::Dismissed);
     assert_report_result(
@@ -202,6 +202,7 @@ fn actual_microsandbox_blocks_network_host_access_and_forged_status() {
     changed.facts_sha256 = "changed-synthetic-artifact-context".into();
     store.save_case(&changed).unwrap();
     let stale = vulnbell::model::Verdict {
+        advisory_translation: None,
         codebase_revisions: Vec::new(),
         schema_version: 1,
         case_id: changed.case_id.clone(),

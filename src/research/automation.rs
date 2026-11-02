@@ -52,6 +52,7 @@ pub(crate) fn run(
             Request {
                 github_upstream: Some(&target.upstream),
                 codebase_project: None,
+                required_codebase: None,
                 directory: work,
                 output: &output,
                 prompt: &prompt,

@@ -1,0 +1,1059 @@
+{
+  "$defs": {
+    "Applicability": {
+      "enum": [
+        "affected",
+        "not_affected",
+        "possible",
+        "unknown",
+        "conflict"
+      ],
+      "type": "string"
+    },
+    "ArchiveEcosystem": {
+      "enum": [
+        "cargo",
+        "npm"
+      ],
+      "type": "string"
+    },
+    "ArtifactEvidence": {
+      "additionalProperties": false,
+      "description": "A checksummed artifact and optional evidence of its installed contents.",
+      "properties": {
+        "codebase": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "installed_archive": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InstalledArchiveEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Installed Cargo or npm package checked against its lockfile archive."
+        },
+        "installed_wheel": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InstalledScopeEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exact installed wheel files and paths checked within the monitored codebase."
+        },
+        "instance_id": {
+          "type": "string"
+        },
+        "location": {
+          "$ref": "#/$defs/ArtifactLocation"
+        },
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "instance_id",
+        "codebase",
+        "location",
+        "path",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "ArtifactLocation": {
+      "oneOf": [
+        {
+          "const": "codebase",
+          "description": "Path relative to the selected codebase.",
+          "type": "string"
+        },
+        {
+          "const": "monitor_workspace",
+          "description": "Path relative to the monitor profile's directory.",
+          "type": "string"
+        }
+      ]
+    },
+    "ArtifactScopeSource": {
+      "additionalProperties": false,
+      "properties": {
+        "line": {
+          "description": "One-based line number.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "line_sha256": {
+          "description": "SHA-256 of the line without its line ending.",
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "line",
+        "line_sha256"
+      ],
+      "type": "object"
+    },
+    "Assessment": {
+      "description": "`not_applicable`: a security claim that, per the cited source, does not affect the monitored\nversion or build. It requires `not_applicable_reason`, is counted and remembered, and opens no case.",
+      "enum": [
+        "review",
+        "informational",
+        "not_applicable",
+        "ignore"
+      ],
+      "type": "string"
+    },
+    "Case": {
+      "properties": {
+        "applicability": {
+          "$ref": "#/$defs/Applicability"
+        },
+        "case_id": {
+          "type": "string"
+        },
+        "claims": {
+          "items": {
+            "$ref": "#/$defs/Claim"
+          },
+          "type": "array"
+        },
+        "codebase_revisions": {
+          "description": "Git codebases that bound the facts and review for this case.",
+          "items": {
+            "$ref": "#/$defs/CodebaseRevision"
+          },
+          "type": "array"
+        },
+        "coverage": {
+          "items": {
+            "$ref": "#/$defs/Coverage"
+          },
+          "type": "array"
+        },
+        "decision": {
+          "$ref": "#/$defs/Decision"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "type": "array"
+        },
+        "facts_sha256": {
+          "type": "string"
+        },
+        "instances": {
+          "items": {
+            "$ref": "#/$defs/Instance"
+          },
+          "type": "array"
+        },
+        "open_questions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "project_id": {
+          "type": "string"
+        },
+        "sandbox": {
+          "$ref": "#/$defs/SandboxAvailability"
+        },
+        "schema_version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "snapshot_id": {
+          "type": "string"
+        },
+        "suggested_search_queries": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "updated_at": {
+          "type": "string"
+        },
+        "upstream_events": {
+          "items": {
+            "$ref": "#/$defs/UpstreamEvent"
+          },
+          "type": "array"
+        },
+        "verification": {
+          "$ref": "#/$defs/Verification"
+        }
+      },
+      "required": [
+        "schema_version",
+        "case_id",
+        "project_id",
+        "snapshot_id",
+        "codebase_revisions",
+        "instances",
+        "claims",
+        "upstream_events",
+        "evidence",
+        "coverage",
+        "applicability",
+        "verification",
+        "decision",
+        "facts_sha256",
+        "open_questions",
+        "suggested_search_queries",
+        "sandbox",
+        "updated_at"
+      ],
+      "type": "object"
+    },
+    "Claim": {
+      "properties": {
+        "aliases": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "applicability": {
+          "$ref": "#/$defs/Applicability"
+        },
+        "evidence": {
+          "$ref": "#/$defs/Evidence"
+        },
+        "id": {
+          "type": "string"
+        },
+        "instance_id": {
+          "type": "string"
+        },
+        "known_exploited": {
+          "type": "boolean"
+        },
+        "source": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "source",
+        "aliases",
+        "instance_id",
+        "summary",
+        "applicability",
+        "evidence",
+        "known_exploited"
+      ],
+      "type": "object"
+    },
+    "CodebaseRevision": {
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "codebase": {
+          "type": "string"
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dirty": {
+          "description": "Changes excluding private paths, ignored files, generated untracked files and submodules.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "repository": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/RepositoryState"
+        },
+        "worktree_status_sha256": {
+          "description": "Hash of Git's status entries and changed files, without retaining names or contents.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "codebase",
+        "state",
+        "observed_at"
+      ],
+      "type": "object"
+    },
+    "Coverage": {
+      "properties": {
+        "detail": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/CoverageState"
+        }
+      },
+      "required": [
+        "source",
+        "scope",
+        "state",
+        "detail"
+      ],
+      "type": "object"
+    },
+    "CoverageState": {
+      "enum": [
+        "checked",
+        "partial",
+        "unsupported",
+        "unavailable",
+        "unresolved",
+        "disabled"
+      ],
+      "type": "string"
+    },
+    "Decision": {
+      "oneOf": [
+        {
+          "enum": [
+            "actionable",
+            "review",
+            "informational",
+            "dismissed"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "retracted",
+          "description": "An agent-only observation was subsequently found inapplicable.",
+          "type": "string"
+        }
+      ]
+    },
+    "EventKind": {
+      "enum": [
+        "issue",
+        "pull_request",
+        "merge_request",
+        "merge_proposal",
+        "comment",
+        "review",
+        "news",
+        "discussion",
+        "documentation",
+        "changelog",
+        "release",
+        "advisory",
+        "commit"
+      ],
+      "type": "string"
+    },
+    "Evidence": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/EvidenceKind"
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "sha256",
+        "source",
+        "observed_at",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "EvidenceKind": {
+      "enum": [
+        "identity",
+        "advisory",
+        "context",
+        "attestation",
+        "non_applicability"
+      ],
+      "type": "string"
+    },
+    "InstalledArchiveEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "ecosystem": {
+          "$ref": "#/$defs/ArchiveEcosystem"
+        },
+        "scope": {
+          "$ref": "#/$defs/InstalledScopeEvidence"
+        }
+      },
+      "required": [
+        "ecosystem",
+        "scope"
+      ],
+      "type": "object"
+    },
+    "InstalledScopeEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "absent_paths": {
+          "description": "Paths or bounded filename patterns relative to the installed directory checked for absence.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "root": {
+          "description": "Codebase-relative installed package or source directory.",
+          "type": "string"
+        },
+        "scope_complete": {
+          "description": "The source and note support this installation for every in-scope build using the instance.",
+          "type": "boolean"
+        },
+        "scope_evidence_id": {
+          "description": "Case evidence describing why this directory represents the assessed build or test scope.",
+          "type": "string"
+        },
+        "scope_source": {
+          "$ref": "#/$defs/ArtifactScopeSource",
+          "description": "Current source line supporting the scope described in the case evidence."
+        }
+      },
+      "required": [
+        "root",
+        "absent_paths",
+        "scope_evidence_id",
+        "scope_complete",
+        "scope_source"
+      ],
+      "type": "object"
+    },
+    "Instance": {
+      "properties": {
+        "cpe_product": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "identity_evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "type": "array"
+        },
+        "origin": {
+          "$ref": "#/$defs/Origin"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "purl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "python_lock": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PythonLock"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Locally recorded pip lock hashes and dependency annotations, before registry verification."
+        },
+        "ref": {
+          "type": "string"
+        },
+        "release": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReleaseDate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Verified registry metadata for this exact resolved version, when available."
+        },
+        "requested_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resolved_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "upstream": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "ref",
+        "origin",
+        "provenance",
+        "identity_evidence"
+      ],
+      "type": "object"
+    },
+    "NotApplicableReason": {
+      "oneOf": [
+        {
+          "const": "fixed_in_monitored_version",
+          "description": "The monitored resolved version already contains the fix.",
+          "type": "string"
+        },
+        {
+          "const": "affects_other_version",
+          "description": "Only other release lines or unreleased branches are affected.",
+          "type": "string"
+        },
+        {
+          "const": "component_not_in_build",
+          "description": "The affected module, feature or platform is absent from the monitored build.",
+          "type": "string"
+        }
+      ]
+    },
+    "Origin": {
+      "enum": [
+        "declared",
+        "locked",
+        "agent_observed",
+        "observed_artifact",
+        "deployed"
+      ],
+      "type": "string"
+    },
+    "Provenance": {
+      "properties": {
+        "artifact_integrity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "codebase": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "codebase_context_sha256": {
+          "description": "Fingerprint of the Git codebases reviewed with this inventory.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "direct": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "line": {
+          "description": "1-based line in `path` where the package entry or cited excerpt starts.\nDisplay-only: excluded from the context fingerprint so unrelated edits do not reopen cases.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resolution": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha256",
+        "observed_at"
+      ],
+      "type": "object"
+    },
+    "PythonLock": {
+      "properties": {
+        "direct_source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceLine"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sha256": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "source_eligible": {
+          "type": "boolean"
+        },
+        "via": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "via_complete": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "sha256",
+        "source_eligible",
+        "via",
+        "via_complete"
+      ],
+      "type": "object"
+    },
+    "ReleaseDate": {
+      "properties": {
+        "evidence": {
+          "$ref": "#/$defs/Evidence"
+        },
+        "published_at": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "published_at",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    "RepositoryState": {
+      "enum": [
+        "git",
+        "not_git",
+        "unavailable"
+      ],
+      "type": "string"
+    },
+    "ResearchEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_evidence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "assessment": {
+          "$ref": "#/$defs/Assessment"
+        },
+        "codebase_revisions": {
+          "description": "Codebase revisions recorded by the CLI at import time.",
+          "items": {
+            "$ref": "#/$defs/CodebaseRevision"
+          },
+          "type": "array"
+        },
+        "excerpt": {
+          "type": "string"
+        },
+        "external_id": {
+          "type": "string"
+        },
+        "instance_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/$defs/EventKind"
+        },
+        "not_applicable_reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NotApplicableReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Required with `not_applicable`; forbidden otherwise."
+        },
+        "provider": {
+          "type": "string"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "reviewed_instance_ids": {
+          "description": "Candidate instances examined when choosing the case scope.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "source_facts": {
+          "$ref": "#/$defs/SourceFacts",
+          "default": {
+            "affected_versions": "",
+            "fix_reference": "",
+            "fixed_in": "",
+            "identifiers": [],
+            "required_feature": ""
+          },
+          "description": "Answers to the research questions as the item states them. `fixed_in_monitored_version`\nrequires `fixed_in`, and `affects_other_version` requires `affected_versions`."
+        },
+        "title": {
+          "type": "string"
+        },
+        "updated_at": {
+          "description": "Original RFC3339 timestamp or YYYY-MM-DD when the source provides only a date.\nEmpty means unknown. Unknown/day precision keeps coverage partial and never advances checkpoints.",
+          "type": "string"
+        },
+        "upstream": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "upstream",
+        "instance_ids",
+        "reviewed_instance_ids",
+        "provider",
+        "external_id",
+        "kind",
+        "url",
+        "title",
+        "excerpt",
+        "updated_at",
+        "assessment",
+        "rationale"
+      ],
+      "type": "object"
+    },
+    "RetractedCase": {
+      "properties": {
+        "case": {
+          "$ref": "#/$defs/Case"
+        },
+        "evidence_gaps": {
+          "description": "Missing, corrupt or undecodable evidence IDs; `agent_retraction_assessment:missing`\nindicates that no retraction assessment was recorded.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "history": {
+          "items": {
+            "$ref": "#/$defs/Case"
+          },
+          "type": "array"
+        },
+        "research_events": {
+          "items": {
+            "$ref": "#/$defs/ResearchEvent"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "case",
+        "history",
+        "research_events",
+        "evidence_gaps"
+      ],
+      "type": "object"
+    },
+    "SandboxAvailability": {
+      "properties": {
+        "available": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "available",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "SourceFacts": {
+      "additionalProperties": false,
+      "description": "What an upstream item itself states, quoted or closely paraphrased; an empty field means the\nitem does not say. These are the item's statements, not the agent's conclusions.",
+      "properties": {
+        "affected_versions": {
+          "default": "",
+          "description": "Versions or release lines the item says are affected.",
+          "type": "string"
+        },
+        "fix_reference": {
+          "default": "",
+          "description": "Pull request, commit or release that carries the fix.",
+          "type": "string"
+        },
+        "fixed_in": {
+          "default": "",
+          "description": "Version, release or backport the item says contains the fix.",
+          "type": "string"
+        },
+        "identifiers": {
+          "default": [],
+          "description": "CVE, GHSA, RUSTSEC or other advisory IDs the item cites.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "required_feature": {
+          "default": "",
+          "description": "Feature, configuration or deployment condition the item says the issue requires.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "SourceLine": {
+      "properties": {
+        "line": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "line",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "UpstreamEvent": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "source_facts": {
+          "$ref": "#/$defs/SourceFacts"
+        },
+        "title": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "kind",
+        "id",
+        "url",
+        "title",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "Verification": {
+      "enum": [
+        "source_confirmed",
+        "lab_reproduced",
+        "not_reproduced",
+        "inconclusive",
+        "disproven"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "alert_status": {
+      "type": "string"
+    },
+    "cases": {
+      "items": {
+        "$ref": "#/$defs/Case"
+      },
+      "type": "array"
+    },
+    "codebase_revisions": {
+      "description": "Codebase state at the start and end of the scan.",
+      "items": {
+        "$ref": "#/$defs/CodebaseRevision"
+      },
+      "type": "array"
+    },
+    "coverage": {
+      "items": {
+        "$ref": "#/$defs/Coverage"
+      },
+      "type": "array"
+    },
+    "finished_at": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "instances": {
+      "items": {
+        "$ref": "#/$defs/Instance"
+      },
+      "type": "array"
+    },
+    "partial": {
+      "type": "boolean"
+    },
+    "profile_sha256": {
+      "type": "string"
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "retracted": {
+      "items": {
+        "$ref": "#/$defs/RetractedCase"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "started_at": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "id",
+    "project_id",
+    "profile_sha256",
+    "started_at",
+    "finished_at",
+    "codebase_revisions",
+    "instances",
+    "coverage",
+    "cases",
+    "partial",
+    "alert_status",
+    "retracted"
+  ],
+  "title": "AuditReport",
+  "type": "object"
+}

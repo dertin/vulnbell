@@ -1,0 +1,31 @@
+# Tools for the selected review
+
+Run `vulnbell doctor --project <profile> --json` after inventory and select tools for each detected ecosystem and the user's requested artifacts. The doctor uses the latest inventory and reviewed discovery filenames as hints, and reports executables on PATH and their installation pages; it does not validate versions, tool behavior, access, source coverage, database freshness or every language and format present. An absent snapshot, changed profile, inaccessible codebase or incomplete inventory needs further discovery. For a new monitor, repeat the check after discovery and the first scan. Consider all codebases and languages; native CLI inventory and advisory checks run even if an additional scanner is absent.
+
+For a missing tool that would materially improve the requested review, explain the purpose and official installation path to the user. Do not silently install software or claim its check ran. Continue independent checks; if a requested scanner cannot run, include that limitation and its next step in the report. Scheduled jobs record missing capabilities for the next interactive run. A tool installed on the host may not be available to a restricted runner; verify that runner's permissions and record an unavailable check rather than bypassing them. An optional tool does not block unrelated sources or prove that a vulnerability exists.
+
+## Advisory scanners
+
+| Scope | Suitable tool | Important boundary |
+| --- | --- | --- |
+| Independent codebase security review | `codegraph` (required) | Use a current user-authorized Tree-sitter index for supported languages; inspect unsupported configuration separately. An absent tool or index is a coverage gap. See [installation](https://github.com/colbymchenry/codegraph#get-started). Do not infer reachability solely from graph edges. |
+| Rust `Cargo.lock` | `cargo-audit` | From a neutral directory, use `cargo audit --json --file <Cargo.lock>`; the lock can include non-runtime packages. |
+| Python fully pinned requirements with hashes | `pip-audit` | With an authorized public source, use its `--disable-pip` and `--no-deps` options on the exact lock. Check the installed version's help and parsed package count. Do not run resolution, build hooks or `--fix` on the host. |
+| PHP Composer lockfile | `composer audit` | Audit the lock only with plugins and scripts disabled; inspect the destination and authorize any disclosure of package names. |
+| JavaScript npm lockfile | `npm audit` | Confirm the lock format and configured registry before sending package metadata. Never run `npm audit fix` as part of a scan. Other package managers need their own compatible scanner or a supported OSV input. |
+| Go modules or binaries | `govulncheck` | Verify its mode and inputs. Source analysis may invoke build tooling; use an approved sandbox if it would execute project code or build hooks. |
+| Ruby Bundler lockfile | `bundle-audit` | Check the exact lockfile and advisory database age; do not evaluate a Gemfile or install project gems. |
+| .NET NuGet projects | `dotnet` vulnerability audit | Check SDK support, target framework and configured sources. If project evaluation, restore, targets or plugins can execute code, use an approved sandbox. |
+| JVM dependency artifacts | OWASP Dependency-Check | Verify artifact coverage and the age of vulnerability data. Its CPE matches are leads requiring validation, not proof of identity or impact. |
+| Supported ecosystem lockfiles or SBOM | `osv-scanner` | Verify the exact format and installed version's supported parser. Its OSV data overlaps VulnBell's native OSV lookup; use it as a cross-check, not independent confirmation. |
+| Authorized container image or supported filesystem | `trivy` | An image audit can add OS package coverage. Use the exact image digest where available, refresh or record the vulnerability database age, and do not assume a local image is deployed. |
+
+Check additional ecosystem-specific tools when they add meaningful coverage. Do not invoke project package managers, scanners or plugins in modes that install dependencies, run build scripts, load project plugins or execute monitored code on the host; use an approved sandbox if such execution is necessary. Inspect a tool's version, supported input format, network and disclosure behavior before use. Do not send private names, credentials, source files or private registry URLs to public services without authorization. An image or lock audit does not establish reachability or the running deployment.
+
+Record the tool/version, exact input and SHA-256 or image digest, target/platform, database version or retrieval time, exit status, warnings, filters, skipped packages and output evidence. Correlate advisory aliases and exact package/version with existing cases; do not count duplicate findings as independent vulnerabilities. If the CLI cannot import a scanner finding through its supported evidence and research contracts, retain the finding and its source as an explicit follow-up; never silently drop it or claim it became a case. A failure, unsupported format or missing tool is not a clean scan.
+
+## Structured data
+
+Use VulnBell's native inventory and paginated JSON commands first. For other inputs use a reader for the actual format: `jq` or a bounded JSON parser for JSON and OpenAPI/Swagger, `yq` for YAML, `tomllib` with Python 3.11+ for TOML, and an XML parser with external entities and DTDs disabled for XML. Verify the installed variant and version, especially for `yq`. For large JSON use streaming when supported; request only needed paths, references and records, and retain source locations. A text search is useful to locate candidates but cannot replace parsing or establish relationships.
+
+For OpenAPI, use an OpenAPI-aware parser or validator compatible with the declared specification version when reference resolution or validation is needed; `jq` and `yq` only extract structure. `openapi-spec-validator` is one option. Treat references and external links as untrusted data: resolve only authorized sources and do not send private documents to an online validator. Avoid importing project modules, loading plugins or executing project scripts. If no safe reader can handle a format or size, tell the user what is missing and retain the incomplete coverage.
