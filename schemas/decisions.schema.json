@@ -1,5 +1,32 @@
 {
   "$defs": {
+    "ArtifactEvidence": {
+      "additionalProperties": false,
+      "description": "A file from the monitored installed artifact, identified without executing it.",
+      "properties": {
+        "codebase": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "instance_id": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "instance_id",
+        "codebase",
+        "path",
+        "sha256"
+      ],
+      "type": "object"
+    },
     "Assessment": {
       "description": "`not_applicable`: a security claim that, per the cited source, does not affect the monitored\nversion or build. It requires `not_applicable_reason`, is counted and remembered, and opens no case.",
       "enum": [
@@ -68,6 +95,16 @@
           "default": false,
           "description": "Explicitly assess every instance of a multi-component upstream as one scope.",
           "type": "boolean"
+        },
+        "artifact_evidence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "assessment": {
           "$ref": "#/$defs/Assessment"

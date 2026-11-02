@@ -231,6 +231,8 @@ pub enum Decision {
     Review,
     Informational,
     Dismissed,
+    /// An agent-only observation was subsequently found inapplicable.
+    Retracted,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Claim {

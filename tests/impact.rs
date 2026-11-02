@@ -114,6 +114,21 @@ fn exposed_answers(case: &Case, evidence: &EvidenceReference) -> ImpactSubmissio
 }
 
 #[test]
+fn new_impact_reopens_a_retracted_case() {
+    let (project, mut store, mut case, evidence) = fixture();
+    case.decision = Decision::Retracted;
+    store.save_case(&case).unwrap();
+    let impact =
+        vulnbell::impact::assess(&mut store, &case.case_id, exposed_answers(&case, &evidence))
+            .unwrap();
+    assert_eq!(impact.verdict, ImpactVerdict::UrgentUpdate);
+    let reopened = store.case(&case.case_id).unwrap();
+    assert_eq!(reopened.decision, Decision::Review);
+    drop(store);
+    std::fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+}
+
+#[test]
 fn deployment_does_not_gate_in_scope_risk_or_create_an_open_question() {
     let (project, mut store, case, evidence) = fixture();
     for deployment in [

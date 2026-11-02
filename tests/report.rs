@@ -41,6 +41,8 @@ fn delivery_status_distinguishes_partial_coverage_from_complete_reports() {
         deliverable: true,
         verification_pending: Vec::new(),
         verdict_missing: Vec::new(),
+        code_findings_pending: Vec::new(),
+        code_reviews_pending: Vec::new(),
         challenge_open: Vec::new(),
         research_open: Vec::new(),
         stale_observations: 0,
@@ -532,7 +534,7 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
         snapshot.cases = vec![case.clone()];
         let report = prepared_report(&snapshot, &store, "cyber").unwrap();
         let summary = vulnbell::output::morning_markdown(&report).unwrap();
-        assert!(summary.contains("| Status | Cases | Meaning |"));
+        assert!(summary.contains("| Status | Count | Meaning |"));
         assert!(summary.contains("they are not security findings"));
         if decision == Decision::Review {
             assert!(summary.contains("| In review with impact assessment | 0 |"));
@@ -615,6 +617,7 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
     snapshot.cases = vec![current];
     let report = prepared_report(&snapshot, &store, "cyber").unwrap();
     assert!(report.needs_review[0].recorded_verdict.is_none());
+    case.decision = Decision::Review;
     store.save_case(&case).unwrap();
     let blocked = vulnbell::sandbox::record_blocker(
         &mut store,

@@ -243,6 +243,11 @@ fn assess_checked(
     let evidence =
         store.record_evidence(&bytes, "impact_assessment", None, EvidenceKind::Context)?;
     case.evidence.push(evidence);
+    if case.decision == crate::model::Decision::Retracted {
+        case.decision = crate::model::Decision::Review;
+        case.applicability = crate::model::Applicability::Unknown;
+        case.verification = Verification::Inconclusive;
+    }
     case.updated_at = result.assessed_at.clone();
     store.save_case(&case)?;
     Ok(result)

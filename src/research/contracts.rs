@@ -73,6 +73,15 @@ pub enum EventKind {
     Advisory,
     Commit,
 }
+/// A file from the monitored installed artifact, identified without executing it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactEvidence {
+    pub instance_id: String,
+    pub codebase: usize,
+    pub path: String,
+    pub sha256: String,
+}
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResearchEvent {
@@ -96,6 +105,8 @@ pub struct ResearchEvent {
     /// Required with `not_applicable`; forbidden otherwise.
     #[serde(default)]
     pub not_applicable_reason: Option<NotApplicableReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_evidence: Option<ArtifactEvidence>,
     pub rationale: String,
     /// Answers to the research questions as the item states them. `fixed_in_monitored_version`
     /// requires `fixed_in`, and `affects_other_version` requires `affected_versions`.

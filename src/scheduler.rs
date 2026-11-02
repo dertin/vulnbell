@@ -210,6 +210,21 @@ pub fn run(profile: &Profile, profile_path: &Path, force: bool) -> Result<serde_
         )
         .err()
         .map(|error| error.to_string());
+        let code_review_error = if profile.scheduled_code_review {
+            let remaining = (deadline - Utc::now()).num_seconds().max(0);
+            let code_review_deadline = Utc::now() + Duration::seconds(remaining / 3);
+            crate::tools::code_review::automation::run(
+                &store,
+                &config.runner,
+                profile_path,
+                &directory.join("code-review"),
+                code_review_deadline,
+            )
+            .err()
+            .map(|error| error.to_string())
+        } else {
+            None
+        };
         let remaining_seconds = (deadline - Utc::now()).num_seconds().max(0);
         let impact_deadline = Utc::now() + Duration::seconds(remaining_seconds / 2);
         let mut impact_error = crate::impact::automation::run(
@@ -247,13 +262,22 @@ pub fn run(profile: &Profile, profile_path: &Path, force: bool) -> Result<serde_
             (Some(discovery), None) => Some(discovery),
             (None, research) => research,
         };
+        research_error = match (code_review_error, research_error) {
+            (Some(code), Some(research)) => Some(format!("{code}; {research}")),
+            (Some(code), None) => Some(code),
+            (None, research) => research,
+        };
         let (report_snapshot, report, pending) = {
             let _lock = store.lock()?;
             let mut report_snapshot = store.latest()?;
             report_snapshot.cases = store.cases()?;
-            let mut report = crate::output::morning_report(&report_snapshot, &store, "manager")?;
-            let pending = crate::tools::cases::pending(&store)?;
+            let report_snapshot = crate::research::project_retractions(&report_snapshot, &store);
+            let mut report =
+                crate::output::morning_report_current(&report_snapshot, &store, "manager")?;
+            let pending =
+                crate::tools::cases::pending_from_report(&store, &report_snapshot, &report)?;
             crate::output::add_research_coverage(&mut report, &pending);
+            crate::output::enrich_report_json(&mut report, &report_snapshot, &store)?;
             crate::output::prepare_report_paths(&mut report, &store)?;
             (report_snapshot, report, pending)
         };

@@ -547,7 +547,11 @@ pub(super) fn markdown(
                 text.push_str(&format!("  - **{label}:** {verdict}\n{body}"));
             }
         } else {
-            text.push_str(words.impact_not_assessed_long);
+            if finding.decision == Decision::Informational {
+                text.push_str(&format!("- {}\n", words.informational_context));
+            } else {
+                text.push_str(words.impact_unassessed_reader);
+            }
         }
         text.push('\n');
     }

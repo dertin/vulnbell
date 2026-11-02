@@ -181,7 +181,7 @@ impl CodexAdapter<'_> {
                 format!("mcp_servers.{server_name}.args={args}"),
                 format!("mcp_servers.{server_name}.startup_timeout_sec=45"),
                 format!(
-                    "mcp_servers.{server_name}.enabled_tools=[\"codebase_list\",\"codebase_read\",\"codebase_search\"]"
+                    "mcp_servers.{server_name}.enabled_tools=[\"codebase_list\",\"codebase_read\",\"codebase_search\",\"codebase_symbols\"]"
                 ),
                 format!(
                     "mcp_servers.{server_name}.env.VULNBELL_DATA_DIR={}",
@@ -190,7 +190,12 @@ impl CodexAdapter<'_> {
             ] {
                 command.arg("-c").arg(setting);
             }
-            for tool in ["codebase_list", "codebase_read", "codebase_search"] {
+            for tool in [
+                "codebase_list",
+                "codebase_read",
+                "codebase_search",
+                "codebase_symbols",
+            ] {
                 command.arg("-c").arg(format!(
                     "mcp_servers.{server_name}.tools.{tool}.approval_mode=\"approve\""
                 ));

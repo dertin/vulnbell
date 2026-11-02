@@ -102,7 +102,22 @@ pub fn report_body(markdown: &str, report: &super::MorningReport) -> Result<Stri
         report,
         &super::markdown::verification_section(report, false),
     )?;
-    let checks: Vec<&super::verification::FindingCheck> = report.finding_checks.iter().collect();
+    let needs_review: std::collections::HashSet<&str> = report
+        .needs_review
+        .iter()
+        .map(|item| item.case_id.as_str())
+        .collect();
+    let checks: Vec<&super::verification::FindingCheck> = report
+        .finding_checks
+        .iter()
+        .filter(|check| check.decision != crate::model::Decision::Retracted)
+        .filter(|check| {
+            matches!(
+                check.decision,
+                crate::model::Decision::Actionable | crate::model::Decision::Review
+            ) || needs_review.contains(check.case_id.as_str())
+        })
+        .collect();
     let full = super::normalize_report_paths(
         report,
         &super::verification::markdown(&checks, true, report.language),
@@ -134,7 +149,7 @@ pub fn report_body(markdown: &str, report: &super::MorningReport) -> Result<Stri
 /// Extend the report with evidence metadata and locally registered review notes.
 fn pdf_markdown(
     markdown: &str,
-    cases: &[Case],
+    cases: &[&Case],
     store: &Store,
     language: Language,
 ) -> Result<String> {
@@ -143,7 +158,7 @@ fn pdf_markdown(
         Language::Es => "\n\n# Anexo de evidencias\n\nLas notas registradas y las salidas de sandbox en texto se incluyen a continuación. Las rutas de codebases conocidas se muestran de forma relativa; los hashes corresponden al contenido original registrado. Los documentos originales, archivos binarios y respuestas completas de fuentes externas no se incluyen; sus identificadores, enlaces y hashes permiten localizarlos.\n\n",
         Language::En => "\n\n# Evidence appendix\n\nRegistered review notes and textual sandbox output are included below. Known codebase paths are shown relative to the codebase; hashes identify the original recorded content. Original documents, binary files, and full external responses are not included; their identifiers, links, and hashes identify them.\n\n",
     });
-    let mut ordered: Vec<&Case> = cases.iter().collect();
+    let mut ordered: Vec<&Case> = cases.to_vec();
     ordered.sort_by(|a, b| a.case_id.cmp(&b.case_id));
     for case in ordered {
         output.push_str(&format!("## {}\n\n", text(&case.case_id)));
@@ -381,7 +396,24 @@ pub fn prepared_pdf_markdown(
     }) {
         bail!("PDF cases do not match the prepared report context");
     }
-    let document = pdf_markdown(markdown, cases, store, report.language)?;
+    let needs_review: std::collections::HashSet<&str> = report
+        .needs_review
+        .iter()
+        .map(|item| item.case_id.as_str())
+        .collect();
+    let selected: Vec<&Case> = cases
+        .iter()
+        .filter(|case| case.decision != crate::model::Decision::Retracted)
+        .filter(|case| {
+            report.closed == super::ClosedMode::Full
+                || matches!(
+                    case.decision,
+                    crate::model::Decision::Actionable | crate::model::Decision::Review
+                )
+                || needs_review.contains(case.case_id.as_str())
+        })
+        .collect();
+    let document = pdf_markdown(markdown, &selected, store, report.language)?;
     super::normalize_report_paths(report, &document)
 }
 
@@ -659,13 +691,8 @@ mod tests {
             },
             updated_at: crate::now(),
         };
-        let appendix = pdf_markdown(
-            "# Report",
-            &[case.clone()],
-            &store,
-            crate::profile::Language::En,
-        )
-        .unwrap();
+        let appendix =
+            pdf_markdown("# Report", &[&case], &store, crate::profile::Language::En).unwrap();
         assert!(appendix.contains("EXPECTED_MARKER"));
         assert!(appendix.contains("oracle_matched=true"));
         assert!(appendix.contains("controlinput"));
@@ -673,7 +700,7 @@ mod tests {
         case.codebase_revisions
             .push(crate::codebase_revision::capture_path(changed.path()));
         let stale =
-            pdf_markdown("# Report", &[case], &store, crate::profile::Language::En).unwrap();
+            pdf_markdown("# Report", &[&case], &store, crate::profile::Language::En).unwrap();
         assert!(stale.contains("Attestation unavailable or invalid"));
         assert!(!stale.contains("EXPECTED_MARKER"));
         drop(store);
@@ -756,7 +783,7 @@ mod tests {
             updated_at: "now".into(),
         };
         let output =
-            pdf_markdown("# Report", &[case], &store, crate::profile::Language::Es).unwrap();
+            pdf_markdown("# Report", &[&case], &store, crate::profile::Language::Es).unwrap();
         assert!(output.contains("SIG-test"));
         assert!(output.contains("Reachable at src/auth.rs:12"));
         assert!(output.contains("Scope verified at src/scope.rs:21"));

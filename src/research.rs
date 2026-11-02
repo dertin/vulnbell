@@ -13,14 +13,18 @@ pub(crate) mod automation;
 mod contracts;
 pub(crate) mod release;
 mod reopen;
+mod retraction;
 mod scope;
 mod validation;
 pub use contracts::{
-    Assessment, EventKind, FollowSuggestion, NotApplicableReason, ResearchBatch, ResearchComponent,
-    ResearchEvent, ResearchPlan, ResearchTarget, ReviewCoverage, SeenEvent, SourceContinuation,
-    SourceReview,
+    ArtifactEvidence, Assessment, EventKind, FollowSuggestion, NotApplicableReason, ResearchBatch,
+    ResearchComponent, ResearchEvent, ResearchPlan, ResearchTarget, ReviewCoverage, SeenEvent,
+    SourceContinuation, SourceReview,
 };
 pub use reopen::{reopen, reopen_recheck};
+use retraction::can_retract;
+pub use retraction::project_retractions;
+pub(crate) use retraction::retraction_valid;
 pub(crate) use validation::validate_source_facts;
 
 pub(crate) type InstanceIndex<'a> = HashMap<&'a str, Vec<(usize, &'a Instance)>>;
@@ -54,73 +58,7 @@ pub(crate) fn select_instances<'a>(
 }
 
 #[cfg(test)]
-mod index_tests {
-    use super::{event_hash, index_instances, select_instances, tracker_context};
-    use crate::{model::Instance, profile::Component};
-
-    #[test]
-    fn selection_and_hashes_follow_snapshot_order() {
-        let instance = |name: &str, version: &str| {
-            Instance::declared(&Component {
-                reference: name.into(),
-                version: Some(version.into()),
-                usage: Default::default(),
-                upstream: None,
-                feeds: vec![],
-            })
-        };
-        let first = instance("a", "1.0.0");
-        let mut duplicate = first.clone();
-        duplicate.resolved_version = Some("2.0.0".into());
-        let second = instance("b", "1.0.0");
-        let instances = vec![first.clone(), second.clone(), duplicate];
-        let ids = vec![
-            second.id.clone(),
-            first.id.clone(),
-            first.id.clone(),
-            "absent".into(),
-        ];
-        let old_selection: Vec<_> = instances
-            .iter()
-            .filter(|item| ids.contains(&item.id))
-            .collect();
-        let index = index_instances(&instances);
-        let selection = select_instances(&ids, &index);
-        assert_eq!(selection.len(), old_selection.len());
-        for (actual, expected) in selection.iter().zip(&old_selection) {
-            assert_eq!(actual.context_fingerprint(), expected.context_fingerprint());
-        }
-
-        let old_event_facts: Vec<_> = old_selection
-            .iter()
-            .map(|item| (&item.id, item.context_fingerprint()))
-            .collect();
-        let expected_event = crate::digest(
-            &serde_json::to_vec(&(b"observation".as_slice(), old_event_facts)).unwrap(),
-        );
-        assert_eq!(
-            event_hash(b"observation", &ids, &index).unwrap(),
-            expected_event
-        );
-
-        let mut old_tracker_facts: Vec<_> = old_selection
-            .iter()
-            .map(|item| {
-                (
-                    &item.id,
-                    item.context_fingerprint(),
-                    None::<(&String, &String)>,
-                )
-            })
-            .collect();
-        old_tracker_facts.sort_by(|a, b| a.0.cmp(b.0));
-        let expected_tracker = crate::digest(&serde_json::to_vec(&old_tracker_facts).unwrap());
-        assert_eq!(
-            tracker_context(&ids, &index, false).unwrap(),
-            expected_tracker
-        );
-    }
-}
+mod index_tests;
 
 #[derive(Deserialize)]
 struct RecordedEvent {
@@ -632,6 +570,14 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
             bail!("not_applicable requires not_applicable_reason, and only it accepts one");
         }
         validate_source_facts(&event.source_facts, event.not_applicable_reason)?;
+        if let Some(artifact) = &event.artifact_evidence {
+            if event.not_applicable_reason != Some(NotApplicableReason::ComponentNotInBuild)
+                || event.instance_ids.len() != 1
+            {
+                bail!("artifact evidence requires component_not_in_build and exactly one instance");
+            }
+            validation::verify_artifact(artifact, &snapshot, &event.instance_ids, store)?;
+        }
         *assessments
             .entry(
                 serde_json::to_value(event.assessment)?
@@ -688,11 +634,16 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
                 let old_reviewed = &old.reviewed_instance_ids;
                 old.assessment == event.assessment
                     && old.not_applicable_reason == event.not_applicable_reason
+                    && old.artifact_evidence == event.artifact_evidence
                     && old.rationale == event.rationale
                     && old.instance_ids == event.instance_ids
                     && old_reviewed == reviewed
             });
-        if same_content && same_reading {
+        let pending_retraction = event.assessment == Assessment::NotApplicable
+            && active_cases.get(&case_id).is_some_and(|case| {
+                case.decision != Decision::Retracted && can_retract(case, event, store)
+            });
+        if same_content && same_reading && !pending_retraction {
             duplicates += 1;
             continue;
         }
@@ -702,6 +653,7 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
                 &hash,
                 event.assessment,
                 event.not_applicable_reason,
+                &event.artifact_evidence,
                 &event.rationale,
                 &event.instance_ids,
             ))?)
@@ -741,6 +693,20 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
                 "Agent observation; security applicability not established".to_owned(),
             ),
             (Assessment::NotApplicable | Assessment::Ignore, None) => (None, String::new()),
+            (Assessment::NotApplicable, Some(previous)) if can_retract(previous, event, store) => {
+                if event.not_applicable_reason == Some(NotApplicableReason::ComponentNotInBuild)
+                    && event.artifact_evidence.is_none()
+                {
+                    bail!("component_not_in_build retraction requires verified artifact evidence");
+                }
+                if let Some(artifact) = &event.artifact_evidence {
+                    validation::verify_observed_artifact(artifact, previous)?;
+                }
+                (
+                    Some(Decision::Retracted),
+                    "Agent observation retracted after review".to_owned(),
+                )
+            }
             (_, Some(previous)) => {
                 let detail = match event.not_applicable_reason {
                     Some(reason) => format!(
@@ -748,8 +714,27 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
                     ),
                     None => "Agent re-assessed as lacking a relevant security claim".to_owned(),
                 };
-                if previous.decision == Decision::Actionable {
-                    open_questions.push("Research no longer supports this actionable case; confirm and record a new verdict before closing it.".into());
+                let impact_requires_review =
+                    crate::impact::latest(previous, store).is_some_and(|impact| {
+                        matches!(
+                            impact.verdict,
+                            crate::impact::ImpactVerdict::UrgentUpdate
+                                | crate::impact::ImpactVerdict::PriorityUpdate
+                                | crate::impact::ImpactVerdict::RoutineUpdate
+                                | crate::impact::ImpactVerdict::NeedsEvidence
+                        )
+                    });
+                let scope_changed = previous.instances.len() != event.instance_ids.len()
+                    || previous
+                        .instances
+                        .iter()
+                        .any(|instance| !event.instance_ids.contains(&instance.id));
+                if event.assessment == Assessment::NotApplicable
+                    || matches!(previous.decision, Decision::Actionable | Decision::Review)
+                    || scope_changed
+                    || impact_requires_review
+                {
+                    open_questions.push("Research no longer supports this case; confirm the current impact and record a new verdict before closing it.".into());
                     (Some(Decision::Review), detail)
                 } else {
                     (Some(Decision::Informational), detail)
@@ -819,6 +804,32 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
                 {
                     case.evidence.push(evidence.clone());
                 }
+                if previous.claims.is_empty() && decision == Decision::Review {
+                    let mut retained: Vec<Instance> = previous
+                        .instances
+                        .iter()
+                        .filter_map(|old| {
+                            snapshot
+                                .instances
+                                .iter()
+                                .find(|current| current.id == old.id)
+                                .cloned()
+                        })
+                        .collect();
+                    for instance in &case.instances {
+                        if !retained.iter().any(|old| old.id == instance.id) {
+                            retained.push(instance.clone());
+                        }
+                    }
+                    if retained.len() != case.instances.len() {
+                        case.facts_sha256 = crate::digest(&serde_json::to_vec(&(
+                            &previous.facts_sha256,
+                            &case.facts_sha256,
+                            &retained,
+                        ))?);
+                        case.instances = retained;
+                    }
+                }
                 if !previous.claims.is_empty() {
                     case.claims = previous.claims.clone();
                     case.instances = previous.instances.clone();
@@ -843,6 +854,15 @@ pub fn import(store: &mut Store, mut batch: ResearchBatch) -> Result<serde_json:
                         case.verification = previous.verification;
                     }
                 }
+            }
+            if decision == Decision::Retracted {
+                let assessment = store.record_evidence(
+                    &serde_json::to_vec(event)?,
+                    "agent_retraction_assessment",
+                    Some(event.url.clone()),
+                    EvidenceKind::Context,
+                )?;
+                case.evidence.push(assessment);
             }
             cases.push(case);
         }

@@ -7,7 +7,13 @@ use crate::{
 };
 use std::collections::HashMap;
 
+mod codebase;
+mod contained;
+mod informational;
 mod sections;
+
+use codebase::code_findings_markdown;
+use contained::contained_markdown;
 
 pub(super) use sections::codebase_revisions_markdown;
 use sections::{coverage_groups, coverage_markdown, inventory_markdown};
@@ -206,6 +212,14 @@ pub fn morning_markdown(report: &MorningReport) -> anyhow::Result<String> {
             &report.coverage_gaps.len(),
         ],
     );
+    if !report.code_findings.is_empty() {
+        let label = if language == Language::Es {
+            "Hallazgos de código propio"
+        } else {
+            "Codebase findings"
+        };
+        text.push_str(&format!("{label}: **{}**.\n\n", report.code_findings.len()));
+    }
     for (items, label) in [
         (&actionable, words.contained_actionable_prefix),
         (&needs_review, words.contained_review_prefix),
@@ -324,6 +338,7 @@ pub fn morning_markdown(report: &MorningReport) -> anyhow::Result<String> {
         report.codebase_context_unrecorded,
         language,
     ));
+    text.push_str(&code_findings_markdown(report, language));
     for (decision, items) in [
         (Decision::Actionable, &actionable),
         (Decision::Review, &needs_review),
@@ -741,6 +756,83 @@ pub fn morning_markdown(report: &MorningReport) -> anyhow::Result<String> {
         }
         text.push('\n');
     }
+    if !report.codebase_revisions.is_empty() {
+        text.push_str(match language {
+            Language::Es => "## Revisión del código propio\n\n",
+            Language::En => "## Codebase review\n\n",
+        });
+        for (index, _) in report.codebase_revisions.iter().enumerate() {
+            let review = report
+                .code_reviews
+                .iter()
+                .find(|review| review.submission.codebase == index);
+            let status = match (language, review) {
+                (Language::Es, None) if report.scheduled_code_review => "Pendiente",
+                (Language::En, None) if report.scheduled_code_review => "Pending",
+                (Language::Es, None) => "No registrada",
+                (Language::En, None) => "Not recorded",
+                (Language::Es, Some(review)) if !review.current => "Requiere reevaluación",
+                (Language::En, Some(review)) if !review.current => "Reassessment required",
+                (Language::Es, Some(review)) => match review.submission.status {
+                    crate::tools::code_review::Status::InProgress => "En curso",
+                    crate::tools::code_review::Status::Partial => "Parcial",
+                    crate::tools::code_review::Status::Complete => {
+                        "Completada dentro del alcance indicado"
+                    }
+                },
+                (Language::En, Some(review)) => match review.submission.status {
+                    crate::tools::code_review::Status::InProgress => "In progress",
+                    crate::tools::code_review::Status::Partial => "Partial",
+                    crate::tools::code_review::Status::Complete => {
+                        "Completed within the stated scope"
+                    }
+                },
+            };
+            text.push_str(&format!("- Codebase {}: {}\n", index + 1, status));
+            if let Some(review) = review {
+                for item in &review.submission.scope {
+                    text.push_str(&format!(
+                        "  - {}: {}\n",
+                        if language == Language::Es {
+                            "Alcance"
+                        } else {
+                            "Scope"
+                        },
+                        inline(item)
+                    ));
+                }
+                for item in &review.submission.gaps {
+                    text.push_str(&format!(
+                        "  - {}: {}\n",
+                        if language == Language::Es {
+                            "Pendiente"
+                        } else {
+                            "Gap"
+                        },
+                        inline(item)
+                    ));
+                }
+                for item in &review.submission.uncertainties {
+                    text.push_str(&format!(
+                        "  - {}: {}\n",
+                        if language == Language::Es {
+                            "Incertidumbre"
+                        } else {
+                            "Uncertainty"
+                        },
+                        inline(item)
+                    ));
+                }
+                if !review.indexed_languages.is_empty() {
+                    text.push_str(&format!(
+                        "  - CodeGraph: {}\n",
+                        review.indexed_languages.join(", ")
+                    ));
+                }
+            }
+        }
+        text.push('\n');
+    }
     text.push_str(&coverage_markdown(report));
     text.push_str(&fill(
         words.delivery,
@@ -752,66 +844,24 @@ pub fn morning_markdown(report: &MorningReport) -> anyhow::Result<String> {
     text.push_str(&super::discovery::discovery_summary_markdown(report));
     text.push_str(&inventory_markdown(&report.inventory, language));
     text.push_str(&verification_section(report, false));
+    text.push_str(&informational::render(report, language));
+    if report.closed == super::ClosedMode::Full {
+        let checks: Vec<&FindingCheck> = report
+            .finding_checks
+            .iter()
+            .filter(|check| {
+                matches!(
+                    check.decision,
+                    Decision::Informational | Decision::Dismissed
+                )
+            })
+            .collect();
+        if !checks.is_empty() {
+            text.push_str(&verification::markdown(&checks, true, language));
+        }
+    }
     super::normalize_report_paths(report, &super::branding::finish(&text, language))
 }
-/// Advisories that match the version but whose recorded impact rules out project exposure, one
-/// row per component and recorded reason; per-case detail stays in the JSON report.
-fn contained_markdown(
-    report: &MorningReport,
-    checks: &Checks<'_>,
-    items: &[&HandoffItem],
-    heading: &str,
-) -> String {
-    if items.is_empty() {
-        return String::new();
-    }
-    let words = text::text(report.language);
-    let mut groups: std::collections::BTreeMap<(String, String), Vec<&HandoffItem>> =
-        std::collections::BTreeMap::new();
-    for item in items {
-        let reason = case_impact(checks, &item.case_id)
-            .map(containment_reason)
-            .unwrap_or_default()
-            .to_owned();
-        groups
-            .entry((components_label(&item.provenance, report.language), reason))
-            .or_default()
-            .push(item);
-    }
-    let mut text = fill(words.contained_table, &[&heading, &items.len()]);
-    for ((component, reason), group) in groups {
-        let mut labels: Vec<String> = group.iter().flat_map(|item| case_labels(item)).collect();
-        labels.sort();
-        labels.dedup();
-        let shown = if labels.len() > CONTAINED_LABELS {
-            fill(
-                words.and_more,
-                &[
-                    &labels[..CONTAINED_LABELS].join(", "),
-                    &(labels.len() - CONTAINED_LABELS),
-                ],
-            )
-        } else {
-            labels.join(", ")
-        };
-        let mut fixes: Vec<String> = group.iter().map(|item| fixed_versions(item)).collect();
-        fixes.retain(|fix| !fix.is_empty());
-        fixes.sort();
-        fixes.dedup();
-        text.push_str(&format!(
-            "| {} | {} | {} | {} |\n",
-            inline(&component),
-            inline(&shown),
-            inline(&reason),
-            inline(&fixes.join("; "))
-        ));
-    }
-    text.push('\n');
-    text
-}
-
-const CONTAINED_LABELS: usize = 6;
-
 /// Advisory IDs, or `owner/repo#number` for upstream research events, so a reader can find the
 /// source without the internal case ID.
 fn case_labels(item: &HandoffItem) -> Vec<String> {

@@ -251,12 +251,23 @@ fn scan_inner(
             || !crate::codebase_revision::same_revisions(
                 &previous.codebase_revisions,
                 &codebase_revisions,
-            );
+            )
+            || (previous.decision == Decision::Retracted
+                && !crate::research::retraction_valid(
+                    &previous,
+                    &instances,
+                    &codebase_revisions,
+                    store,
+                ));
         if !previous
             .instances
             .iter()
             .any(|instance| active_ids.contains(instance.id.as_str()))
         {
+            if previous.decision == Decision::Retracted {
+                previous.snapshot_id = snapshot_id.clone();
+                cases.push(previous);
+            }
             continue;
         }
         previous.snapshot_id = snapshot_id.clone();
@@ -825,6 +836,9 @@ fn triage_checked(
     }
     if verdict.evidence.is_empty() || verdict.rationale.trim().is_empty() {
         bail!("verdict requires rationale and registered evidence");
+    }
+    if verdict.decision == Decision::Retracted {
+        bail!("retracted is reserved for eligible agent research reassessments");
     }
     if verdict
         .advisory_translation

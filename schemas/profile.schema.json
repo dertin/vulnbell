@@ -297,6 +297,11 @@
         }
       ]
     },
+    "scheduled_code_review": {
+      "default": false,
+      "description": "Run an independent static codebase review in scheduled agent jobs.",
+      "type": "boolean"
+    },
     "schema": {
       "const": 1
     }

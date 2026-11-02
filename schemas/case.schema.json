@@ -138,13 +138,22 @@
       "type": "string"
     },
     "Decision": {
-      "enum": [
-        "actionable",
-        "review",
-        "informational",
-        "dismissed"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "actionable",
+            "review",
+            "informational",
+            "dismissed"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "retracted",
+          "description": "An agent-only observation was subsequently found inapplicable.",
+          "type": "string"
+        }
+      ]
     },
     "Evidence": {
       "properties": {

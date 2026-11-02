@@ -39,9 +39,7 @@ impl Store {
             directory,
         };
         store.check_schema()?;
-        store
-            .connection
-            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+        configure_connection(&store.connection)?;
         fs::create_dir_all(store.directory.join("evidence"))?;
         #[cfg(unix)]
         {
@@ -304,6 +302,24 @@ impl Store {
             );
         }
         Ok(())
+    }
+}
+
+fn configure_connection(connection: &Connection) -> Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;") {
+            Ok(()) => return Ok(()),
+            Err(rusqlite::Error::SqliteFailure(error, _))
+                if matches!(
+                    error.code,
+                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                ) && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(error) => return Err(error.into()),
+        }
     }
 }
 

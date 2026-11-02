@@ -38,6 +38,8 @@ struct Tool {
     workflows: &'static [&'static str],
     installation: &'static str,
     recommended_for_project: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    execution_check: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -45,6 +47,8 @@ struct ProjectTools {
     inventory: &'static str,
     contexts: Vec<&'static str>,
     codebase_checked: bool,
+    #[serde(skip)]
+    codebase_roots: Option<Vec<PathBuf>>,
 }
 
 #[derive(Serialize)]
@@ -128,6 +132,13 @@ pub fn doctor(project: Option<&Path>) -> Result<DoctorReport> {
             &["rg", "rg.exe"][..],
             &["codebase"][..],
             "https://github.com/BurntSushi/ripgrep#installation",
+        ),
+        (
+            "codegraph",
+            "Tree-sitter codebase navigation for static security review",
+            &["codegraph", "codegraph.exe"][..],
+            &["codebase"][..],
+            "https://github.com/colbymchenry/codegraph#get-started",
         ),
         (
             "cargo-audit",
@@ -226,17 +237,54 @@ pub fn doctor(project: Option<&Path>) -> Result<DoctorReport> {
         ),
     ]
     .into_iter()
-    .map(|(name, purpose, names, workflows, installation)| Tool {
-        name,
-        purpose,
-        executable: find_tool(names),
-        workflows,
-        installation,
-        recommended_for_project: project.as_ref().map(|project| {
-            workflows
-                .iter()
-                .any(|workflow| project.contexts.contains(workflow))
-        }),
+    .map(|(name, purpose, names, workflows, installation)| {
+        let executable = find_tool(names);
+        let execution_check = (name == "codegraph").then(|| match &executable {
+            None => "missing",
+            Some(_)
+                if project
+                    .as_ref()
+                    .is_some_and(|project| project.codebase_roots.is_none()) =>
+            {
+                "codebase_unavailable"
+            }
+            Some(path)
+                if project
+                    .as_ref()
+                    .and_then(|project| project.codebase_roots.as_ref())
+                    .is_some_and(|roots| {
+                        path.canonicalize()
+                            .is_ok_and(|path| roots.iter().any(|root| path.starts_with(root)))
+                    }) =>
+            {
+                "inside_codebase"
+            }
+            Some(path)
+                if codegraph_version_works(
+                    path,
+                    project
+                        .as_ref()
+                        .and_then(|project| project.codebase_roots.as_deref())
+                        .unwrap_or_default(),
+                ) =>
+            {
+                "version_command_ok"
+            }
+            Some(_) => "version_command_failed",
+        });
+        Tool {
+            name,
+            purpose,
+            executable,
+            workflows,
+            installation,
+            recommended_for_project: project.as_ref().map(|project| {
+                workflows
+                    .iter()
+                    .any(|workflow| project.contexts.contains(workflow))
+            }),
+            execution_check,
+        }
     })
     .collect();
     let data_directory = crate::store::data_root();
@@ -271,6 +319,13 @@ pub fn doctor(project: Option<&Path>) -> Result<DoctorReport> {
 
 fn project_tools(path: &Path) -> Result<ProjectTools> {
     let profile = crate::profile::load(path)?;
+    let base = path.parent().unwrap_or(Path::new("."));
+    let codebase_roots = profile
+        .codebases
+        .iter()
+        .map(|codebase| base.join(codebase).canonicalize())
+        .collect::<std::io::Result<Vec<_>>>()
+        .ok();
     let mut file_contexts = Vec::new();
     let state_path = crate::store::data_root()
         .join(profile.project_id.to_string())
@@ -374,6 +429,7 @@ fn project_tools(path: &Path) -> Result<ProjectTools> {
         inventory,
         contexts: ecosystems,
         codebase_checked: false,
+        codebase_roots,
     })
 }
 
@@ -463,6 +519,74 @@ fn find_tool(names: &[&str]) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn codegraph_version_works(path: &Path, codebase_roots: &[PathBuf]) -> bool {
+    let Ok(path) = path.canonicalize() else {
+        return false;
+    };
+    let mut command = Command::new(path);
+    command.env_clear().current_dir(std::env::temp_dir());
+    for key in ["HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "TEMP", "TMP"] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
+    let paths: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|value| {
+            std::env::split_paths(&value)
+                .filter_map(|path| path.canonicalize().ok())
+                .filter(|path| !codebase_roots.iter().any(|root| path.starts_with(root)))
+                .collect()
+        })
+        .unwrap_or_default();
+    #[cfg(unix)]
+    let paths: Vec<PathBuf> = paths
+        .into_iter()
+        .chain(
+            [PathBuf::from("/usr/bin"), PathBuf::from("/bin")]
+                .into_iter()
+                .filter(|path| {
+                    path.canonicalize()
+                        .is_ok_and(|path| !codebase_roots.iter().any(|root| path.starts_with(root)))
+                }),
+        )
+        .collect();
+    let Ok(path) = std::env::join_paths(paths) else {
+        return false;
+    };
+    command
+        .env("PATH", path)
+        .env("DO_NOT_TRACK", "1")
+        .env("CODEGRAPH_NO_UPDATE_CHECK", "1")
+        .arg("--version");
+    crate::process::run_bounded_agent(&mut command, 5, 4096)
+        .is_ok_and(|output| output.success && !output.timed_out && !output.stdout.is_empty())
+}
+
+fn codegraph_message(tool: &Tool) -> (bool, String) {
+    match tool.execution_check {
+        Some("version_command_ok") => (
+            true,
+            "codegraph version command works; index and integration compatibility not checked"
+                .to_owned(),
+        ),
+        Some("version_command_failed") => (
+            false,
+            format!(
+                "codegraph found but version command failed; required for independent codebase security review. Install: {}",
+                tool.installation
+            ),
+        ),
+        Some("inside_codebase" | "codebase_unavailable") => (false, "codegraph could not be checked safely outside the monitored codebase; verify its installation and the codebase paths".to_owned()),
+        _ => (
+            false,
+            format!(
+                "codegraph required for independent codebase security review; install: {}",
+                tool.installation
+            ),
+        ),
+    }
 }
 
 fn line(out: &mut String, good: bool, text: &str, color: bool) {
@@ -568,6 +692,11 @@ pub fn doctor_text(report: &DoctorReport, color: bool) -> String {
             tool.recommended_for_project == Some(true)
                 && !matches!(tool.name, "git" | "gh" | "curl" | "jq" | "python")
         }) {
+            if tool.name == "codegraph" {
+                let (ok, message) = codegraph_message(tool);
+                line(&mut out, ok, &message, color);
+                continue;
+            }
             let message = match &tool.executable {
                 Some(path) => format!(
                     "{} available at {}; compatibility not checked",
@@ -588,6 +717,11 @@ pub fn doctor_text(report: &DoctorReport, color: bool) -> String {
             .iter()
             .filter(|tool| !matches!(tool.name, "git" | "gh" | "curl" | "jq" | "python"))
         {
+            if tool.name == "codegraph" {
+                let (ok, message) = codegraph_message(tool);
+                line(&mut out, ok, &message, color);
+                continue;
+            }
             let message = match &tool.executable {
                 Some(path) => format!("{}: {} ({})", tool.name, path.display(), tool.purpose),
                 None => format!(

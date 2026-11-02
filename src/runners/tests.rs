@@ -58,11 +58,12 @@ fn source_access_requires_a_receipt_for_the_current_project() {
         format!("schema: 1\nproject_id: {project_id}\nname: fixture\ndiscovery: off\n"),
     )
     .unwrap();
-    let source = SourceAccess {
+    let mut source = SourceAccess {
         project,
         project_id: project_id.clone(),
         data_root: directory.path().into(),
         receipt: directory.path().join("receipt.json"),
+        required_codebase: None,
     };
     assert!(source.verify().is_err());
     for value in [
@@ -80,6 +81,12 @@ fn source_access_requires_a_receipt_for_the_current_project() {
         .unwrap(),
     )
     .unwrap();
+    assert!(source.verify().is_ok());
+    source.required_codebase = Some(1);
+    assert!(source.verify().is_err());
+    std::fs::write(&source.receipt, serde_json::to_vec(&serde_json::json!({"schema_version":1,"project_id":project_id,"source_read":true,"codebases_read":[0]})).unwrap()).unwrap();
+    assert!(source.verify().is_err());
+    std::fs::write(&source.receipt, serde_json::to_vec(&serde_json::json!({"schema_version":1,"project_id":project_id,"source_read":true,"codebases_read":[0,1]})).unwrap()).unwrap();
     assert!(source.verify().is_ok());
     std::fs::write(
         &source.project,

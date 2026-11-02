@@ -33,6 +33,43 @@ fn file_url_search_text(text: &str) -> String {
     String::from_utf8(bytes).expect("ASCII case changes preserve UTF-8")
 }
 
+#[cfg(windows)]
+fn windows_short_path(root: &str) -> Option<String> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    let input: Vec<u16> = std::ffi::OsStr::new(root)
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    // SAFETY: input is NUL-terminated; a null output and zero capacity query the required size.
+    let size = unsafe {
+        windows_sys::Win32::Storage::FileSystem::GetShortPathNameW(
+            input.as_ptr(),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if size == 0 || size > 32768 {
+        return None;
+    }
+    let mut output = vec![0u16; size as usize];
+    // SAFETY: input is NUL-terminated and output has `size` writable UTF-16 elements.
+    let length = unsafe {
+        windows_sys::Win32::Storage::FileSystem::GetShortPathNameW(
+            input.as_ptr(),
+            output.as_mut_ptr(),
+            size,
+        )
+    };
+    if length == 0 || length >= size {
+        return None;
+    }
+    Some(
+        std::ffi::OsString::from_wide(&output[..length as usize])
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
 /// Present known codebase paths without changing the stored evidence or operational paths.
 pub(super) fn relative_paths<'a>(text: &str, paths: impl IntoIterator<Item = &'a str>) -> String {
     let mut roots: Vec<&str> = paths
@@ -67,10 +104,19 @@ pub(super) fn relative_paths<'a>(text: &str, paths: impl IntoIterator<Item = &'a
             };
             let label = super::markdown::inline(&label);
             let mut raw = vec![root.to_owned()];
+            #[cfg(windows)]
+            if let Some(short) = windows_short_path(root) {
+                if let Some(tail) = short.strip_prefix(r"\\?\") {
+                    raw.push(tail.to_owned());
+                }
+                raw.push(short);
+            }
             #[cfg(target_os = "macos")]
             for directory in ["var", "tmp", "etc"] {
-                if let Some(tail) = root.strip_prefix(&format!("/private/{directory}/")) {
-                    raw.push(format!("/{directory}/{tail}"));
+                if let Some(tail) = root.strip_prefix(&format!("/private/{directory}"))
+                    && (tail.is_empty() || tail.starts_with('/'))
+                {
+                    raw.push(format!("/{directory}{tail}"));
                 }
             }
             if let Some(tail) = root.strip_prefix(r"\\?\UNC\") {

@@ -14,6 +14,9 @@ pub struct Profile {
     pub name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub codebases: Vec<String>,
+    /// Run an independent static codebase review in scheduled agent jobs.
+    #[serde(default)]
+    pub scheduled_code_review: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub components: Vec<Component>,
     #[serde(default)]
@@ -272,6 +275,13 @@ pub fn validate(profile: &Profile) -> Validation {
     }
     if profile.name.trim().is_empty() || profile.name.chars().count() > 120 {
         push("/name".into(), "invalid_length", "Use 1..120 characters");
+    }
+    if profile.scheduled_code_review && profile.codebases.is_empty() {
+        push(
+            "/scheduled_code_review".into(),
+            "missing_codebase",
+            "Configure at least one codebase for scheduled code review",
+        );
     }
     if profile
         .research

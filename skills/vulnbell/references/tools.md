@@ -8,6 +8,7 @@ For a missing tool that would materially improve the requested review, explain t
 
 | Scope | Suitable tool | Important boundary |
 | --- | --- | --- |
+| Independent codebase security review | `codegraph` (required) | Use a current user-authorized Tree-sitter index for supported languages; inspect unsupported configuration separately. An absent tool or index is a coverage gap. See [installation](https://github.com/colbymchenry/codegraph#get-started). Do not infer reachability solely from graph edges. |
 | Rust `Cargo.lock` | `cargo-audit` | From a neutral directory, use `cargo audit --json --file <Cargo.lock>`; the lock can include non-runtime packages. |
 | Python fully pinned requirements with hashes | `pip-audit` | With an authorized public source, use its `--disable-pip` and `--no-deps` options on the exact lock. Check the installed version's help and parsed package count. Do not run resolution, build hooks or `--fix` on the host. |
 | PHP Composer lockfile | `composer audit` | Audit the lock only with plugins and scripts disabled; inspect the destination and authorize any disclosure of package names. |

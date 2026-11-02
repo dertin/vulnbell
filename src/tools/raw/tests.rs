@@ -387,7 +387,7 @@ fn github_accepts_a_linked_pull_request_from_the_issues_endpoint() {
     write(
         &fixture,
         &format!("{repo}/issues.page-1.json"),
-        r#"[{"number":1,"title":"Maintenance","html_url":"https://github.com/example/project/pull/1","state":"open","updated_at":"2026-10-20T00:00:00Z","labels":[],"body":"Fixes #42","pull_request":{}}]"#,
+        r#"[{"number":1,"title":"Maintenance","html_url":"https://github.com/example/project/pull/1","state":"closed","updated_at":"2026-10-20T00:00:00Z","labels":[],"body":"Fixes #42","pull_request":{"merged_at":null}}]"#,
     );
     for name in ["releases.page-1.json", "security-advisories.page-1.json"] {
         write(&fixture, &format!("{repo}/{name}"), "[]");
@@ -406,6 +406,10 @@ fn github_accepts_a_linked_pull_request_from_the_issues_endpoint() {
     let collected = raw::read_target(raw, &target);
     assert!(collected.complete(), "{:?}", collected.errors);
     assert_eq!(collected.linked_issues[0].kind, ItemKind::PullRequest);
+    assert_eq!(
+        collected.items[0].closure,
+        Some(crate::tools::PullRequestClosure::ClosedUnmerged)
+    );
     assert!(screen::screen(&collected.items[0], &collected.linked_issues[0].body).is_some());
     write(
         &fixture,
@@ -416,6 +420,8 @@ fn github_accepts_a_linked_pull_request_from_the_issues_endpoint() {
     assert!(!invalid.complete());
     assert!(!invalid.errors.is_empty());
 }
+
+mod closure;
 
 #[test]
 fn github_resolves_a_linked_discussion_outside_the_window() {
@@ -976,36 +982,4 @@ fn github_responses_are_parsed_and_missing_files_name_their_request() {
     );
 }
 
-#[test]
-fn jira_v3_pages_follow_the_next_page_token() {
-    let directory = tempfile::tempdir().unwrap();
-    let raw_dir = directory.path();
-    let target = target("https://hibernate.atlassian.net/browse/HHH");
-    let fixture = raw_dir.join(raw::window_directory(&target));
-    write(
-        &fixture,
-        "jira/hibernate.atlassian.net/HHH.page-1.json",
-        r#"{"issues": [{"key": "HHH-1", "fields": {"summary": "SQL injection in order by", "updated": "2026-10-20T10:00:00.000+0000",
-            "status": {"name": "Open"}, "issuetype": {"name": "Bug"}, "labels": [],
-            "description": {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Crafted input"}]}]}}}],
-            "isLast": false, "nextPageToken": "abc=="}"#,
-    );
-    let first = raw::read_target(raw_dir, &target);
-    assert_eq!(first.items.len(), 1);
-    assert_eq!(
-        first.items[0].url,
-        "https://hibernate.atlassian.net/browse/HHH-1"
-    );
-    assert!(first.items[0].body.contains("Crafted input"));
-    assert_eq!(first.missing.len(), 1);
-    assert!(
-        first.missing[0]
-            .request
-            .ends_with("&nextPageToken=abc%3D%3D")
-    );
-    assert!(
-        first.missing[0]
-            .request
-            .contains("/rest/api/3/search/jql?jql=")
-    );
-}
+mod jira;

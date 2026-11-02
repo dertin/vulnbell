@@ -10,6 +10,10 @@ The agent researches and reasons about findings. The Skill guides its review, wh
 
 Give the agent a local codebase, a list of software and versions, or both. VulnBell inventories the selected software, checks security sources, helps the agent review relevant findings against the available code and records the evidence and decisions. A codebase is optional: without one, the assessment describes the software and published conditions without claiming project-specific impact.
 
+On request, the agent can also review the codebase itself for security issues and record findings separately from dependency advisories. This review requires a current, user-authorized CodeGraph index for supported languages and examines configuration and unsupported formats separately. VulnBell records review progress, scope and gaps, verifies cited source locations and tracks the reviewed context; the agent remains responsible for the security assessment. Do not include credentials or source snippets in finding descriptions. An empty list is not evidence of complete source coverage. Set `scheduled_code_review: true` to include this work in scheduled agent runs; the review receives up to one third of the time remaining after discovery and retains incomplete progress.
+
+To evaluate code review on a private corpus, keep independently reviewed labels separate from agent observations and run `vulnbell tools code-evaluate --labels <labels.json> --observations <observations.json>`. The `code-evaluation-labels` and `code-evaluation-observations` schemas describe the inputs. The results identify missed high-priority cases and unreviewed cases; scores apply only to the reviewed cases in that corpus.
+
 [See a sample report](examples/report.md).
 
 ## Install
@@ -37,7 +41,7 @@ The Skill uses the Agent Skills format. Its default location is `$HOME/.agents/s
 
 For GitHub tracker research, authenticate with `gh auth login`. Advisory scans can also use anonymous requests, subject to lower limits. VulnBell reads the active GitHub CLI credential into memory when needed; it does not print it or add it to the agent environment. An explicitly configured `GITHUB_TOKEN` takes precedence. `vulnbell doctor --json` reports whether a credential is available and its source; it does not verify network access or token permissions.
 
-Run `vulnbell doctor --project <profile>` after scanning to see recommended tools for the monitor. Doctor checks executable presence, not compatibility, network access, database freshness or complete codebase coverage. Optional tools are needed only for their respective workflows.
+Run `vulnbell doctor --project <profile>` after scanning to see recommended tools for the monitor. Doctor checks executable presence and the CodeGraph version command, not integration compatibility, index freshness, network access or complete codebase coverage. Optional tools are needed only for their respective workflows.
 
 ## Start a review
 

@@ -1,0 +1,151 @@
+{
+  "$defs": {
+    "Disposition": {
+      "enum": [
+        "actionable",
+        "review",
+        "resolved"
+      ],
+      "type": "string"
+    },
+    "Severity": {
+      "enum": [
+        "critical",
+        "high",
+        "medium",
+        "low"
+      ],
+      "type": "string"
+    },
+    "SourceLocation": {
+      "additionalProperties": false,
+      "description": "An agent-reviewed codebase finding. Do not include credentials or source snippets.",
+      "properties": {
+        "codebase": {
+          "description": "Zero-based index in the latest scan's codebase revisions.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "line": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "line_sha256": {
+          "description": "SHA-256 of the inspected line, excluding its line ending.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Codebase-relative path and one-based line.",
+          "type": "string"
+        },
+        "review_revision": {
+          "description": "Revision of the review that inspected this codebase.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "codebase",
+        "review_revision",
+        "path",
+        "line",
+        "line_sha256"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "analysis": {
+      "description": "Agent's evidence-bound reasoning; do not include code or credentials.",
+      "type": "string"
+    },
+    "category": {
+      "type": "string"
+    },
+    "codebase": {
+      "description": "Zero-based index in the latest scan's codebase revisions.",
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "disposition": {
+      "$ref": "#/$defs/Disposition"
+    },
+    "evidence": {
+      "default": [],
+      "description": "Additional source locations that support the analysis; source content is not copied.",
+      "items": {
+        "$ref": "#/$defs/SourceLocation"
+      },
+      "type": "array"
+    },
+    "finding_id": {
+      "description": "Existing finding ID when reassessing or moving a previously recorded finding.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "impact": {
+      "type": "string"
+    },
+    "line": {
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "line_sha256": {
+      "description": "SHA-256 of the inspected line; null only when the former file was removed.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "path": {
+      "description": "Codebase-relative path and one-based line; source content is not copied.",
+      "type": "string"
+    },
+    "recommendation": {
+      "type": "string"
+    },
+    "review_revision": {
+      "description": "Revision of the active code review whose source was inspected.",
+      "type": "string"
+    },
+    "schema_version": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "severity": {
+      "$ref": "#/$defs/Severity"
+    },
+    "snapshot_id": {
+      "description": "ID of the scan the agent reviewed; stale submissions are rejected.",
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "snapshot_id",
+    "review_revision",
+    "codebase",
+    "path",
+    "line",
+    "category",
+    "title",
+    "severity",
+    "disposition",
+    "analysis",
+    "impact",
+    "recommendation"
+  ],
+  "title": "Submission",
+  "type": "object"
+}

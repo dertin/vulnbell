@@ -22,3 +22,5 @@ For each actionable source description in another language, translate the actual
 If a user requests questions for responsible teams, ask only for facts that could change a decision, identify the related cases and environment, and do not ask for secrets. When answers arrive, record their source and scope, verify the codebase and inventory, then reassess affected cases before regenerating the report. Do not turn uncertainty into a negative verdict or present incomplete work as complete.
 
 For a time-bounded review, retain the CLI's partial status and save the unfiltered `vulnbell tools queue --project <profile> --limit 1000` beside the report; paginate when needed. Progress and priority do not settle a case. Report wall time separately from model execution time.
+
+Closed case detail: `--closed summary` lists informational cases compactly and keeps their details and evidence in JSON; it is the default for Cyber and manager. Use `--closed full` for the full appendix or `--closed none` to omit closed cases. Audit defaults to full. Retracted observations remain in JSON with their history and are omitted from Markdown and PDF.

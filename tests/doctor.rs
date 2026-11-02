@@ -1,5 +1,110 @@
 use std::fs;
 
+#[cfg(unix)]
+#[test]
+fn doctor_checks_codegraph_execution_and_reports_the_review_requirement() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let executable = dir.path().join("codegraph");
+    let run = |json: bool| {
+        let mut command = assert_cmd::cargo::cargo_bin_cmd!("vulnbell");
+        command
+            .arg("doctor")
+            .env("HOME", dir.path())
+            .env("PATH", dir.path())
+            .env("VULNBELL_DATA_DIR", dir.path().join("data"));
+        if json {
+            command.arg("--json");
+        }
+        command.output().unwrap()
+    };
+    let report: serde_json::Value = serde_json::from_slice(&run(true).stdout).unwrap();
+    let tool = report["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "codegraph")
+        .unwrap();
+    assert_eq!(tool["execution_check"], "missing");
+    assert!(
+        String::from_utf8(run(false).stdout)
+            .unwrap()
+            .contains("codegraph required for independent codebase security review")
+    );
+
+    fs::write(&executable, "#!/bin/sh\nexit 1\n").unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+    let report: serde_json::Value = serde_json::from_slice(&run(true).stdout).unwrap();
+    let tool = report["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "codegraph")
+        .unwrap();
+    assert_eq!(tool["execution_check"], "version_command_failed");
+
+    fs::write(&executable, "#!/bin/sh\nprintf '1.6.2\\n'\n").unwrap();
+    let report: serde_json::Value = serde_json::from_slice(&run(true).stdout).unwrap();
+    let tool = report["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "codegraph")
+        .unwrap();
+    assert_eq!(tool["execution_check"], "version_command_ok");
+    assert!(
+        String::from_utf8(run(false).stdout)
+            .unwrap()
+            .contains("index and integration compatibility not checked")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn project_doctor_does_not_execute_codegraph_from_the_monitored_codebase() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let app = dir.path().join("app");
+    fs::create_dir(&app).unwrap();
+    let executable = app.join("codegraph");
+    let marker = dir.path().join("executed");
+    fs::write(
+        &executable,
+        format!("#!/bin/sh\nprintf executed > '{}'\n", marker.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+    let profile = dir.path().join("vulnbell.yaml");
+    fs::write(
+        &profile,
+        format!(
+            "schema: 1\nproject_id: {}\nname: test\ncodebases: [app]\n",
+            uuid::Uuid::new_v4()
+        ),
+    )
+    .unwrap();
+    let output = assert_cmd::cargo::cargo_bin_cmd!("vulnbell")
+        .args(["doctor", "--json", "--project"])
+        .arg(profile)
+        .env("HOME", dir.path())
+        .env("PATH", app)
+        .env("VULNBELL_DATA_DIR", dir.path().join("data"))
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let tool = report["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "codegraph")
+        .unwrap();
+    assert_eq!(tool["execution_check"], "inside_codebase");
+    assert!(!marker.exists());
+}
+
 #[test]
 fn project_doctor_suggests_cross_ecosystem_scanner_for_other_purls() {
     let dir = tempfile::tempdir().unwrap();

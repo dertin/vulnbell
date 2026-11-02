@@ -570,6 +570,10 @@ pub struct PendingReport {
     pub verification_pending: Vec<PendingVerification>,
     /// Open cases without an agent verdict for their current facts.
     pub verdict_missing: Vec<String>,
+    /// Codebase findings whose reviewed context or cited source is no longer current.
+    pub code_findings_pending: Vec<String>,
+    /// Requested independent reviews that remain partial, unfinished or stale.
+    pub code_reviews_pending: Vec<usize>,
     /// Subset of verdict_missing whose separate review needs reassessment.
     pub challenge_open: Vec<String>,
     pub research_open: Vec<ResearchOpen>,
@@ -621,7 +625,25 @@ pub enum ResearchOpenReason {
 pub fn pending(store: &Store) -> Result<PendingReport> {
     let mut snapshot = store.latest()?;
     snapshot.cases = store.cases()?;
-    let report = crate::output::morning_report(&snapshot, store, "cyber")?;
+    let snapshot = crate::research::project_retractions(&snapshot, store);
+    pending_current(store, &snapshot)
+}
+
+/// Evaluate a snapshot whose retraction evidence has already been checked for this operation.
+pub fn pending_current(store: &Store, snapshot: &crate::model::Snapshot) -> Result<PendingReport> {
+    let report = crate::output::morning_report_current(snapshot, store, "cyber")?;
+    pending_from_report(store, snapshot, &report)
+}
+
+/// Evaluate pending work using a report constructed from the same projected snapshot.
+pub fn pending_from_report(
+    store: &Store,
+    snapshot: &crate::model::Snapshot,
+    report: &crate::output::MorningReport,
+) -> Result<PendingReport> {
+    if report.project_id != snapshot.project_id || report.last_scan != snapshot.finished_at {
+        bail!("pending work requires a report for the same project and snapshot");
+    }
     let verdict_missing: Vec<String> = snapshot
         .cases
         .iter()
@@ -686,18 +708,49 @@ pub fn pending(store: &Store) -> Result<PendingReport> {
         .filter(|check| !check.open_challenges.is_empty())
         .map(|check| check.case_id.clone())
         .collect();
+    let code_findings_pending: Vec<String> = report
+        .code_findings
+        .iter()
+        .filter(|finding| !finding.current)
+        .map(|finding| finding.id.clone())
+        .collect();
+    let mut code_reviews_pending: Vec<usize> = report
+        .code_reviews
+        .iter()
+        .filter(|review| {
+            !review.current
+                || review.submission.status != crate::tools::code_review::Status::Complete
+        })
+        .map(|review| review.submission.codebase)
+        .collect();
+    if report.scheduled_code_review {
+        for index in 0..report.codebase_revisions.len() {
+            if !report
+                .code_reviews
+                .iter()
+                .any(|review| review.submission.codebase == index)
+            {
+                code_reviews_pending.push(index);
+            }
+        }
+    }
+    code_reviews_pending.sort_unstable();
     Ok(PendingReport {
         schema_version: 1,
         deliverable: report.verification_pending.is_empty()
             && verdict_missing.is_empty()
+            && code_findings_pending.is_empty()
+            && code_reviews_pending.is_empty()
             && challenge_open.is_empty()
             && research_open.is_empty()
             && stale_observations == 0
             && !tracker_scope_unresolved
             && !codebase_context_changed
             && discovery_open.is_none(),
-        verification_pending: report.verification_pending,
+        verification_pending: report.verification_pending.clone(),
         verdict_missing,
+        code_findings_pending,
+        code_reviews_pending,
         challenge_open,
         research_open,
         stale_observations,
@@ -712,6 +765,9 @@ fn has_current_verdict(case: &Case, store: &Store) -> bool {
 }
 
 pub(crate) fn verdict_missing(case: &Case, store: &Store) -> bool {
+    if case.decision == Decision::Retracted {
+        return false;
+    }
     (matches!(case.decision, Decision::Actionable | Decision::Review)
         || crate::tools::challenge::blocks_verdict(case, store)
         || case

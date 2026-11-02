@@ -2,6 +2,12 @@
 
 ## 0.1.4 - 2026-11-01
 
+- Summarize informational cases by audience and preserve evidence in JSON.
+- Record GitHub pull request closure and allow evidence-bound retraction of inapplicable agent observations.
+- Record agent-reviewed codebase security findings separately from dependency advisories, with checked locations and revision tracking.
+- Support scoped symbol navigation through current CodeGraph indexes and record multiple source locations for codebase findings.
+- Track code review scope and progress, support scheduled review, and evaluate agent observations against private labels.
+- Support documented manual resolution of references to moved repositories and research unavailable sources without treating them as safe.
 - Coordinate concurrent monitor initialization, scans and reports; use GitHub REST API version 2026-03-10.
 - Link to VulnBell at the beginning and end of Markdown and PDF reports.
 - Render known codebase paths as portable references in Markdown and PDF reports.

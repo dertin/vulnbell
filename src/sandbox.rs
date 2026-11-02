@@ -612,7 +612,9 @@ fn begin_attempt(case: &mut Case) {
 fn reopen_closed_case(case: &mut Case) {
     if matches!(
         case.decision,
-        crate::model::Decision::Informational | crate::model::Decision::Dismissed
+        crate::model::Decision::Informational
+            | crate::model::Decision::Dismissed
+            | crate::model::Decision::Retracted
     ) {
         case.decision = crate::model::Decision::Review;
         case.applicability = crate::model::Applicability::Unknown;

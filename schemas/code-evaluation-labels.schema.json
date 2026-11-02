@@ -1,0 +1,53 @@
+{
+  "$defs": {
+    "Label": {
+      "additionalProperties": false,
+      "properties": {
+        "high_priority": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "language": {
+          "type": "string"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "vulnerable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "language",
+        "vulnerable",
+        "high_priority",
+        "rationale"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "cases": {
+      "items": {
+        "$ref": "#/$defs/Label"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "cases"
+  ],
+  "title": "Labels",
+  "type": "object"
+}

@@ -533,6 +533,8 @@ pub struct ReviewItem {
     pub url: String,
     pub title: String,
     pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closure: Option<super::PullRequestClosure>,
     pub labels: Vec<String>,
     pub updated_at: String,
     /// Ordering hint only; no item is excluded or classified safe by priority.
@@ -718,6 +720,7 @@ pub fn packet_with_recheck(
                 url: entry.item.url.clone(),
                 title: entry.item.title.clone(),
                 state: entry.item.state.clone(),
+                closure: entry.item.closure,
                 labels: entry.item.labels.clone(),
                 updated_at: entry.item.updated_at.clone(),
                 priority: review_priority(entry, resolutions, &prepared_target.target.instance_ids),

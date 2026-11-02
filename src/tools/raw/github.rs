@@ -190,7 +190,7 @@ fn compact_github_page(
                     }
                 }
                 if let Some(Value::Object(pull_request)) = fields.get_mut("pull_request") {
-                    pull_request.clear();
+                    pull_request.retain(|key, _| key == "merged_at");
                 }
             }
         }
@@ -222,6 +222,21 @@ pub(super) fn github_issues(values: Vec<Value>, prefix: &str, web_base: &str) ->
             bail!("GitHub issue has an invalid update timestamp");
         };
         let text = issue.body.unwrap_or_default();
+        let closure = issue.pull_request.as_ref().and_then(|pull| {
+            if issue.state == "open" {
+                Some(super::super::PullRequestClosure::Open)
+            } else if issue.state == "closed" {
+                match pull.get("merged_at") {
+                    Some(Value::String(value)) if time(Some(value)).is_some() => {
+                        Some(super::super::PullRequestClosure::Merged)
+                    }
+                    Some(Value::Null) => Some(super::super::PullRequestClosure::ClosedUnmerged),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        });
         items.push(Item {
             key: format!("{prefix}#{}", issue.number),
             kind: if issue.pull_request.is_some() {
@@ -236,6 +251,7 @@ pub(super) fn github_issues(values: Vec<Value>, prefix: &str, web_base: &str) ->
             updated_at,
             closes: closes(&text, web_base, prefix),
             body: body(Some(text)),
+            closure,
             advisory: None,
         });
     }
@@ -275,6 +291,7 @@ fn github_releases(
             updated_at,
             body: body(release.body),
             closes: Vec::new(),
+            closure: None,
             advisory: None,
         });
     }
@@ -358,6 +375,7 @@ fn github_advisories(
             updated_at,
             body: body(Some(description)),
             closes: Vec::new(),
+            closure: None,
             advisory: Some(RepositoryAdvisory {
                 ghsa_id: advisory.ghsa_id,
                 cve_id: advisory.cve_id,
@@ -383,7 +401,11 @@ struct Discussion {
     category: Option<DiscussionCategory>,
 }
 
-pub(super) fn github_linked_discussion(value: Value, prefix: &str, number: &str) -> Result<Item> {
+pub(super) fn github_linked_discussion(
+    value: Value,
+    prefix: &str,
+    number: &str,
+) -> Result<Option<Item>> {
     if value.get("errors").is_some() {
         bail!("GraphQL response contains errors");
     }
@@ -395,11 +417,11 @@ pub(super) fn github_linked_discussion(value: Value, prefix: &str, number: &str)
     if discussion.number.to_string() != number
         || discussion.url != format!("https://github.com/{prefix}/discussions/{number}")
     {
-        bail!("GraphQL discussion does not match the requested reference");
+        return Ok(None);
     }
     let updated_at =
         time(Some(&discussion.updated_at)).context("linked discussion has an invalid timestamp")?;
-    Ok(Item {
+    Ok(Some(Item {
         key: format!("{prefix}#{number}"),
         kind: ItemKind::Discussion,
         url: discussion.url,
@@ -412,8 +434,9 @@ pub(super) fn github_linked_discussion(value: Value, prefix: &str, number: &str)
         updated_at,
         body: body(discussion.body),
         closes: Vec::new(),
+        closure: None,
         advisory: None,
-    })
+    }))
 }
 
 /// GraphQL pages of `search(type: DISCUSSION)`; nodes of other types are empty objects.
@@ -482,6 +505,7 @@ fn github_discussions(values: Vec<Value>, prefix: &str) -> Result<Vec<Item>> {
                 updated_at,
                 body: body(discussion.body),
                 closes: Vec::new(),
+                closure: None,
                 advisory: None,
             });
         }

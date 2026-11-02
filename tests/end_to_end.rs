@@ -606,7 +606,7 @@ fn reimported_research_keeps_promoted_advisory_and_evidence() {
         kind: EventKind::Advisory,
         url: "https://github.com/synthetic-org/synthetic-crate/security/advisories/GHSA-synt-hetc-0001".into(),
         title: "synthetic advisory".into(), excerpt: "synthetic".into(), updated_at: target.until.clone(),
-        assessment: Assessment::Review, not_applicable_reason: None,
+        assessment: Assessment::Review, not_applicable_reason: None, artifact_evidence: None,
         rationale: "Review the reported issue.".into(), source_facts: Default::default(),
     };
     let source = |target: &research::ResearchTarget| SourceReview {

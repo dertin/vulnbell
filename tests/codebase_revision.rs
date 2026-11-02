@@ -184,6 +184,7 @@ fn changed_checkout_blocks_recording_and_keeps_the_scanned_revision_in_reports()
             updated_at: target.until.clone(),
             assessment: Assessment::Review,
             not_applicable_reason: None,
+            artifact_evidence: None,
             rationale: "Review the synthetic conditions".into(),
             source_facts: Default::default(),
         }],

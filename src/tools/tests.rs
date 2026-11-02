@@ -25,6 +25,7 @@ fn item(kind: ItemKind, title: &str, body: &str) -> Item {
         updated_at: "2026-10-20T10:00:00+00:00".into(),
         body: body.into(),
         closes: Vec::new(),
+        closure: None,
         advisory: None,
     }
 }
@@ -114,6 +115,7 @@ fn multi_component_review_requires_an_explicit_scope() {
             context_sha256: "a".repeat(64),
             assessment: Assessment::Review,
             not_applicable_reason: None,
+            artifact_evidence: None,
             rationale: "Review the parser used by the selected component.".into(),
             source_facts: SourceFacts::default(),
             instance_ids: vec![],
@@ -220,6 +222,7 @@ fn recheck_skips_decisions_from_the_current_pass() {
             codebase_revisions: vec![],
             assessment: Assessment::Review,
             not_applicable_reason: None,
+            artifact_evidence: None,
             rationale: "Review the synthetic claim.".into(),
             source_facts: SourceFacts::default(),
             instance_ids: vec![],
@@ -484,7 +487,11 @@ fn a_fix_pr_without_its_own_signal_is_settled_through_the_issue_it_closes() {
         panic!("fix PR should be settled by rule");
     };
     assert_eq!(outcome.assessment, Assessment::Ignore);
-    assert!(outcome.rationale.starts_with("Fix for example/project#7"));
+    assert!(
+        outcome
+            .rationale
+            .starts_with("Proposed change for example/project#7")
+    );
 
     let spanish = RuleContext {
         language: Language::Es,
@@ -496,7 +503,7 @@ fn a_fix_pr_without_its_own_signal_is_settled_through_the_issue_it_closes() {
     assert!(
         outcome
             .rationale
-            .starts_with("Corrección de example/project#7")
+            .starts_with("Cambio propuesto para example/project#7")
     );
 
     let unselected = HashSet::new();
@@ -672,7 +679,7 @@ fn truncated_identifiers_require_review_for_releases_and_dependency_updates() {
     let release = item(ItemKind::Release, "v2.0.1", &ids.join(" "));
     let screen = screen::screen(&release, "").unwrap();
     let disposition = disposition(&release, &screen, &context);
-    let prepared = super::hits::Prepared {
+    let mut prepared = super::hits::Prepared {
         project_id: "0de0a8e7-f1a4-4bdc-a198-422b90bbbd84".into(),
         recheck: false,
         snapshot_id: "snapshot".into(),
@@ -691,6 +698,10 @@ fn truncated_identifiers_require_review_for_releases_and_dependency_updates() {
     };
     let packet = serde_json::to_value(super::hits::packet(&prepared, None)).unwrap();
     assert_eq!(packet["review"][0]["identifiers_truncated"], true);
+    prepared.targets[0].entries[0].item.kind = ItemKind::PullRequest;
+    prepared.targets[0].entries[0].item.closure = Some(super::PullRequestClosure::ClosedUnmerged);
+    let packet = serde_json::to_value(super::hits::packet(&prepared, None)).unwrap();
+    assert_eq!(packet["review"][0]["closure"], "closed_unmerged");
 }
 
 #[test]
@@ -783,6 +794,7 @@ fn decisions_are_validated_and_stale_ones_are_reported() {
         context_sha256: "a".repeat(64),
         assessment: Assessment::NotApplicable,
         not_applicable_reason: Some(NotApplicableReason::AffectsOtherVersion),
+        artifact_evidence: None,
         rationale: "Only the 1.x line is affected.".into(),
         source_facts: SourceFacts {
             affected_versions: "1.x".into(),

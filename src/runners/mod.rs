@@ -94,6 +94,7 @@ pub(crate) struct Request<'a> {
     pub role: AgentRole,
     pub github_upstream: Option<&'a str>,
     pub codebase_project: Option<&'a Path>,
+    pub required_codebase: Option<usize>,
     pub seconds: u64,
     pub log: &'a Path,
 }
@@ -103,12 +104,16 @@ struct SourceAccess {
     project_id: String,
     data_root: PathBuf,
     receipt: PathBuf,
+    required_codebase: Option<usize>,
 }
 
 impl SourceAccess {
     fn for_request(request: &Request<'_>) -> Result<Option<Self>> {
         if matches!(request.role, AgentRole::CodebaseReview) != request.codebase_project.is_some() {
             bail!("codebase review requires its project scope, and other roles cannot receive it");
+        }
+        if request.required_codebase.is_some() && request.codebase_project.is_none() {
+            bail!("a required codebase needs a monitored project scope");
         }
         let Some(project) = request.codebase_project else {
             return Ok(None);
@@ -127,6 +132,7 @@ impl SourceAccess {
             project_id,
             data_root,
             receipt,
+            required_codebase: request.required_codebase,
         }))
     }
 
@@ -145,6 +151,15 @@ impl SourceAccess {
             || value.get("project_id").and_then(serde_json::Value::as_str)
                 != Some(self.project_id.as_str())
             || crate::profile::load(&self.project)?.project_id.to_string() != self.project_id
+            || self.required_codebase.is_some_and(|index| {
+                !value
+                    .get("codebases_read")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|read| {
+                        read.iter()
+                            .any(|item| item.as_u64() == u64::try_from(index).ok())
+                    })
+            })
         {
             bail!("source access receipt is invalid");
         }
@@ -363,6 +378,7 @@ fn probe(id: &str, directory: &Path) -> Result<()> {
         Request {
             github_upstream: None,
             codebase_project: None,
+            required_codebase: None,
             directory,
             output: &output,
             prompt: &prompt,
