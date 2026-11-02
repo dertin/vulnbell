@@ -1,0 +1,131 @@
+@page {
+  size: A4;
+  margin: 17mm 16mm 21mm;
+  @bottom-left {
+    content: "VULNBELL";
+    width: 50%;
+    border-top: 0.5pt solid #d7dce2;
+    padding-top: 3mm;
+    color: #788391;
+    font: 8pt Arial, sans-serif;
+    letter-spacing: 0.06em;
+    vertical-align: top;
+  }
+  @bottom-right {
+    content: counter(page) " / " counter(pages);
+    width: 50%;
+    border-top: 0.5pt solid #d7dce2;
+    padding-top: 3mm;
+    color: #788391;
+    font: 8pt Arial, sans-serif;
+    text-align: right;
+    vertical-align: top;
+  }
+}
+
+body {
+  color: #20252b;
+  font: 10pt/1.48 Arial, Helvetica, sans-serif;
+}
+h1, h2, h3, h4 {
+  color: #171b20;
+  line-height: 1.2;
+  break-after: avoid;
+}
+h1 {
+  margin: 0 0 5mm;
+  padding-bottom: 3mm;
+  border-bottom: 1.5pt solid #20252b;
+  font-size: 20pt;
+  letter-spacing: -0.02em;
+}
+h1.evidence-appendix { break-before: page; }
+h2 {
+  margin: 8mm 0 3mm;
+  padding-bottom: 2mm;
+  border-bottom: 0.7pt solid #20252b;
+  font-size: 15pt;
+}
+h3 {
+  margin: 6mm 0 2mm;
+  font-size: 11.5pt;
+}
+h4 { margin: 4mm 0 2mm; font-size: 10pt; }
+p { margin: 0 0 3mm; }
+p, li, td, th { overflow-wrap: anywhere; }
+strong { color: #171b20; }
+a { color: #205887; text-decoration: underline; }
+
+ul, ol { margin: 2mm 0 4mm; padding-left: 5mm; }
+li { margin: 0 0 1.6mm; padding-left: 0.8mm; break-inside: avoid; }
+li::marker { color: #5f6d7a; }
+li p { margin: 0 0 1.5mm; }
+li ul, li ol { margin: 1mm 0; }
+h3 + ul, h3 + ol {
+  padding-left: 5mm;
+  border-left: 1.5pt solid #303943;
+  box-decoration-break: clone;
+}
+
+blockquote {
+  margin: 4mm 0;
+  padding: 3mm 4mm;
+  border-left: 2.5pt solid #303943;
+  background: #f2f4f6;
+  break-inside: avoid;
+}
+blockquote p:last-child { margin-bottom: 0; }
+
+table {
+  width: 100%;
+  margin: 3mm 0 5mm;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 9pt;
+  line-height: 1.4;
+}
+thead th:first-child { width: 28%; }
+table:has(thead th:nth-child(2):last-child) thead th:first-child { width: 35%; }
+table:has(thead th:nth-child(3):last-child) thead th:first-child { width: 26%; }
+table:has(thead th:nth-child(3):last-child) thead th:nth-child(2) { width: 25%; }
+table:has(thead th:nth-child(4):last-child) thead th:first-child { width: 36%; }
+table:has(thead th:nth-child(6)) th {
+  padding-right: 1mm;
+  padding-left: 1mm;
+  font-size: 7.5pt;
+  letter-spacing: 0.02em;
+}
+thead { display: table-header-group; }
+tr { break-inside: avoid; }
+th, td {
+  padding: 1.5mm 2mm;
+  border-bottom: 0.5pt solid #dce0e4;
+  text-align: left;
+  vertical-align: top;
+}
+th {
+  color: #626d7d;
+  border-bottom: 1pt solid #20252b;
+  font-size: 8pt;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+pre {
+  padding: 3mm;
+  background: #f2f4f6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 8pt;
+}
+code {
+  padding: 0.1em 0.25em;
+  border-radius: 2px;
+  background: #f2f4f6;
+  color: #20252b;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+}
+pre code { padding: 0; background: transparent; }
+hr { border: 0; border-top: 0.5pt solid #dce0e4; margin: 5mm 0; }

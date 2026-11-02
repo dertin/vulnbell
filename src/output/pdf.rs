@@ -465,7 +465,8 @@ fn safe_html(markdown: &str) -> String {
         );
     }
     format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; base-uri 'none'; form-action 'none'\"><title>VulnBell report</title><style>@page{{size:A4;margin:18mm 15mm;@bottom-right{{content:counter(page) \" / \" counter(pages);font:8pt sans-serif;color:#52647a}}}}body{{font:10pt/1.45 sans-serif;color:#182338}}h1,h2,h3{{color:#183a67;break-after:avoid}}h1{{font-size:20pt}}h1.evidence-appendix{{break-before:page}}li{{break-inside:avoid}}h2{{font-size:15pt;border-bottom:1px solid #cad5e3;padding-bottom:4px}}h3{{font-size:12pt}}p,li{{overflow-wrap:anywhere}}table{{width:100%;border-collapse:collapse;font-size:8.5pt;table-layout:fixed}}th,td{{border:1px solid #cad5e3;padding:5px;vertical-align:top;overflow-wrap:anywhere}}th{{background:#eaf0f7;text-align:left}}tr{{break-inside:avoid}}thead{{display:table-header-group}}pre{{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f5f8;padding:8px;font-size:8pt}}code{{overflow-wrap:anywhere}}a{{color:#1554a0;overflow-wrap:anywhere}}blockquote{{border-left:3px solid #b86b10;margin-left:0;padding-left:10px}}</style></head><body>{body}</body></html>"
+        r#"<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; base-uri 'none'; form-action 'none'"><title>VulnBell report</title><style>{}</style></head><body>{body}</body></html>"#,
+        include_str!("pdf.css"),
     )
 }
 
@@ -727,10 +728,64 @@ mod tests {
     }
 
     #[test]
+    fn report_template_includes_print_footer_and_repeated_table_headers() {
+        let output = safe_html(
+            "# Report\n\n| Component | Evidence |\n| --- | --- |\n| `example` | [Source](https://example.org/advisory) |\n",
+        );
+        assert!(output.contains("<table>"));
+        assert!(output.contains("<thead>"));
+        assert!(output.contains("href=\"https://example.org/advisory\""));
+        assert!(output.contains("@bottom-left"));
+        assert!(output.contains("counter(page)"));
+        assert!(output.contains("counter(pages)"));
+        assert!(output.contains("display: table-header-group"));
+        assert!(!output.contains("@import"));
+    }
+
+    #[test]
+    #[ignore = "requires Chromium, pdfinfo and pdftotext"]
+    fn long_table_remains_readable_across_pages() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("report.pdf");
+        let mut markdown = String::from(
+            "# Report\n\n| Case | Component | Status | Evidence |\n| --- | --- | --- | --- |\n",
+        );
+        let url = format!("https://example.org/{}", "reference".repeat(20));
+        for index in 0..90 {
+            markdown.push_str(&format!(
+                "| SIG-{index:04} | `example-package` | Review | {url} |\n"
+            ));
+        }
+        write_pdf(&markdown, &path, None).unwrap();
+        let info = std::process::Command::new("pdfinfo")
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(info.status.success());
+        let info = String::from_utf8(info.stdout).unwrap();
+        let pages: usize = info
+            .lines()
+            .find_map(|line| line.strip_prefix("Pages:"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!((2..=20).contains(&pages), "unexpected page count: {pages}");
+        let text = std::process::Command::new("pdftotext")
+            .args(["-layout", path.to_str().unwrap(), "-"])
+            .output()
+            .unwrap();
+        assert!(text.status.success());
+        let text = String::from_utf8(text.stdout).unwrap();
+        assert_eq!(text.matches("example-package").count(), 90);
+        assert!(text.contains("COMPONENT"));
+    }
+
+    #[test]
     fn evidence_appendix_starts_a_new_page() {
         let output = safe_html("# Report\n\n# Evidence appendix\n\nEvidence.");
         assert!(output.contains("<h1 class=\"evidence-appendix\">Evidence appendix</h1>"));
-        assert!(output.contains("h1.evidence-appendix{break-before:page}"));
+        assert!(output.contains("h1.evidence-appendix { break-before: page; }"));
     }
 
     #[test]

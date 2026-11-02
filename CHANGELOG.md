@@ -2,8 +2,8 @@
 
 ## 0.1.4 - 2026-11-01
 
+- Improve PDF report typography, tables, notes and page footers.
 - Verify scoped Cargo and npm installed package archives against lockfile integrity before retracting inapplicable research signals.
-
 - Summarize informational cases by audience and preserve evidence in JSON.
 - Record GitHub pull request closure and allow evidence-bound retraction of inapplicable agent observations.
 - Verify scoped installed Python wheels and recheck recorded observations when dependency inventory changes.
