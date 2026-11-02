@@ -61,7 +61,8 @@ li { margin: 0 0 1.6mm; padding-left: 0.8mm; break-inside: avoid; }
 li::marker { color: #5f6d7a; }
 li p { margin: 0 0 1.5mm; }
 li ul, li ol { margin: 1mm 0; }
-h3 + ul, h3 + ol {
+h2 + ul, h2 + ol, h3 + ul, h3 + ol { break-inside: avoid; }
+h3 + ul, h3 + ol, h3 + .oversized-list > ul, h3 + .oversized-list > ol {
   padding-left: 5mm;
   border-left: 1.5pt solid #303943;
   box-decoration-break: clone;
@@ -98,7 +99,7 @@ table:has(thead th:nth-child(6)) th {
 thead { display: table-header-group; }
 tr { break-inside: avoid; }
 th, td {
-  padding: 1.5mm 2mm;
+  padding: 1.3mm 2mm;
   border-bottom: 0.5pt solid #dce0e4;
   text-align: left;
   vertical-align: top;

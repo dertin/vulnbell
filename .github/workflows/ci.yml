@@ -62,7 +62,7 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y --no-install-recommends poppler-utils
           fi
-          cargo test --lib long_table_remains_readable_across_pages --locked -- --ignored
+          cargo test --lib output::pdf::tests --locked -- --ignored
       - name: Test read-only manifest helper
         run: python -I -m unittest discover -s tests -p test_manifest_reader.py
       - run: cargo package --locked --allow-dirty

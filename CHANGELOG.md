@@ -2,7 +2,7 @@
 
 ## 0.1.4 - 2026-11-01
 
-- Improve PDF report typography, tables, notes and page footers.
+- Improve PDF report typography, tables, finding pagination, notes and page footers.
 - Verify scoped Cargo and npm installed package archives against lockfile integrity before retracting inapplicable research signals.
 - Summarize informational cases by audience and preserve evidence in JSON.
 - Record GitHub pull request closure and allow evidence-bound retraction of inapplicable agent observations.

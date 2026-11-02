@@ -11,7 +11,7 @@ cargo package --locked --allow-dirty
 
 Rust types define the data contracts. Generate schemas with `vulnbell schema <name> --json`; the test suite compares every published schema with its Rust type. Do not edit generated schemas by hand.
 
-PDF layout changes also need `cargo test --lib long_table_remains_readable_across_pages --locked -- --ignored`, with a Chromium-based browser and Poppler (`pdfinfo` and `pdftotext`).
+PDF layout changes also need `cargo test --lib output::pdf::tests --locked -- --ignored`, with a Chromium-based browser and Poppler (`pdfinfo` and `pdftotext`).
 
 Parser and connector changes need success and failure fixtures. Sandbox changes need `cargo test --test sandbox_live --locked -- --ignored --nocapture` with Microsandbox ready. Agent tests that need provider access are optional local tests.
 

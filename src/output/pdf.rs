@@ -9,6 +9,8 @@ use std::{
     process::Command,
 };
 
+mod pagination;
+
 const MAX_DOCUMENT: usize = 16 * 1024 * 1024;
 const MAX_PDF: u64 = 64 * 1024 * 1024;
 
@@ -421,6 +423,7 @@ fn safe_html(markdown: &str) -> String {
     let mut options = Options::empty();
     options
         .insert(Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS);
+    let oversized = pagination::oversized_lists(markdown, options);
     let mut links = Vec::new();
     let events = Parser::new_ext(markdown, options).map(|event| match event {
         Event::Html(value) | Event::InlineHtml(value) | Event::Text(value) => {
@@ -450,7 +453,7 @@ fn safe_html(markdown: &str) -> String {
         other => other,
     });
     let mut body = String::new();
-    html::push_html(&mut body, events);
+    html::push_html(&mut body, pagination::wrap_oversized(events, oversized));
     let appendix = ["Anexo de evidencias", "Evidence appendix"]
         .into_iter()
         .filter_map(|heading| {
@@ -779,6 +782,162 @@ mod tests {
         let text = String::from_utf8(text.stdout).unwrap();
         assert_eq!(text.matches("example-package").count(), 90);
         assert!(text.contains("COMPONENT"));
+    }
+
+    #[test]
+    #[ignore = "requires Chromium and pdftotext"]
+    fn finding_blocks_stay_together_when_possible() {
+        let directory = tempfile::tempdir().unwrap();
+        for (case, (level, marker)) in [("##", "-"), ("###", "-"), ("###", "1.")]
+            .into_iter()
+            .enumerate()
+        {
+            let path = directory.path().join(format!("short-{case}.pdf"));
+            let mut markdown = String::from("# Report\n\n## Findings\n\n");
+            for index in 0..25 {
+                markdown.push_str(&format!(
+                    "Background line {index:02} with context for the review.\n\n"
+                ));
+            }
+            markdown.push_str(&format!("{level} CASE-SHORT Example finding\n\n"));
+            for index in 0..7 {
+                markdown.push_str(&format!("{marker} **FIELD-{index:02}:** A description with enough context for the project and a recommended action.\n"));
+            }
+            write_pdf(&markdown, &path, None).unwrap();
+            let text = std::process::Command::new("pdftotext")
+                .args(["-layout", path.to_str().unwrap(), "-"])
+                .output()
+                .unwrap();
+            assert!(text.status.success());
+            let text = String::from_utf8(text.stdout).unwrap();
+            let pages: Vec<&str> = text.split('\x0c').collect();
+            let page = pages
+                .iter()
+                .find(|page| page.contains("CASE-SHORT"))
+                .unwrap();
+            assert!(
+                page.contains("FIELD-00") && page.contains("FIELD-06"),
+                "short finding was split across pages: {text}"
+            );
+        }
+
+        let path = directory.path().join("long.pdf");
+        let mut markdown = String::from("# Report\n\n");
+        for index in 0..12 {
+            markdown.push_str(&format!(
+                "Additional context {index:02} for the report.\n\n"
+            ));
+        }
+        markdown.push_str("### CASE-LONG Example finding\n\n");
+        for index in 0..120 {
+            markdown.push_str(&format!(
+                "- LONG-{index:03}: Evidence and context for the reviewed project.\n"
+            ));
+        }
+        write_pdf(&markdown, &path, None).unwrap();
+        let text = std::process::Command::new("pdftotext")
+            .args(["-layout", path.to_str().unwrap(), "-"])
+            .output()
+            .unwrap();
+        assert!(text.status.success());
+        let text = String::from_utf8(text.stdout).unwrap();
+        assert!(
+            text.split('\x0c').next().unwrap().contains("LONG-000"),
+            "oversized finding should use the remaining page space: {text}"
+        );
+        assert_eq!(
+            text.matches("LONG-").count(),
+            120,
+            "oversized finding lost content"
+        );
+        assert!(
+            text.split('\x0c')
+                .filter(|page| page.contains("LONG-"))
+                .count()
+                > 1,
+            "oversized finding must span pages"
+        );
+
+        let path = directory.path().join("multiline.pdf");
+        let mut markdown = String::from("# Report\n\n");
+        for index in 0..12 {
+            markdown.push_str(&format!("Context {index:02} for the review.\n\n"));
+        }
+        markdown.push_str("### CASE-MULTILINE Example finding\n\n");
+        let details = "evidence ".repeat(28);
+        for index in 0..20 {
+            markdown.push_str(&format!("- MULTI-{index:02}: {details}\n"));
+        }
+        write_pdf(&markdown, &path, None).unwrap();
+        let text = std::process::Command::new("pdftotext")
+            .args(["-layout", path.to_str().unwrap(), "-"])
+            .output()
+            .unwrap();
+        assert!(text.status.success());
+        let text = String::from_utf8(text.stdout).unwrap();
+        assert!(
+            text.split('\x0c').next().unwrap().contains("MULTI-00"),
+            "multiline finding should use the remaining page space: {text}"
+        );
+        assert_eq!(text.matches("MULTI-").count(), 20);
+        assert!(
+            text.split('\x0c')
+                .filter(|page| page.contains("MULTI-"))
+                .count()
+                > 1
+        );
+
+        let path = directory.path().join("wide.pdf");
+        let mut markdown = String::from("# Report\n\n");
+        for index in 0..12 {
+            markdown.push_str(&format!("Context {index:02} for the review.\n\n"));
+        }
+        markdown.push_str("### CASE-WIDE Example finding\n\n");
+        for index in 0..30 {
+            markdown.push_str(&format!(
+                "- WIDE-{index:02}: `{}`\n",
+                "0123456789abcdef".repeat(9)
+            ));
+        }
+        write_pdf(&markdown, &path, None).unwrap();
+        let text = std::process::Command::new("pdftotext")
+            .args(["-layout", path.to_str().unwrap(), "-"])
+            .output()
+            .unwrap();
+        assert!(text.status.success());
+        let text = String::from_utf8(text.stdout).unwrap();
+        assert!(
+            text.split('\x0c').next().unwrap().contains("WIDE-00"),
+            "wide finding should use the remaining page space: {text}"
+        );
+        assert_eq!(text.matches("WIDE-").count(), 30);
+
+        let path = directory.path().join("paragraphs.pdf");
+        let mut markdown = String::from("# Report\n\n");
+        for index in 0..12 {
+            markdown.push_str(&format!("Context {index:02} for the review.\n\n"));
+        }
+        markdown.push_str("### CASE-PARAGRAPHS Example finding\n\n");
+        for index in 0..10 {
+            markdown.push_str(&format!("- PARA-{index:02}: First paragraph.\n"));
+            for _ in 0..5 {
+                markdown.push_str("\n  Additional paragraph with reviewed context.\n");
+            }
+            markdown.push('\n');
+        }
+        write_pdf(&markdown, &path, None).unwrap();
+        let text = std::process::Command::new("pdftotext")
+            .args(["-layout", path.to_str().unwrap(), "-"])
+            .output()
+            .unwrap();
+        assert!(text.status.success());
+        let text = String::from_utf8(text.stdout).unwrap();
+        assert!(
+            text.split('\x0c').next().unwrap().contains("PARA-00"),
+            "finding with paragraphs should use the remaining page space: {text}"
+        );
+        assert_eq!(text.matches("PARA-").count(), 10);
+        assert_eq!(text.matches("Additional paragraph").count(), 50);
     }
 
     #[test]
