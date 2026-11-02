@@ -209,7 +209,7 @@ fn rescan_preserves_known_roots_for_retained_historical_notes() {
     let preserved = store.case("SIG-preserved").unwrap();
     assert_eq!(
         preserved.codebase_revisions[0].codebase,
-        new_root.to_str().unwrap()
+        new_root.canonicalize().unwrap().to_str().unwrap()
     );
     assert!(
         preserved

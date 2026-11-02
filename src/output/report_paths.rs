@@ -67,6 +67,12 @@ pub(super) fn relative_paths<'a>(text: &str, paths: impl IntoIterator<Item = &'a
             };
             let label = super::markdown::inline(&label);
             let mut raw = vec![root.to_owned()];
+            #[cfg(target_os = "macos")]
+            for directory in ["var", "tmp", "etc"] {
+                if let Some(tail) = root.strip_prefix(&format!("/private/{directory}/")) {
+                    raw.push(format!("/{directory}/{tail}"));
+                }
+            }
             if let Some(tail) = root.strip_prefix(r"\\?\UNC\") {
                 raw.push(format!(r"\\{tail}"));
             } else if let Some(tail) = root.strip_prefix(r"\\?\") {
