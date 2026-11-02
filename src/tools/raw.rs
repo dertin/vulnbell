@@ -521,6 +521,13 @@ fn read_linked_issues(
                     discussion.key = key;
                     result.linked_issues.push(discussion);
                 }
+                Err(error)
+                    if error
+                        .to_string()
+                        .contains("does not match the requested reference") =>
+                {
+                    record_manual_github_issue(raw, target, &key, result);
+                }
                 Err(error) => result.errors.push(format!("{}: {error}", relative(&path))),
             }
             continue;
@@ -568,10 +575,7 @@ fn read_linked_issues(
                 if (cross_repository || matches!(provider, Provider::GitHub { .. }))
                     && issue.url != format!("{issue_web_base}{resource}/{number}")
                 {
-                    result.errors.push(format!(
-                        "{}: linked response URL does not identify the requested issue",
-                        relative(&path)
-                    ));
+                    record_manual_github_issue(raw, target, &key, result);
                     continue;
                 }
                 issue.key = key;
@@ -651,29 +655,47 @@ fn manually_resolved_github_issue(
     {
         bail!("manual resolution requires the exact reference and a bounded rationale");
     }
-    let url = resolution
-        .issue
-        .get("html_url")
-        .and_then(Value::as_str)
-        .context("missing issue URL")?;
-    let (repository, number) = github_issue_reference(url).context("invalid GitHub issue URL")?;
-    let expected_number = key
-        .rsplit_once('#')
+    let discussion = resolution.issue.get("data").is_some();
+    let url = (if discussion {
+        resolution.issue.pointer("/data/repository/discussion/url")
+    } else {
+        resolution.issue.get("html_url")
+    })
+    .and_then(Value::as_str)
+    .context("missing issue URL")?;
+    let issue_url = url
+        .replace("/discussions/", "/issues/")
+        .replace("/pull/", "/issues/");
+    let (repository, number) =
+        github_issue_reference(&issue_url).context("invalid GitHub issue URL")?;
+    let expected_number = github_issue_reference(key)
         .map(|(_, number)| number)
+        .or_else(|| key.rsplit_once('#').map(|(_, number)| number.to_owned()))
         .context("missing reference number")?;
     if number != expected_number {
         bail!("manual issue number does not match the reference");
     }
     let base = format!("https://github.com/{repository}/");
-    let mut issues = github_issues(vec![resolution.issue], &repository, &base)?;
-    if issues.len() != 1
-        || issues[0].kind != ItemKind::Issue
-        || issues[0].url != format!("{base}issues/{number}")
-        || issues[0].key != format!("{repository}#{number}")
-    {
-        bail!("manual response does not identify the selected GitHub issue");
-    }
-    let mut issue = issues.remove(0);
+    let mut issue = if discussion {
+        github_linked_discussion(resolution.issue, &repository, &number)?
+    } else {
+        let mut issues = github_issues(vec![resolution.issue], &repository, &base)?;
+        if issues.len() != 1 {
+            bail!("manual response does not identify the selected GitHub issue");
+        }
+        let issue = issues.remove(0);
+        let resource = if issue.kind == ItemKind::PullRequest {
+            "pull"
+        } else {
+            "issues"
+        };
+        if issue.url != format!("{base}{resource}/{number}")
+            || issue.key != format!("{repository}#{number}")
+        {
+            bail!("manual response does not identify the selected GitHub issue");
+        }
+        issue
+    };
     issue.key = key.to_owned();
     Ok(Some(issue))
 }

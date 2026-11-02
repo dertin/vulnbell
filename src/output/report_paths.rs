@@ -352,6 +352,13 @@ mod tests {
             "./src/main.rs:12"
         );
         assert_eq!(
+            relative_paths(
+                r"Historical source: C:\Users\alex\project/src/old.rs:17",
+                roots
+            ),
+            "Historical source: ./src/old.rs:17"
+        );
+        assert_eq!(
             relative_paths("file:///C:/Users/alex/project/src/main.rs:12", roots),
             "./src/main.rs:12"
         );

@@ -224,7 +224,7 @@ fn rescan_preserves_known_roots_for_retained_historical_notes() {
     let document =
         vulnbell::output::prepared_pdf_markdown(&markdown, &current.cases, &store, &report)
             .unwrap();
-    assert!(!document.contains(old_root.to_str().unwrap()));
+    assert!(!document.contains(old_root.to_str().unwrap()), "{document}");
     assert!(!document.contains(new_root.to_str().unwrap()));
     assert!(document.contains("old-codebase-2/src/old.rs:17"));
     assert!(document.contains("new-codebase-1"));

@@ -472,6 +472,82 @@ fn github_resolves_a_linked_discussion_outside_the_window() {
 }
 
 #[test]
+fn github_moved_references_require_a_recorded_resolution() {
+    let directory = tempfile::tempdir().unwrap();
+    let target = target("https://github.com/example/project");
+    let fixture = directory.path().join(raw::window_directory(&target));
+    let repo = "github/example/project";
+    write(
+        &fixture,
+        &format!("{repo}/issues.page-1.json"),
+        r#"[{"number":1,"title":"Maintenance","html_url":"https://github.com/example/project/pull/1","state":"open","updated_at":"2026-10-20T00:00:00Z","labels":[],"body":"Fixes #42","pull_request":{}}]"#,
+    );
+    for name in ["releases.page-1.json", "security-advisories.page-1.json"] {
+        write(&fixture, &format!("{repo}/{name}"), "[]");
+    }
+    write(
+        &fixture,
+        &format!("{repo}/discussions.json"),
+        r#"[{"data":{"search":{"discussionCount":0,"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}]"#,
+    );
+    let issue = serde_json::json!({"number":42,"title":"Old report","html_url":"https://github.com/moved/project/issues/42","state":"closed","updated_at":"2025-01-01T00:00:00Z","labels":[],"body":"Details"});
+    let path = format!("{repo}/linked-issues/42.json");
+    write(&fixture, &path, &issue.to_string());
+    assert!(!raw::read_target(directory.path(), &target).complete());
+
+    let resolution_path = raw::manual_resolution_path(Path::new(repo), "example/project#42");
+    let mut resolution = serde_json::json!({"reference":"example/project#42","rationale":"Verified the original repository redirects to the current repository.","issue":issue});
+    write(
+        &fixture,
+        resolution_path.to_str().unwrap(),
+        &resolution.to_string(),
+    );
+    let collected = raw::read_target(directory.path(), &target);
+    assert!(collected.complete(), "{:?}", collected.errors);
+    assert_eq!(collected.linked_issues[0].key, "example/project#42");
+
+    resolution["issue"]["number"] = 43.into();
+    write(
+        &fixture,
+        resolution_path.to_str().unwrap(),
+        &resolution.to_string(),
+    );
+    assert!(!raw::read_target(directory.path(), &target).complete());
+
+    let discussion = serde_json::json!({"data":{"repository":{"discussion":{"number":42,"title":"Discussion","url":"https://github.com/moved/project/discussions/42","updatedAt":"2025-01-01T00:00:00Z","body":"Details","category":{"name":"Q&A"}}}}});
+    write(&fixture, &path, &discussion.to_string());
+    resolution["issue"] = discussion;
+    write(
+        &fixture,
+        resolution_path.to_str().unwrap(),
+        &resolution.to_string(),
+    );
+    let collected = raw::read_target(directory.path(), &target);
+    assert!(collected.complete(), "{:?}", collected.errors);
+    assert_eq!(collected.linked_issues[0].kind, ItemKind::Discussion);
+
+    write(
+        &fixture,
+        &format!("{repo}/issues.page-1.json"),
+        r#"[{"number":1,"title":"Maintenance","html_url":"https://github.com/example/project/pull/1","state":"open","updated_at":"2026-10-20T00:00:00Z","labels":[],"body":"Fixes https://github.com/old/project/issues/42","pull_request":{}}]"#,
+    );
+    let cross_path = format!("{repo}/linked-issues/old/project/42.json");
+    let issue = serde_json::json!({"number":42,"title":"Old report","html_url":"https://github.com/moved/project/issues/42","state":"closed","updated_at":"2025-01-01T00:00:00Z","labels":[],"body":"Details"});
+    write(&fixture, &cross_path, &issue.to_string());
+    let key = "https://github.com/old/project/issues/42";
+    let cross_resolution = raw::manual_resolution_path(Path::new(repo), key);
+    let resolution = serde_json::json!({"reference":key,"rationale":"Verified repository transfer.","issue":issue});
+    write(
+        &fixture,
+        cross_resolution.to_str().unwrap(),
+        &resolution.to_string(),
+    );
+    let collected = raw::read_target(directory.path(), &target);
+    assert!(collected.complete(), "{:?}", collected.errors);
+    assert_eq!(collected.linked_issues[0].key, key);
+}
+
+#[test]
 fn ambiguous_github_reference_requires_an_explicit_matching_issue() {
     let directory = tempfile::tempdir().unwrap();
     let raw = directory.path();
@@ -660,7 +736,7 @@ fn github_cross_repository_issue_references_are_fetched_without_following_other_
         invalid
             .errors
             .iter()
-            .any(|error| error.contains("linked response URL"))
+            .any(|error| error.contains("requires manual research"))
     );
 }
 
