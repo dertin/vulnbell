@@ -14,7 +14,7 @@ On request, the agent can also review the codebase itself for security issues an
 
 To evaluate code review on a private corpus, keep independently reviewed labels separate from agent observations and run `vulnbell tools code-evaluate --labels <labels.json> --observations <observations.json>`. The `code-evaluation-labels` and `code-evaluation-observations` schemas describe the inputs. The results identify missed high-priority cases and unreviewed cases; scores apply only to the reviewed cases in that corpus.
 
-[See a sample report](examples/report.md).
+See a sample report in [Markdown](examples/report.md) or [PDF](examples/report.pdf). The report uses fictional data and does not describe a real vulnerability or security assessment.
 
 ## Install
 

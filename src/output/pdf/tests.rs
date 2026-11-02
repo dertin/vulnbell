@@ -1,4 +1,23 @@
 use super::{attestation_details, evidence_link, pdf_markdown, safe_html, write_pdf};
+
+#[test]
+#[ignore = "requires Chromium and pdftotext"]
+fn sample_prompt_title_stays_with_its_content() {
+    let directory = tempfile::tempdir().unwrap();
+    let pdf = directory.path().join("sample.pdf");
+    write_pdf(include_str!("../../../examples/report.md"), &pdf, None).unwrap();
+    let output = std::process::Command::new("pdftotext")
+        .args(["-layout", pdf.to_str().unwrap(), "-"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.split('\x0c').any(|page| {
+        page.contains("Prompt for a development agent:")
+            && page.contains("Review case SIG-synthetic-example")
+    }));
+}
+
 #[test]
 fn visible_dashes_are_normalized_without_rewriting_link_destinations() {
     let html = safe_html("Texto — ejemplo [fuente](https://example.org/a%E2%80%94b) `x—y`");

@@ -52,6 +52,7 @@ h3 {
 }
 h4 { margin: 4mm 0 2mm; font-size: 10pt; }
 p { margin: 0 0 3mm; }
+p:has(+ blockquote) { break-after: avoid; }
 p, li, td, th { overflow-wrap: anywhere; }
 strong { color: #171b20; }
 a { color: #205887; text-decoration: underline; }
