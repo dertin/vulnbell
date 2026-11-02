@@ -55,6 +55,9 @@
         "case_id": {
           "type": "string"
         },
+        "facts_sha256": {
+          "type": "string"
+        },
         "notes": {
           "default": [],
           "description": "Reviewed evidence notes registered on the case and cited by every answer without its own.",
@@ -62,10 +65,15 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "question_set_sha256": {
+          "type": "string"
         }
       },
       "required": [
         "case_id",
+        "facts_sha256",
+        "question_set_sha256",
         "answers"
       ],
       "type": "object"

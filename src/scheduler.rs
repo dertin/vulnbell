@@ -179,139 +179,182 @@ pub fn run(profile: &Profile, profile_path: &Path, force: bool) -> Result<serde_
         uuid::Uuid::new_v4().simple()
     );
     let directory = store.directory.join("jobs").join(&run_id);
-    fs::create_dir_all(&directory)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
-    }
-    // Count the initial scan against an explicitly configured review budget. The scan itself is
-    // synchronous, so a slow scan can overrun it; subsequent agent calls will not start afterward.
-    let budget_deadline = profile
-        .research
-        .review_budget_minutes
-        .map(|minutes| current + Duration::minutes(i64::from(minutes)));
-    let mut snapshot = crate::engine::scan(profile, profile_path, false)?;
-    let mut store = Store::open(&profile.project_id.to_string())?;
-    let window_deadline = if force {
-        budget_deadline.unwrap_or_else(|| Utc::now() + Duration::seconds(900))
-    } else {
-        slot.expires_at
-    };
-    let deadline = budget_deadline.map_or(window_deadline, |end| window_deadline.min(end));
-    let discovery_error = crate::discovery::automation::run(
-        profile,
-        profile_path,
-        &mut store,
-        &config.runner,
-        &directory.join("discovery"),
-        deadline,
-    )
-    .err()
-    .map(|error| error.to_string());
-    if store.meta("last_snapshot")?.is_some() {
-        snapshot = store.latest()?;
-    }
-    let remaining_seconds = (deadline - Utc::now()).num_seconds().max(0);
-    let impact_deadline = Utc::now() + Duration::seconds(remaining_seconds / 2);
-    let mut impact_error = crate::impact::automation::run(
-        &mut store,
-        &config.runner,
-        profile_path,
-        &directory.join("impact"),
-        impact_deadline,
-    )
-    .err()
-    .map(|error| error.to_string());
-    let agent_directory = directory.join("agent-work");
-    let mut research_error = crate::research::automation::run(
-        &mut store,
-        &config.runner,
-        &directory,
-        &agent_directory,
-        deadline,
-    )
-    .err()
-    .map(|error| error.to_string());
-    if Utc::now() < deadline {
-        impact_error = crate::impact::automation::run(
+    let result = (|| -> Result<serde_json::Value> {
+        fs::create_dir_all(&directory)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+        }
+        // Count the initial scan against an explicitly configured review budget. The scan itself is
+        // synchronous, so a slow scan can overrun it; subsequent agent calls will not start afterward.
+        let budget_deadline = profile
+            .research
+            .review_budget_minutes
+            .map(|minutes| current + Duration::minutes(i64::from(minutes)));
+        crate::engine::scan(profile, profile_path, false)?;
+        let mut store = Store::open(&profile.project_id.to_string())?;
+        let window_deadline = if force {
+            budget_deadline.unwrap_or_else(|| Utc::now() + Duration::seconds(900))
+        } else {
+            slot.expires_at
+        };
+        let deadline = budget_deadline.map_or(window_deadline, |end| window_deadline.min(end));
+        let discovery_error = crate::discovery::automation::run(
+            profile,
+            profile_path,
             &mut store,
             &config.runner,
-            profile_path,
-            &directory.join("impact"),
+            &directory.join("discovery"),
             deadline,
         )
         .err()
         .map(|error| error.to_string());
+        let remaining_seconds = (deadline - Utc::now()).num_seconds().max(0);
+        let impact_deadline = Utc::now() + Duration::seconds(remaining_seconds / 2);
+        let mut impact_error = crate::impact::automation::run(
+            &mut store,
+            &config.runner,
+            profile_path,
+            &directory.join("impact"),
+            impact_deadline,
+        )
+        .err()
+        .map(|error| error.to_string());
+        let agent_directory = directory.join("agent-work");
+        let mut research_error = crate::research::automation::run(
+            &mut store,
+            &config.runner,
+            &directory,
+            &agent_directory,
+            deadline,
+        )
+        .err()
+        .map(|error| error.to_string());
+        if Utc::now() < deadline {
+            impact_error = crate::impact::automation::run(
+                &mut store,
+                &config.runner,
+                profile_path,
+                &directory.join("impact"),
+                deadline,
+            )
+            .err()
+            .map(|error| error.to_string());
+        }
+        research_error = match (discovery_error, research_error) {
+            (Some(discovery), Some(research)) => Some(format!("{discovery}; {research}")),
+            (Some(discovery), None) => Some(discovery),
+            (None, research) => research,
+        };
+        let (report_snapshot, report, pending) = {
+            let _lock = store.lock()?;
+            let mut report_snapshot = store.latest()?;
+            report_snapshot.cases = store.cases()?;
+            let mut report = crate::output::morning_report(&report_snapshot, &store, "manager")?;
+            let pending = crate::tools::cases::pending(&store)?;
+            crate::output::add_research_coverage(&mut report, &pending);
+            crate::output::prepare_report_paths(&mut report, &store)?;
+            (report_snapshot, report, pending)
+        };
+        let report_data = directory.join("morning-data.json");
+        crate::atomic_write(&report_data, &serde_json::to_vec_pretty(&report)?)?;
+        let words = text::text(report.language);
+        let mut text = format!(
+            "{}{}",
+            crate::output::delivery_status_markdown(
+                &pending,
+                report_snapshot.partial,
+                report.language
+            ),
+            crate::output::morning_markdown(&report)?
+        );
+        text = crate::output::branding::without_footer(&text).to_owned();
+        if let Some(error) = &research_error {
+            text = fill(words.agent_partial, &[&text, error]);
+        }
+        if let Some(error) = &impact_error {
+            text = fill(words.agent_partial, &[&text, error]);
+        }
+        let text = fill(words.audit_note, &[&text]);
+        let text = crate::output::branding::finish(&text, report.language);
+        let text = crate::output::normalize_report_paths(&report, &text)?;
+        fs::create_dir_all(&config.report_dir)?;
+        let report_path = config
+            .report_dir
+            .join(format!("{}-{}.md", run_id, profile.project_id));
+        crate::atomic_write(&report_path, text.as_bytes())?;
+        let complete = research_error.is_none()
+            && impact_error.is_none()
+            && !report_snapshot.partial
+            && pending.deliverable;
+        let outcome = if complete {
+            "report_written"
+        } else {
+            "report_partial"
+        };
+        let transaction = store.connection.unchecked_transaction()?;
+        let set_meta = |key: &str, value: &str| -> Result<()> {
+            transaction.execute(
+                "INSERT OR REPLACE INTO meta VALUES (?1,?2)",
+                rusqlite::params![key, value],
+            )?;
+            Ok(())
+        };
+        set_meta("last_job", &crate::now())?;
+        set_meta("last_report", &report_path.to_string_lossy())?;
+        set_meta("last_job_outcome", outcome)?;
+        if !force {
+            set_meta("last_completed_slot", &completion)?;
+        }
+        set_meta("last_job_directory", &directory.to_string_lossy())?;
+        if complete {
+            transaction.execute("DELETE FROM meta WHERE key='last_agent_failure'", [])?;
+            set_meta("last_agent_success", &crate::now())?;
+        }
+        let failure = match (&research_error, &impact_error) {
+            (Some(research), Some(impact)) => Some(format!("{research}; {impact}")),
+            (Some(error), None) | (None, Some(error)) => Some(error.clone()),
+            (None, None) => None,
+        };
+        if let Some(error) = failure {
+            set_meta("last_agent_failure", &error)?;
+        }
+        transaction.commit()?;
+        Ok(
+            serde_json::json!({"schema_version":1,"state":outcome,"report":report_path,"slot":slot_key,"research_error":research_error,"impact_error":impact_error,"unattended_sandbox":false,"review_budget_minutes":profile.research.review_budget_minutes,"review_deadline":budget_deadline,"review_budget_exhausted":budget_deadline.is_some_and(|end| Utc::now() >= end)}),
+        )
+    })();
+    if let Err(error) = result {
+        if let Err(record_error) = record_job_failure(&store, &directory) {
+            return Err(error.context(format!(
+                "failed to record scheduled job failure: {record_error:#}"
+            )));
+        }
+        return Err(error);
     }
-    let mut report_snapshot = snapshot;
-    research_error = match (discovery_error, research_error) {
-        (Some(discovery), Some(research)) => Some(format!("{discovery}; {research}")),
-        (Some(discovery), None) => Some(discovery),
-        (None, research) => research,
-    };
-    report_snapshot.cases = store.cases()?;
-    let mut report = crate::output::morning_report(&report_snapshot, &store, "manager")?;
-    let pending = crate::tools::cases::pending(&store)?;
-    crate::output::add_research_coverage(&mut report, &pending);
-    let report_data = directory.join("morning-data.json");
-    crate::atomic_write(&report_data, &serde_json::to_vec_pretty(&report)?)?;
-    let words = text::text(report.language);
-    let mut text = format!(
-        "{}{}",
-        crate::output::delivery_status_markdown(&pending, report_snapshot.partial, report.language),
-        crate::output::morning_markdown(&report)
-    );
-    if let Some(error) = &research_error {
-        text = fill(words.agent_partial, &[&text, error]);
+    result
+}
+
+fn record_job_failure(store: &Store, directory: &Path) -> Result<()> {
+    let transaction = store.connection.unchecked_transaction()?;
+    for (key, value) in [
+        ("last_job", crate::now()),
+        ("last_job_outcome", "failed".to_owned()),
+    ] {
+        transaction.execute(
+            "INSERT OR REPLACE INTO meta VALUES (?1,?2)",
+            rusqlite::params![key, value],
+        )?;
     }
-    if let Some(error) = &impact_error {
-        text = fill(words.agent_partial, &[&text, error]);
-    }
-    let text = fill(
-        words.audit_links,
-        &[
-            &text,
-            &report_data.canonicalize()?.display(),
-            &directory.canonicalize()?.display(),
-        ],
-    );
-    fs::create_dir_all(&config.report_dir)?;
-    let report_path = config
-        .report_dir
-        .join(format!("{}-{}.md", run_id, profile.project_id));
-    crate::atomic_write(&report_path, text.as_bytes())?;
-    let complete = research_error.is_none()
-        && impact_error.is_none()
-        && !report_snapshot.partial
-        && pending.deliverable;
-    let outcome = if complete {
-        "report_written"
+    if directory.is_dir() {
+        transaction.execute(
+            "INSERT OR REPLACE INTO meta VALUES ('last_job_directory',?1)",
+            [directory.to_string_lossy().as_ref()],
+        )?;
     } else {
-        "report_partial"
-    };
-    store.set_meta("last_job", &crate::now())?;
-    store.set_meta("last_report", &report_path.to_string_lossy())?;
-    store.set_meta("last_job_outcome", outcome)?;
-    if !force {
-        store.set_meta("last_completed_slot", &completion)?;
+        transaction.execute("DELETE FROM meta WHERE key='last_job_directory'", [])?;
     }
-    store.set_meta("last_job_directory", &directory.to_string_lossy())?;
-    if complete {
-        store
-            .connection
-            .execute("DELETE FROM meta WHERE key='last_agent_failure'", [])?;
-        store.set_meta("last_agent_success", &crate::now())?;
-    }
-    let failure = match (&research_error, &impact_error) {
-        (Some(research), Some(impact)) => Some(format!("{research}; {impact}")),
-        (Some(error), None) | (None, Some(error)) => Some(error.clone()),
-        (None, None) => None,
-    };
-    if let Some(error) = failure {
-        store.set_meta("last_agent_failure", &error)?;
-    }
-    Ok(
-        serde_json::json!({"schema_version":1,"state":outcome,"report":report_path,"slot":slot_key,"research_error":research_error,"impact_error":impact_error,"unattended_sandbox":false,"review_budget_minutes":profile.research.review_budget_minutes,"review_deadline":budget_deadline,"review_budget_exhausted":budget_deadline.is_some_and(|end| Utc::now() >= end)}),
-    )
+    transaction.commit()?;
+    Ok(())
 }

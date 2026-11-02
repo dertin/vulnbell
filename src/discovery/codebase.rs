@@ -745,7 +745,7 @@ pub(super) fn import(
                     .file_name()
                     .and_then(|v| v.to_str())
                     .unwrap_or("");
-                if ![
+                let supported_manifest = [
                     "pom.xml",
                     "Cargo.toml",
                     "package.json",
@@ -754,6 +754,17 @@ pub(super) fn import(
                     "go.mod",
                 ]
                 .contains(&name)
+                    || name == ".pre-commit-config.yaml"
+                    || name == ".pre-commit-config.yml"
+                    || name == "Dockerfile"
+                    || name.starts_with("Dockerfile-")
+                    || ["docker-compose", "compose"].iter().any(|prefix| {
+                        name.strip_prefix(prefix).is_some_and(|suffix| {
+                            (suffix.is_empty() || suffix.starts_with(['.', '-']))
+                                && (name.ends_with(".yml") || name.ends_with(".yaml"))
+                        })
+                    });
+                if !supported_manifest
                     || !observation
                         .direct_rationale
                         .as_ref()

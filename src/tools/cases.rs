@@ -3,7 +3,8 @@
 use crate::{
     impact::{self, ImpactAnswer, ImpactAnswerValue, ImpactQuestionId, ImpactSubmission},
     model::{
-        Applicability, Case, Decision, EvidenceKind, EvidenceReference, Verdict, Verification,
+        Applicability, Case, Decision, Evidence, EvidenceKind, EvidenceReference, Verdict,
+        Verification,
     },
     output::PendingVerification,
     store::Store,
@@ -287,6 +288,8 @@ pub struct ImpactBatch {
 #[serde(deny_unknown_fields)]
 pub struct CaseImpact {
     pub case_id: String,
+    pub facts_sha256: String,
+    pub question_set_sha256: String,
     /// Reviewed evidence notes registered on the case and cited by every answer without its own.
     #[serde(default)]
     pub notes: Vec<PathBuf>,
@@ -321,10 +324,14 @@ pub struct VerdictBatch {
 #[serde(deny_unknown_fields)]
 pub struct BatchVerdict {
     pub case_id: String,
+    pub facts_sha256: String,
     pub decision: Decision,
     pub applicability: Applicability,
     pub verification: Verification,
     pub rationale: String,
+    /// Optional agent-written translation bound to original advisory evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advisory_translation: Option<crate::model::AdvisoryTranslation>,
     /// Reviewed notes registered on the case before the verdict and cited by it.
     #[serde(default)]
     pub notes: Vec<PathBuf>,
@@ -395,18 +402,22 @@ pub fn apply_impact(store: &mut Store, batch: &ImpactBatch, base: &Path) -> Vec<
 }
 
 fn case_impact(store: &mut Store, entry: &CaseImpact, base: &Path) -> Result<serde_json::Value> {
-    let mut notes: BTreeMap<&Path, EvidenceReference> = BTreeMap::new();
-    for path in entry
-        .notes
-        .iter()
-        .chain(entry.answers.iter().flat_map(|answer| answer.notes.iter()))
-    {
-        if !notes.contains_key(path.as_path()) {
-            let reference = register_note(store, &entry.case_id, &base.join(path))?;
-            notes.insert(path, reference);
-        }
+    if entry.question_set_sha256 != impact::question_set_sha256() {
+        bail!("impact questions changed; reopen the current impact plan before submitting answers");
     }
     let case = store.case(&entry.case_id)?;
+    if entry.facts_sha256 != case.facts_sha256 {
+        bail!("impact facts changed; reopen the current case before submitting answers");
+    }
+    let (notes, new_evidence) = stage_notes(
+        store,
+        &case,
+        base,
+        entry
+            .notes
+            .iter()
+            .chain(entry.answers.iter().flat_map(|answer| answer.notes.iter())),
+    )?;
     let mut answers = Vec::new();
     for answer in &entry.answers {
         let cited = if answer.notes.is_empty() {
@@ -431,11 +442,12 @@ fn case_impact(store: &mut Store, entry: &CaseImpact, base: &Path) -> Result<ser
     }
     let submission = ImpactSubmission {
         schema_version: 1,
+        question_set_sha256: entry.question_set_sha256.clone(),
         case_id: case.case_id.clone(),
-        facts_sha256: case.facts_sha256.clone(),
+        facts_sha256: entry.facts_sha256.clone(),
         answers,
     };
-    let result = impact::assess(store, &entry.case_id, submission)?;
+    let result = impact::assess_if_current(store, &entry.case_id, submission, &case, new_evidence)?;
     Ok(serde_json::to_value(result)?)
 }
 
@@ -465,11 +477,15 @@ pub fn apply_verdicts(store: &mut Store, batch: &VerdictBatch, base: &Path) -> V
 }
 
 fn case_verdict(store: &mut Store, entry: &BatchVerdict, base: &Path) -> Result<serde_json::Value> {
+    let case = store.case(&entry.case_id)?;
+    if entry.facts_sha256 != case.facts_sha256 {
+        bail!("verdict facts changed; reopen the current case before submitting a verdict");
+    }
+    let (notes, new_evidence) = stage_notes(store, &case, base, entry.notes.iter())?;
     let mut evidence = entry.evidence.clone();
     for path in &entry.notes {
-        evidence.push(register_note(store, &entry.case_id, &base.join(path))?);
+        evidence.push(notes[path.as_path()].clone());
     }
-    let case = store.case(&entry.case_id)?;
     if evidence.is_empty() {
         evidence = case
             .evidence
@@ -481,17 +497,19 @@ fn case_verdict(store: &mut Store, entry: &BatchVerdict, base: &Path) -> Result<
             .collect();
     }
     let verdict = Verdict {
+        advisory_translation: entry.advisory_translation.clone(),
         codebase_revisions: case.codebase_revisions.clone(),
         schema_version: 1,
         case_id: case.case_id.clone(),
-        facts_sha256: case.facts_sha256.clone(),
+        facts_sha256: entry.facts_sha256.clone(),
         applicability: entry.applicability,
         verification: entry.verification,
         decision: entry.decision,
         rationale: entry.rationale.clone(),
         evidence,
     };
-    let triaged = crate::engine::triage(store, &entry.case_id, verdict)?;
+    let triaged =
+        crate::engine::triage_if_current(store, &entry.case_id, verdict, &case, new_evidence)?;
     Ok(serde_json::json!({
         "decision": triaged.decision,
         "applicability": triaged.applicability,
@@ -500,40 +518,47 @@ fn case_verdict(store: &mut Store, entry: &BatchVerdict, base: &Path) -> Result<
     }))
 }
 
-/// Registers a reviewed local note on the case once; the same content is never added twice.
-pub(crate) fn register_note(
-    store: &mut Store,
-    case_id: &str,
-    path: &Path,
-) -> Result<EvidenceReference> {
-    store.ensure_codebases_current()?;
-    let _lock = store.lock()?;
-    let bytes = crate::read_limited(path, NOTE_LIMIT)
-        .with_context(|| format!("cannot read note {}", path.display()))?;
-    let mut case = store.case(case_id)?;
-    let evidence =
-        store.record_evidence(&bytes, "local_impact_evidence", None, EvidenceKind::Context)?;
-    let reference = match case
-        .evidence
-        .iter()
-        .find(|item| item.source == "local_impact_evidence" && item.sha256 == evidence.sha256)
-    {
-        Some(existing) => EvidenceReference {
-            id: existing.id.clone(),
-            sha256: existing.sha256.clone(),
-        },
-        None => {
-            let reference = EvidenceReference {
-                id: evidence.id.clone(),
-                sha256: evidence.sha256.clone(),
-            };
-            case.evidence.push(evidence);
-            case.updated_at = crate::now();
-            store.save_case(&case)?;
-            reference
+fn stage_notes<'a>(
+    store: &Store,
+    case: &Case,
+    base: &Path,
+    paths: impl Iterator<Item = &'a PathBuf>,
+) -> Result<(BTreeMap<&'a Path, EvidenceReference>, Vec<Evidence>)> {
+    let mut notes = BTreeMap::new();
+    let mut staged: Vec<Evidence> = Vec::new();
+    for path in paths {
+        if notes.contains_key(path.as_path()) {
+            continue;
         }
-    };
-    Ok(reference)
+        let bytes = crate::read_limited(&base.join(path), NOTE_LIMIT)
+            .with_context(|| format!("cannot read note {}", path.display()))?;
+        let sha256 = crate::digest(&bytes);
+        let existing = case
+            .evidence
+            .iter()
+            .chain(&staged)
+            .find(|item| item.source == "local_impact_evidence" && item.sha256 == sha256);
+        let evidence = if let Some(existing) = existing {
+            existing.clone()
+        } else {
+            let evidence = store.record_evidence(
+                &bytes,
+                "local_impact_evidence",
+                None,
+                EvidenceKind::Context,
+            )?;
+            staged.push(evidence.clone());
+            evidence
+        };
+        notes.insert(
+            path.as_path(),
+            EvidenceReference {
+                id: evidence.id,
+                sha256: evidence.sha256,
+            },
+        );
+    }
+    Ok((notes, staged))
 }
 
 #[derive(Serialize)]

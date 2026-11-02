@@ -7,6 +7,10 @@ use std::{
 
 const SKILL_FILES: &[(&str, &str)] = &[
     (
+        "references/tools.md",
+        include_str!("../skills/vulnbell/references/tools.md"),
+    ),
+    (
         "scripts/read-manifest.py",
         include_str!("../skills/vulnbell/scripts/read-manifest.py"),
     ),

@@ -19,8 +19,8 @@ pub fn scan(profile: &Profile, path: &Path, offline: bool) -> Result<Snapshot> {
     }
     let mut store = Store::open(&profile.project_id.to_string())?;
     store.check_schema()?;
-    store.register_project(&profile.name, path)?;
     let _lock = store.lock()?;
+    store.register_project(&profile.name, path)?;
     let start = crate::now();
     if let Some(previous) = store.meta("last_scan")? {
         store.set_meta("previous_scan", &previous)?;
@@ -85,12 +85,22 @@ fn scan_inner(
     let discovery_coverage =
         crate::discovery::augment(profile, path, store, &mut instances, &mut coverage)?;
     coverage.extend(discovery_coverage);
+    let previous_instances = if store.meta("last_snapshot")?.is_some() {
+        store.latest()?.instances
+    } else {
+        Vec::new()
+    };
+    preserve_observation_ids(&mut instances, &mut coverage, &previous_instances, false);
     for instance in &mut instances {
         instance.provenance.codebase_context_sha256 = codebase_context.clone();
     }
     let mut http = Http::new(store, offline);
     for instance in &mut instances {
-        coverage.extend(crate::identity::resolve(instance, &mut http));
+        coverage.extend(crate::identity::resolve(
+            instance,
+            &mut http,
+            profile.python.verify_pypi_hashes,
+        ));
         if profile.research.release_windows && profile.research.tracks(instance) {
             let declared_upstream = profile.components.iter().any(|component| {
                 component.reference == instance.reference
@@ -105,6 +115,8 @@ fn scan_inner(
             ));
         }
     }
+    crate::inventory::merge_python(&mut instances, &mut coverage, &previous_instances, store);
+    crate::discovery::apply_source_mappings(profile, path, store, &mut instances)?;
     let previous_cases = store.cases()?;
     let mut intelligence =
         crate::sources::scan(&instances, &mut http, &profile.research, &previous_cases);
@@ -206,8 +218,20 @@ fn scan_inner(
             .iter()
             .any(|evidence| AGENT_EVIDENCE.contains(&evidence.source.as_str()))
         {
+            for evidence in &previous.evidence {
+                if !case
+                    .evidence
+                    .iter()
+                    .any(|existing| existing.sha256 == evidence.sha256)
+                {
+                    case.evidence.push(evidence.clone());
+                }
+            }
+            case.applicability = Applicability::Unknown;
+            case.verification = Verification::Inconclusive;
+            case.decision = Decision::Review;
             case.open_questions.push(format!(
-                "Advisory evidence changed after the recorded {:?} verdict or impact assessment; reassess with the previous rationale in case history.",
+                "Advisory or monitored identity evidence changed after the recorded {:?} verdict or impact assessment; reassess with the previous rationale in case history.",
                 previous.decision
             ));
         }
@@ -345,6 +369,62 @@ fn scan_inner(
         partial,
         alert_status: "pending".into(),
     })
+}
+
+pub(crate) fn preserve_observation_ids(
+    instances: &mut [Instance],
+    coverage: &mut [Coverage],
+    previous: &[Instance],
+    require_same_observation: bool,
+) {
+    use std::collections::{HashMap, HashSet};
+
+    fn key(instance: &Instance) -> Option<(String, Option<String>, String, String)> {
+        (instance.origin == crate::model::Origin::AgentObserved).then_some((
+            instance.reference.clone(),
+            instance.requested_version.clone(),
+            instance.provenance.codebase.clone()?,
+            instance.provenance.path.clone()?,
+        ))
+    }
+    let mut old: HashMap<_, Vec<&Instance>> = HashMap::new();
+    for instance in previous {
+        if let Some(key) = key(instance) {
+            old.entry(key).or_default().push(instance);
+        }
+    }
+    let mut counts = HashMap::new();
+    for instance in instances.iter() {
+        if let Some(key) = key(instance) {
+            *counts.entry(key).or_insert(0usize) += 1;
+        }
+    }
+    let mut used: HashSet<String> = instances.iter().map(|item| item.id.clone()).collect();
+    let mut replacements = HashMap::new();
+    for instance in instances {
+        let Some(k) = key(instance) else { continue };
+        let Some([previous]) = old.get(&k).map(Vec::as_slice) else {
+            continue;
+        };
+        let id = &previous.id;
+        if require_same_observation
+            && (previous.provenance.sha256 != instance.provenance.sha256
+                || previous.provenance.direct != instance.provenance.direct)
+        {
+            continue;
+        }
+        if counts.get(&k) != Some(&1) || instance.id == *id || used.contains(id) {
+            continue;
+        }
+        used.remove(&instance.id);
+        used.insert(id.clone());
+        replacements.insert(std::mem::replace(&mut instance.id, id.clone()), id.clone());
+    }
+    for item in coverage {
+        if let Some(id) = replacements.get(&item.scope) {
+            item.scope = id.clone();
+        }
+    }
 }
 
 fn reconcile_research_instances(case: &mut Case, current: &[Instance]) -> bool {
@@ -588,6 +668,20 @@ fn has_affected_claim(case: &Case, store: &Store) -> bool {
     })
 }
 
+fn valid_translation(
+    case: &Case,
+    store: &Store,
+    translation: &crate::model::AdvisoryTranslation,
+) -> bool {
+    !translation.summary.trim().is_empty()
+        && translation.summary.len() <= 4000
+        && case.claims.iter().any(|claim| {
+            claim.evidence.sha256 == translation.source_sha256
+                && matches!(claim.source.as_str(), "osv" | "ghsa" | "github_repository")
+                && store.evidence_exists(&claim.evidence).unwrap_or(false)
+        })
+}
+
 pub fn current_verdict(case: &Case, store: &Store) -> Option<Verdict> {
     if crate::tools::challenge::blocks_verdict(case, store) {
         return None;
@@ -598,6 +692,14 @@ pub fn current_verdict(case: &Case, store: &Store) -> Option<Verdict> {
         .enumerate()
         .rev()
         .find(|(_, item)| item.source == "agent_verdict")?;
+    if let Some(impact_index) = case
+        .evidence
+        .iter()
+        .rposition(|item| item.source == "impact_assessment")
+        && (impact_index > verdict_index || crate::impact::latest(case, store).is_none())
+    {
+        return None;
+    }
     if case.evidence.iter().skip(verdict_index + 1).any(|item| {
         item.kind == EvidenceKind::Attestation
             && crate::sandbox::read_attestation(case, store, item).is_ok()
@@ -625,6 +727,10 @@ pub fn current_verdict(case: &Case, store: &Store) -> Option<Verdict> {
         || verdict.verification != case.verification
         || verdict.rationale.trim().is_empty()
         || verdict.evidence.is_empty()
+        || verdict
+            .advisory_translation
+            .as_ref()
+            .is_some_and(|translation| !valid_translation(case, store, translation))
     {
         return None;
     }
@@ -657,9 +763,59 @@ pub fn current_verdict(case: &Case, store: &Store) -> Option<Verdict> {
 }
 
 pub fn triage(store: &mut Store, id: &str, mut verdict: Verdict) -> Result<Case> {
+    triage_checked(store, id, &mut verdict, None, Vec::new())
+}
+
+pub(crate) fn triage_if_current(
+    store: &mut Store,
+    id: &str,
+    mut verdict: Verdict,
+    expected: &Case,
+    new_evidence: Vec<crate::model::Evidence>,
+) -> Result<Case> {
+    triage_checked(store, id, &mut verdict, Some(expected), new_evidence)
+}
+
+fn triage_checked(
+    store: &mut Store,
+    id: &str,
+    verdict: &mut Verdict,
+    expected: Option<&Case>,
+    new_evidence: Vec<crate::model::Evidence>,
+) -> Result<Case> {
     let _lock = store.lock()?;
     store.ensure_codebases_current()?;
     let mut case = store.case(id)?;
+    if let Some(expected) = expected
+        && serde_json::to_vec(&case)? != serde_json::to_vec(expected)?
+    {
+        bail!("case changed during verdict submission; review the current case");
+    }
+    for evidence in new_evidence {
+        if evidence.source != "local_impact_evidence"
+            || evidence.kind != EvidenceKind::Context
+            || !store.evidence_exists(&evidence)?
+        {
+            bail!("verdict note has invalid evidence or integrity");
+        }
+        if !case
+            .evidence
+            .iter()
+            .any(|item| item.source == evidence.source && item.sha256 == evidence.sha256)
+        {
+            case.evidence.push(evidence);
+        }
+    }
+    if case
+        .evidence
+        .iter()
+        .any(|item| item.source == "impact_assessment")
+        && crate::impact::latest(&case, store).is_none()
+    {
+        bail!(
+            "impact assessment is stale, invalid or incompatible; reassess it before recording a verdict"
+        );
+    }
     verdict.codebase_revisions = case.codebase_revisions.clone();
     if verdict.schema_version != 1
         || verdict.case_id != id
@@ -669,6 +825,15 @@ pub fn triage(store: &mut Store, id: &str, mut verdict: Verdict) -> Result<Case>
     }
     if verdict.evidence.is_empty() || verdict.rationale.trim().is_empty() {
         bail!("verdict requires rationale and registered evidence");
+    }
+    if verdict
+        .advisory_translation
+        .as_ref()
+        .is_some_and(|translation| !valid_translation(&case, store, translation))
+    {
+        bail!(
+            "advisory translation requires a bounded summary and intact original advisory evidence"
+        );
     }
     if crate::tools::challenge::unresolved_challenges(&case, store)
         .iter()
@@ -749,4 +914,65 @@ pub fn triage(store: &mut Store, id: &str, mut verdict: Verdict) -> Result<Case>
     store.save_case(&case)?;
     store.set_meta("last_agent_review", &case.updated_at)?;
     Ok(case)
+}
+
+#[cfg(test)]
+mod observation_id_tests {
+    use super::preserve_observation_ids;
+    use crate::{
+        model::{Coverage, CoverageState, Instance, Origin},
+        profile::{Component, Usage},
+    };
+
+    fn observed(id: &str, path: &str) -> Instance {
+        let mut instance = Instance::declared(&Component {
+            reference: "pkg:pypi/example".into(),
+            version: Some("1.0.0".into()),
+            usage: Usage::Tracked,
+            upstream: None,
+            feeds: vec![],
+        });
+        instance.id = id.into();
+        instance.origin = Origin::AgentObserved;
+        instance.provenance.path = Some(path.into());
+        instance.provenance.codebase = Some("/project".into());
+        instance
+    }
+
+    #[test]
+    fn refreshed_observation_preserves_cases_only_for_an_unambiguous_identity() {
+        let old = observed("previous", "compose.yml");
+        let mut current = vec![observed("new", "compose.yml")];
+        let mut gaps = vec![Coverage::new(
+            "identity",
+            "new",
+            CoverageState::Partial,
+            "gap",
+        )];
+        preserve_observation_ids(&mut current, &mut gaps, std::slice::from_ref(&old), false);
+        assert_eq!(current[0].id, "previous");
+        assert_eq!(gaps[0].scope, "previous");
+
+        let mut changed = vec![observed("new", "compose.yml")];
+        changed[0].provenance.sha256 = "different".into();
+        preserve_observation_ids(&mut changed, &mut [], std::slice::from_ref(&old), true);
+        assert_eq!(changed[0].id, "new");
+        let mut changed_relation = vec![observed("new", "compose.yml")];
+        changed_relation[0].provenance.direct = Some(false);
+        preserve_observation_ids(
+            &mut changed_relation,
+            &mut [],
+            std::slice::from_ref(&old),
+            true,
+        );
+        assert_eq!(changed_relation[0].id, "new");
+
+        let mut ambiguous = vec![
+            observed("one", "compose.yml"),
+            observed("two", "compose.yml"),
+        ];
+        preserve_observation_ids(&mut ambiguous, &mut [], &[old], false);
+        assert_eq!(ambiguous[0].id, "one");
+        assert_eq!(ambiguous[1].id, "two");
+    }
 }

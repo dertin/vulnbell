@@ -28,26 +28,33 @@ impl Store {
         let directory = project_directory(project_id)?;
         fs::create_dir_all(&directory)?;
         let database = directory.join("state.sqlite");
-        let existing = database.exists();
-        let connection = if existing {
-            Self::open_existing(project_id)?;
-            Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_WRITE)?
-        } else {
-            Connection::open(database)?
-        };
+        if !database.exists() {
+            Self::initialize(&directory, &database)?;
+        }
+        Self::open_existing(project_id)?;
+        let connection = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
-        let mut store = Self {
+        let store = Self {
             connection,
             directory,
         };
-        if existing {
-            store.check_schema()?;
-        }
+        store.check_schema()?;
         store
             .connection
             .execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
-        if !existing {
-            let transaction = store.connection.transaction()?;
+        fs::create_dir_all(store.directory.join("evidence"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&store.directory, fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(store)
+    }
+    fn initialize(directory: &Path, database: &Path) -> Result<()> {
+        let temporary = tempfile::NamedTempFile::new_in(directory)?;
+        let mut connection = Connection::open(temporary.path())?;
+        {
+            let transaction = connection.transaction()?;
             transaction.execute_batch("
             CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE snapshots (id TEXT PRIMARY KEY, body TEXT NOT NULL);
@@ -70,13 +77,12 @@ impl Store {
             transaction.pragma_update(None, "user_version", DATABASE_SCHEMA)?;
             transaction.commit()?;
         }
-        fs::create_dir_all(store.directory.join("evidence"))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&store.directory, fs::Permissions::from_mode(0o700))?;
+        connection.close().map_err(|(_, error)| error)?;
+        match temporary.persist_noclobber(database) {
+            Ok(_) => Ok(()),
+            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+            Err(error) => Err(error.error.into()),
         }
-        Ok(store)
     }
     pub fn open_existing(project_id: &str) -> Result<Self> {
         let directory = project_directory(project_id)?;
@@ -112,18 +118,26 @@ impl Store {
             .truncate(false)
             .write(true)
             .open(self.directory.join("scan.lock"))?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait);
+        let deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(wait))
+            .context("project lock wait is too large")?;
         loop {
             match fs2::FileExt::try_lock_exclusive(&lock) {
                 Ok(()) => return Ok(lock),
-                Err(_) if std::time::Instant::now() < deadline => {
+                Err(error)
+                    if error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
+                        && std::time::Instant::now() < deadline =>
+                {
                     std::thread::sleep(std::time::Duration::from_millis(200));
                 }
-                Err(error) => {
+                Err(error)
+                    if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() =>
+                {
                     return Err(anyhow::Error::new(error).context(format!(
                         "project is already running; waited {wait}s for the project lock"
                     )));
                 }
+                Err(error) => return Err(anyhow::Error::new(error).context("cannot lock project")),
             }
         }
     }

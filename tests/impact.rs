@@ -96,6 +96,7 @@ fn exposed_answers(case: &Case, evidence: &EvidenceReference) -> ImpactSubmissio
     use ImpactAnswerValue::{No, Yes};
     use ImpactQuestionId::*;
     ImpactSubmission {
+        question_set_sha256: vulnbell::impact::question_set_sha256(),
         schema_version: 1,
         case_id: case.case_id.clone(),
         facts_sha256: case.facts_sha256.clone(),
@@ -110,6 +111,252 @@ fn exposed_answers(case: &Case, evidence: &EvidenceReference) -> ImpactSubmissio
         .map(|(question, value)| answer(&case.instances[0].id, question, value, evidence))
         .collect(),
     }
+}
+
+#[test]
+fn deployment_does_not_gate_in_scope_risk_or_create_an_open_question() {
+    let (project, mut store, case, evidence) = fixture();
+    for deployment in [
+        None,
+        Some(ImpactAnswerValue::Unknown),
+        Some(ImpactAnswerValue::No),
+        Some(ImpactAnswerValue::Yes),
+    ] {
+        let mut submission = exposed_answers(&case, &evidence);
+        submission
+            .answers
+            .retain(|item| item.question != ImpactQuestionId::ArtifactDeployed);
+        if let Some(value) = deployment {
+            submission.answers.push(answer(
+                &case.instances[0].id,
+                ImpactQuestionId::ArtifactDeployed,
+                value,
+                &evidence,
+            ));
+        }
+        submission
+            .answers
+            .iter_mut()
+            .find(|item| item.question == ImpactQuestionId::AffectedFeatureUsed)
+            .unwrap()
+            .rationale = "The affected path is used in local tests.".into();
+        let result = vulnbell::impact::assess(&mut store, &case.case_id, submission).unwrap();
+        assert_eq!(
+            result.verdict,
+            ImpactVerdict::UrgentUpdate,
+            "deployment: {deployment:?}"
+        );
+        assert!(
+            !result.instances[0]
+                .open_questions
+                .contains(&ImpactQuestionId::ArtifactDeployed)
+        );
+        assert!(
+            result
+                .answers
+                .iter()
+                .any(|item| item.rationale.contains("local tests"))
+        );
+    }
+    let mut submission = exposed_answers(&case, &evidence);
+    submission.answers.retain(|item| {
+        !matches!(
+            item.question,
+            ImpactQuestionId::ArtifactDeployed
+                | ImpactQuestionId::FixOrMitigationApplied
+                | ImpactQuestionId::UntrustedInputReachesFeature
+        )
+    });
+    let result = vulnbell::impact::assess(&mut store, &case.case_id, submission).unwrap();
+    assert_eq!(result.verdict, ImpactVerdict::PriorityUpdate);
+    assert!(
+        !result.instances[0]
+            .open_questions
+            .contains(&ImpactQuestionId::ArtifactDeployed)
+    );
+    let mut submission = exposed_answers(&case, &evidence);
+    submission
+        .answers
+        .retain(|item| item.question != ImpactQuestionId::ArtifactDeployed);
+    submission
+        .answers
+        .iter_mut()
+        .find(|item| item.question == ImpactQuestionId::UntrustedInputReachesFeature)
+        .unwrap()
+        .answer = ImpactAnswerValue::No;
+    let result = vulnbell::impact::assess(&mut store, &case.case_id, submission).unwrap();
+    assert_eq!(result.verdict, ImpactVerdict::RoutineUpdate);
+    drop(store);
+    std::fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+}
+
+#[test]
+fn assessments_with_changed_results_require_reassessment() {
+    let (project, mut store, case, evidence) = fixture();
+    let mut submission = exposed_answers(&case, &evidence);
+    submission
+        .answers
+        .retain(|answer| answer.question != ImpactQuestionId::ArtifactDeployed);
+    let result = vulnbell::impact::assess(&mut store, &case.case_id, submission).unwrap();
+    let mut recorded = result.clone();
+    recorded.instances[0]
+        .open_questions
+        .push(ImpactQuestionId::ArtifactDeployed);
+    recorded.instances[0].reasons = vec!["Earlier wording".into()];
+    let old = store
+        .record_evidence(
+            &serde_json::to_vec(&recorded).unwrap(),
+            "impact_assessment",
+            None,
+            EvidenceKind::Context,
+        )
+        .unwrap();
+    let mut current = store.case(&case.case_id).unwrap();
+    current.evidence.push(old);
+    store.save_case(&current).unwrap();
+    let current = store.case(&case.case_id).unwrap();
+    assert!(vulnbell::impact::latest(&current, &store).is_none());
+
+    recorded.verdict = ImpactVerdict::NotAffected;
+    recorded.instances[0].verdict = ImpactVerdict::NotAffected;
+    let stale = store
+        .record_evidence(
+            &serde_json::to_vec(&recorded).unwrap(),
+            "impact_assessment",
+            None,
+            EvidenceKind::Context,
+        )
+        .unwrap();
+    let mut current = store.case(&case.case_id).unwrap();
+    current.evidence.push(stale);
+    store.save_case(&current).unwrap();
+    assert!(vulnbell::impact::latest(&store.case(&case.case_id).unwrap(), &store).is_none());
+    drop(store);
+    std::fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+}
+
+#[test]
+fn incompatible_impact_reopens_closed_case_without_migrating_evidence() {
+    use vulnbell::model::{Snapshot, Verdict};
+    let (project, mut store, case, evidence) = fixture();
+    let mut submission = exposed_answers(&case, &evidence);
+    let feature = submission
+        .answers
+        .iter_mut()
+        .find(|answer| answer.question == ImpactQuestionId::AffectedFeatureUsed)
+        .unwrap();
+    feature.answer = ImpactAnswerValue::No;
+    feature.rationale = "The feature is not used in production.".into();
+    let impact = vulnbell::impact::assess(&mut store, &case.case_id, submission).unwrap();
+    let verdict = Verdict {
+        schema_version: 1,
+        case_id: case.case_id.clone(),
+        codebase_revisions: case.codebase_revisions.clone(),
+        facts_sha256: case.facts_sha256.clone(),
+        applicability: Applicability::NotAffected,
+        verification: Verification::Inconclusive,
+        decision: Decision::Informational,
+        rationale: "Not used in production.".into(),
+        advisory_translation: None,
+        evidence: vec![evidence.clone()],
+    };
+    vulnbell::engine::triage(&mut store, &case.case_id, verdict).unwrap();
+    let mut closed = store.case(&case.case_id).unwrap();
+    let mut old = serde_json::to_value(impact).unwrap();
+    old.as_object_mut().unwrap().remove("question_set_sha256");
+    let old_bytes = serde_json::to_vec(&old).unwrap();
+    let old_evidence = store
+        .record_evidence(&old_bytes, "impact_assessment", None, EvidenceKind::Context)
+        .unwrap();
+    let position = closed
+        .evidence
+        .iter()
+        .position(|item| item.source == "impact_assessment")
+        .unwrap();
+    closed.evidence[position] = old_evidence.clone();
+    store
+        .save_snapshot(&Snapshot {
+            schema_version: 1,
+            id: closed.snapshot_id.clone(),
+            project_id: project.clone(),
+            profile_sha256: "profile".into(),
+            started_at: vulnbell::now(),
+            finished_at: vulnbell::now(),
+            codebase_revisions: Vec::new(),
+            instances: closed.instances.clone(),
+            cases: vec![closed.clone()],
+            coverage: Vec::new(),
+            partial: false,
+            alert_status: "none".into(),
+        })
+        .unwrap();
+    assert!(vulnbell::impact::latest(&closed, &store).is_none());
+    assert!(vulnbell::engine::current_verdict(&closed, &store).is_none());
+    let pending = vulnbell::tools::cases::pending(&store).unwrap();
+    assert!(pending.verdict_missing.contains(&closed.case_id));
+    assert!(
+        pending
+            .verification_pending
+            .iter()
+            .any(|item| item.case_id == closed.case_id)
+    );
+    assert!(!pending.deliverable);
+    let report =
+        vulnbell::output::morning_report(&store.latest().unwrap(), &store, "cyber").unwrap();
+    assert_eq!(report.needs_review[0].applicability, Applicability::Unknown);
+    assert!(
+        report.needs_review[0]
+            .open_questions
+            .iter()
+            .any(|question| question.contains("incompatible"))
+    );
+    assert!(
+        vulnbell::tools::queue::list(&store, 20, 0, false)
+            .unwrap()
+            .items
+            .iter()
+            .any(|item| item.case_id == closed.case_id)
+    );
+    assert_eq!(
+        std::fs::read(store.directory.join("evidence").join(&old_evidence.sha256)).unwrap(),
+        old_bytes
+    );
+
+    let mut stale = exposed_answers(&case, &evidence);
+    stale.question_set_sha256 = "different scope".into();
+    assert!(vulnbell::impact::assess(&mut store, &case.case_id, stale).is_err());
+    vulnbell::impact::assess(&mut store, &case.case_id, exposed_answers(&case, &evidence)).unwrap();
+    assert!(
+        vulnbell::engine::current_verdict(&store.case(&case.case_id).unwrap(), &store).is_none()
+    );
+    vulnbell::engine::triage(
+        &mut store,
+        &case.case_id,
+        Verdict {
+            schema_version: 1,
+            case_id: case.case_id.clone(),
+            codebase_revisions: case.codebase_revisions.clone(),
+            facts_sha256: case.facts_sha256.clone(),
+            applicability: Applicability::Affected,
+            verification: Verification::SourceConfirmed,
+            decision: Decision::Actionable,
+            rationale: "The affected path is reachable in scope.".into(),
+            advisory_translation: None,
+            evidence: vec![evidence],
+        },
+    )
+    .unwrap();
+    assert!(
+        vulnbell::engine::current_verdict(&store.case(&case.case_id).unwrap(), &store).is_some()
+    );
+    assert!(
+        !vulnbell::tools::cases::pending(&store)
+            .unwrap()
+            .verdict_missing
+            .contains(&case.case_id)
+    );
+    drop(store);
+    std::fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
 }
 
 #[test]
@@ -297,6 +544,7 @@ fn large_multibatch_impact_remains_readable_and_oversize_keeps_prior_state() {
             &mut store,
             &case.case_id,
             ImpactSubmission {
+                question_set_sha256: vulnbell::impact::question_set_sha256(),
                 schema_version: 1,
                 case_id: case.case_id.clone(),
                 facts_sha256: case.facts_sha256.clone(),
@@ -343,6 +591,7 @@ fn large_multibatch_impact_remains_readable_and_oversize_keeps_prior_state() {
         &mut store,
         &case.case_id,
         ImpactSubmission {
+            question_set_sha256: vulnbell::impact::question_set_sha256(),
             schema_version: 1,
             case_id: case.case_id.clone(),
             facts_sha256: case.facts_sha256.clone(),
@@ -377,6 +626,7 @@ fn impact_assessment_is_stale_when_codebase_revision_changes() {
         &mut store,
         &case.case_id,
         ImpactSubmission {
+            question_set_sha256: vulnbell::impact::question_set_sha256(),
             schema_version: 1,
             case_id: case.case_id.clone(),
             facts_sha256: case.facts_sha256.clone(),
@@ -421,6 +671,7 @@ fn artifact_identity_and_lab_evidence_do_not_prove_deployment() {
     store.save_case(&case).unwrap();
     for reference in &references {
         let submission = ImpactSubmission {
+            question_set_sha256: vulnbell::impact::question_set_sha256(),
             schema_version: 1,
             case_id: case.case_id.clone(),
             facts_sha256: case.facts_sha256.clone(),
@@ -434,6 +685,7 @@ fn artifact_identity_and_lab_evidence_do_not_prove_deployment() {
         assert!(vulnbell::impact::assess(&mut store, &case.case_id, submission).is_err());
     }
     let submission = ImpactSubmission {
+        question_set_sha256: vulnbell::impact::question_set_sha256(),
         schema_version: 1,
         case_id: case.case_id.clone(),
         facts_sha256: case.facts_sha256.clone(),
@@ -467,6 +719,7 @@ fn complete_reachable_exposure_requires_an_urgent_update() {
     let (project, mut store, case, evidence) = fixture();
     let instance_id = &case.instances[0].id;
     let submission = ImpactSubmission {
+        question_set_sha256: vulnbell::impact::question_set_sha256(),
         schema_version: 1,
         case_id: case.case_id.clone(),
         facts_sha256: case.facts_sha256.clone(),
@@ -528,6 +781,7 @@ fn complete_reachable_exposure_requires_an_urgent_update() {
 fn negative_project_condition_does_not_silently_dismiss_the_case() {
     let (project, mut store, case, evidence) = fixture();
     let submission = ImpactSubmission {
+        question_set_sha256: vulnbell::impact::question_set_sha256(),
         schema_version: 1,
         case_id: case.case_id.clone(),
         facts_sha256: case.facts_sha256.clone(),
@@ -560,6 +814,7 @@ fn unconfirmed_cases_settle_containment_but_not_exposure() {
     let instance_id = case.instances[0].id.clone();
     let mut assess = |answers: Vec<(ImpactQuestionId, ImpactAnswerValue)>| {
         let submission = ImpactSubmission {
+            question_set_sha256: vulnbell::impact::question_set_sha256(),
             schema_version: 1,
             case_id: case.case_id.clone(),
             facts_sha256: case.facts_sha256.clone(),
@@ -616,6 +871,7 @@ fn unconfirmed_cases_settle_containment_but_not_exposure() {
 fn conclusive_answers_reject_missing_or_stale_evidence() {
     let (project, mut store, case, evidence) = fixture();
     let no_evidence = ImpactSubmission {
+        question_set_sha256: vulnbell::impact::question_set_sha256(),
         schema_version: 1,
         case_id: case.case_id.clone(),
         facts_sha256: case.facts_sha256.clone(),
@@ -630,6 +886,7 @@ fn conclusive_answers_reject_missing_or_stale_evidence() {
     assert!(vulnbell::impact::assess(&mut store, &case.case_id, no_evidence).is_err());
 
     let stale = ImpactSubmission {
+        question_set_sha256: vulnbell::impact::question_set_sha256(),
         schema_version: 1,
         case_id: case.case_id.clone(),
         facts_sha256: "old-facts".into(),
@@ -638,6 +895,7 @@ fn conclusive_answers_reject_missing_or_stale_evidence() {
     assert!(vulnbell::impact::assess(&mut store, &case.case_id, stale).is_err());
 
     let invalid_not_applicable = ImpactSubmission {
+        question_set_sha256: vulnbell::impact::question_set_sha256(),
         schema_version: 1,
         case_id: case.case_id.clone(),
         facts_sha256: case.facts_sha256.clone(),
@@ -655,6 +913,7 @@ fn conclusive_answers_reject_missing_or_stale_evidence() {
         sha256: case.evidence[0].sha256.clone(),
     };
     let wrong_evidence_type = ImpactSubmission {
+        question_set_sha256: vulnbell::impact::question_set_sha256(),
         schema_version: 1,
         case_id: case.case_id.clone(),
         facts_sha256: case.facts_sha256.clone(),

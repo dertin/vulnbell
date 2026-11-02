@@ -183,134 +183,6 @@ fn direct_scope_reports_unknown_depth_without_mapping_every_tracker() {
 }
 
 #[test]
-fn requirements_with_credentials_are_not_exported_even_beyond_the_first_chunk() {
-    let (directory, path, profile, store) = project();
-    let mut content = "# ordinary comment\n".repeat(5000);
-    content.push_str(
-        "--index-url https://user:synthetic-secret@example.invalid/simple\nrequests==2.31.0\n",
-    );
-    fs::write(directory.path().join("workspace/requirements.txt"), content).unwrap();
-    fs::write(
-        directory.path().join("workspace/requirements-dev.txt"),
-        "\u{feff}--index-url synthetic-secret\n",
-    )
-    .unwrap();
-    fs::write(
-        directory.path().join("workspace/constraints.txt"),
-        format!(
-            "{}{}{}\nsynthetic-private-key\n-----END PRIVATE KEY-----\n",
-            "# filler\n".repeat(8000),
-            "-----BEGIN ",
-            "PRIVATE KEY-----"
-        ),
-    )
-    .unwrap();
-    let page = discovery::plan(&profile, &path, &store, 20).unwrap();
-    assert!(page.codebase_files.is_empty());
-    assert_eq!(page.summary.files_unavailable, 3);
-    assert!(
-        !serde_json::to_string(&page)
-            .unwrap()
-            .contains("synthetic-secret")
-    );
-    cleanup(store, &profile);
-}
-
-#[test]
-fn requirements_never_export_private_names_or_local_paths_to_discovery() {
-    let (directory, path, profile, store) = project();
-    let workspace = directory.path().join("workspace");
-    for (name, content) in [
-        ("requirements.txt", "synthetic-private-name==1.0\n"),
-        ("requirements-dev.txt", "-e ../synthetic-private-project\n"),
-        (
-            "requirements-test.in",
-            "/synthetic-private/path/package.whl\n",
-        ),
-        ("constraints.txt", "./synthetic-private.wheel\n"),
-    ] {
-        fs::write(workspace.join(name), content).unwrap();
-    }
-    let page = discovery::plan(&profile, &path, &store, 20).unwrap();
-    assert!(page.codebase_files.is_empty());
-    assert_eq!(page.summary.files_unavailable, 4);
-    assert!(
-        !serde_json::to_string(&page)
-            .unwrap()
-            .contains("synthetic-private")
-    );
-    cleanup(store, &profile);
-}
-
-#[test]
-fn python_and_unknown_lockfiles_are_not_exposed_to_discovery() {
-    let (directory, path, profile, store) = project();
-    let workspace = directory.path().join("workspace");
-    for name in [
-        "requirements.lock",
-        "requirements-dev.lock",
-        "constraints.lock",
-        "uv.lock",
-        "poetry.lock",
-        "Pipfile.lock",
-        "pylock.app.toml",
-        "custom.lock",
-    ] {
-        fs::write(workspace.join(name), "synthetic-private==1.0\n").unwrap();
-    }
-    let page = discovery::plan(&profile, &path, &store, 20).unwrap();
-    assert!(page.codebase_files.is_empty());
-    let json = serde_json::to_string(&page).unwrap();
-    assert!(!json.contains("synthetic-private"));
-    assert!(
-        discovery::gaps(&profile, &path, &store, "", 100)
-            .unwrap()
-            .items
-            .iter()
-            .any(|gap| gap.path == "custom.lock" && gap.state == "unavailable")
-    );
-    cleanup(store, &profile);
-}
-
-#[test]
-fn requirements_lock_include_keeps_referenced_inputs_local() {
-    let (directory, path, profile, store) = project();
-    let workspace = directory.path().join("workspace");
-    fs::write(workspace.join("requirements.lock"), "-r internal.json\n").unwrap();
-    fs::write(workspace.join("internal.json"), "synthetic-private-canary").unwrap();
-    let page = discovery::plan(&profile, &path, &store, 20).unwrap();
-    assert!(page.codebase_files.is_empty());
-    assert!(
-        !serde_json::to_string(&page)
-            .unwrap()
-            .contains("synthetic-private-canary")
-    );
-    cleanup(store, &profile);
-}
-
-#[test]
-fn private_lockfiles_are_not_exported_even_if_a_discovery_row_is_pending() {
-    let (directory, path, profile, store) = project();
-    let workspace = directory.path().join("workspace");
-    for name in ["requirements.lock", "pylock.app.toml", "unknown.lock"] {
-        fs::write(workspace.join(name), "synthetic-private-canary==1.0\n").unwrap();
-    }
-    discovery::plan(&profile, &path, &store, 20).unwrap();
-    store
-        .connection
-        .execute("UPDATE discovery_files SET state='pending'", [])
-        .unwrap();
-    let page = discovery::plan(&profile, &path, &store, 20).unwrap();
-    assert!(page.codebase_files.is_empty());
-    assert!(
-        !serde_json::to_string(&page)
-            .unwrap()
-            .contains("synthetic-private-canary")
-    );
-    cleanup(store, &profile);
-}
-
-#[test]
 fn requirements_includes_keep_arbitrary_paths_local_before_any_agent_page() {
     let (directory, path, profile, store) = project();
     let workspace = directory.path().join("workspace");
@@ -678,7 +550,7 @@ fn composer_private_packages_stay_local_even_when_all_trackers_are_selected() {
     checked.provenance.direct = Some(true);
     assert!(!profile.research.tracks(&checked));
     let mut http = vulnbell::network::Http::new(&store, false);
-    vulnbell::identity::resolve(&mut checked, &mut http);
+    vulnbell::identity::resolve(&mut checked, &mut http, false);
     assert_eq!(http.requests, 0);
     assert!(checked.purl.is_none());
     assert!(checked.upstream.is_none());
@@ -727,6 +599,60 @@ fn requirements_with_includes_are_not_exported_as_public_package_evidence() {
     assert!(page.codebase_files.is_empty());
     assert_eq!(page.summary.files_unavailable, 1);
     cleanup(store, &profile);
+}
+
+#[test]
+fn changed_directness_is_stale_until_a_new_snapshot_records_it() {
+    let (directory, path, profile, mut store) = project();
+    fs::write(
+        directory.path().join("workspace/Dockerfile"),
+        "requests==2.31.0\n",
+    )
+    .unwrap();
+    let page = discovery::plan(&profile, &path, &store, 20).unwrap();
+    discovery::import(&profile, &path, &mut store, review(&page, vec![package()])).unwrap();
+    vulnbell::engine::scan(&profile, &path, true).unwrap();
+    discovery::reopen(&profile, &path, &mut store, "Dockerfile").unwrap();
+    let page = discovery::plan(&profile, &path, &store, 20).unwrap();
+    let mut observed = package();
+    observed.direct = Some(true);
+    observed.direct_rationale = Some("Declared by this project".into());
+    discovery::import(&profile, &path, &mut store, review(&page, vec![observed])).unwrap();
+    assert_eq!(cases::pending(&store).unwrap().stale_observations, 1);
+    vulnbell::engine::scan(&profile, &path, true).unwrap();
+    assert_eq!(cases::pending(&store).unwrap().stale_observations, 0);
+    cleanup(store, &profile);
+}
+
+#[test]
+fn deployment_manifests_support_evidence_bound_directness() {
+    for filename in [
+        "Dockerfile",
+        "Dockerfile-audit",
+        "docker-compose.yml",
+        ".pre-commit-config.yaml",
+    ] {
+        let (directory, path, profile, mut store) = project();
+        fs::write(
+            directory.path().join("workspace").join(filename),
+            "requests==2.31.0\n",
+        )
+        .unwrap();
+        let page = discovery::plan(&profile, &path, &store, 1).unwrap();
+        let mut observed = package();
+        observed.direct = Some(true);
+        observed.direct_rationale = Some("Declared by this project".into());
+        discovery::import(&profile, &path, &mut store, review(&page, vec![observed])).unwrap();
+        let snapshot = vulnbell::engine::scan(&profile, &path, true).unwrap();
+        assert!(
+            snapshot
+                .instances
+                .iter()
+                .any(|item| item.reference == "pkg:pypi/requests"
+                    && item.provenance.direct == Some(true))
+        );
+        cleanup(store, &profile);
+    }
 }
 
 #[test]
@@ -1023,3 +949,6 @@ fn adding_a_workspace_keeps_reviews_of_the_existing_workspace() {
 
 #[path = "discovery/continuation.rs"]
 mod continuation;
+
+#[path = "discovery/python_inputs.rs"]
+mod python_inputs;

@@ -1,6 +1,39 @@
 use serde_json::json;
 use vulnbell::{model::*, store::Store};
 
+fn prepared_report(
+    snapshot: &Snapshot,
+    store: &Store,
+    audience: &str,
+) -> anyhow::Result<vulnbell::output::MorningReport> {
+    let mut report = vulnbell::output::morning_report(snapshot, store, audience)?;
+    vulnbell::output::prepare_report_paths(&mut report, store)?;
+    Ok(report)
+}
+
+#[test]
+fn edited_pdf_requires_a_reason_and_displays_it_safely() {
+    let output = assert_cmd::cargo::cargo_bin_cmd!("vulnbell")
+        .args([
+            "report",
+            "--project",
+            "profile.yaml",
+            "--pdf",
+            "out.pdf",
+            "--from-markdown",
+            "edited.md",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--custom-reason"));
+    let notice = vulnbell::output::custom_content_notice(
+        vulnbell::profile::Language::Es,
+        "Resumen revisado <externo>",
+    );
+    assert!(notice.contains("Motivo indicado: Resumen revisado &lt;externo&gt;"));
+}
+
 #[test]
 fn delivery_status_distinguishes_partial_coverage_from_complete_reports() {
     let mut pending = vulnbell::tools::cases::PendingReport {
@@ -23,7 +56,7 @@ fn delivery_status_distinguishes_partial_coverage_from_complete_reports() {
         )
     };
     assert!(render(&pending, false).is_empty());
-    assert!(render(&pending, true).contains("scan parcial: sí"));
+    assert!(render(&pending, true).contains("escaneo parcial: sí"));
     pending.deliverable = false;
     pending.verdict_missing.push("CASE-1".into());
     pending.tracker_scope_unresolved = true;
@@ -59,8 +92,8 @@ fn coverage_groups_keep_the_first_seen_order_and_scope_labels() {
         partial: true,
         alert_status: "local".into(),
     };
-    let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
-    let markdown = vulnbell::output::morning_markdown(&report);
+    let report = prepared_report(&snapshot, &store, "cyber").unwrap();
+    let markdown = vulnbell::output::morning_markdown(&report).unwrap();
     assert!(markdown.contains("scope-a, scope-c"));
     assert!(markdown.find("first gap").unwrap() < markdown.find("second gap").unwrap());
     assert_eq!(markdown.matches("first gap").count(), 1);
@@ -150,6 +183,7 @@ fn report_explains_the_matched_package_without_recommending_another_packages_fix
         &mut store,
         &case.case_id,
         vulnbell::impact::ImpactSubmission {
+            question_set_sha256: vulnbell::impact::question_set_sha256(),
             schema_version: 1,
             case_id: case.case_id.clone(),
             facts_sha256: case.facts_sha256.clone(),
@@ -181,7 +215,7 @@ fn report_explains_the_matched_package_without_recommending_another_packages_fix
         partial: false,
         alert_status: "local report only".into(),
     };
-    let report = vulnbell::output::morning_report(&snapshot, &store, "manager").unwrap();
+    let report = prepared_report(&snapshot, &store, "manager").unwrap();
     assert_eq!(report.project_name, "report-fixture");
     assert_eq!(report.actionable.len(), 1);
     let item = &report.actionable[0];
@@ -192,10 +226,10 @@ fn report_explains_the_matched_package_without_recommending_another_packages_fix
             .iter()
             .all(|detail| detail.fixed_versions == ["1.2.3"])
     );
-    let markdown = vulnbell::output::morning_markdown(&report);
+    let markdown = vulnbell::output::morning_markdown(&report).unwrap();
     assert!(markdown.contains("event_id injection in \\_parse\\_"));
-    assert!(markdown.contains("### SIG-synthetic-report — SYNTHETIC"));
-    let verification = vulnbell::output::verification_markdown(&report);
+    assert!(markdown.contains("### SIG-synthetic-report - SYNTHETIC"));
+    let verification = vulnbell::output::verification_markdown(&report).unwrap();
     assert!(verification.contains("- **OSV GHSA-synthetic:**"));
     assert!(verification.contains("- **GitHub Advisory Database reference:**"));
     assert!(!markdown.contains("## References and local verification"));
@@ -210,7 +244,7 @@ fn report_explains_the_matched_package_without_recommending_another_packages_fix
     assert!(!markdown.contains("<script>"));
     assert!(markdown.contains("&lt;script&gt;"));
     assert!(markdown.contains(
-        "**Affected feature in use:** yes — src/stream.rs:42 calls the affected parser."
+        "**Affected feature in use:** yes - src/stream.rs:42 calls the affected parser."
     ));
     assert_eq!(
         markdown
@@ -220,8 +254,80 @@ fn report_explains_the_matched_package_without_recommending_another_packages_fix
     );
     assert!(
         vulnbell::output::verification_markdown(&report)
+            .unwrap()
             .contains("affected feature in use: yes. src/stream.rs:42")
     );
+    let original = &snapshot.cases[0];
+    let claim = &original.claims[0];
+    let verdict = Verdict {
+        schema_version: 1,
+        case_id: original.case_id.clone(),
+        codebase_revisions: Vec::new(),
+        facts_sha256: original.facts_sha256.clone(),
+        applicability: Applicability::Affected,
+        verification: Verification::SourceConfirmed,
+        decision: Decision::Actionable,
+        rationale: "Revisado con evidencia del proyecto.".into(),
+        advisory_translation: Some(AdvisoryTranslation {
+            source_sha256: "0".repeat(64),
+            language: vulnbell::profile::Language::Es,
+            summary: "Resumen revisado en español.".into(),
+        }),
+        evidence: vec![EvidenceReference {
+            id: claim.evidence.id.clone(),
+            sha256: claim.evidence.sha256.clone(),
+        }],
+    };
+    assert!(vulnbell::engine::triage(&mut store, &original.case_id, verdict).is_err());
+    let verdict = Verdict {
+        schema_version: 1,
+        case_id: original.case_id.clone(),
+        codebase_revisions: Vec::new(),
+        facts_sha256: original.facts_sha256.clone(),
+        applicability: Applicability::Affected,
+        verification: Verification::SourceConfirmed,
+        decision: Decision::Actionable,
+        rationale: "Revisado con evidencia del proyecto.".into(),
+        advisory_translation: Some(AdvisoryTranslation {
+            source_sha256: claim.evidence.sha256.clone(),
+            language: vulnbell::profile::Language::Es,
+            summary: "Resumen revisado en español.".into(),
+        }),
+        evidence: vec![EvidenceReference {
+            id: claim.evidence.id.clone(),
+            sha256: claim.evidence.sha256.clone(),
+        }],
+    };
+    let recorded = vulnbell::engine::triage(&mut store, &original.case_id, verdict).unwrap();
+    let mut translated_snapshot = snapshot.clone();
+    translated_snapshot.cases = vec![recorded];
+    let mut translated = prepared_report(&translated_snapshot, &store, "cyber").unwrap();
+    translated.language = vulnbell::profile::Language::Es;
+    translated.actionable[0].advisory_details[1].description = translated.actionable[0]
+        .advisory_details[0]
+        .description
+        .clone();
+    translated.actionable[0].evidence_links = vec![
+        "https://example.org/advisory".into(),
+        "https://example.org/fix".into(),
+    ];
+    let rendered = vulnbell::output::morning_markdown(&translated).unwrap();
+    assert_eq!(rendered.matches("**Problema / impacto:**").count(), 1);
+    assert!(rendered.contains("newline injection"));
+    assert!(rendered.contains("**Problema / impacto:** Resumen revisado en español."));
+    assert!(rendered.contains("**Texto original de la fuente:** SYNTHETIC:"));
+    assert!(rendered.contains("**Prompt para un agente de desarrollo:**"));
+    assert!(rendered.contains(
+        "- **Evidencias:**\n  - <https://example.org/advisory>\n  - <https://example.org/fix>"
+    ));
+    assert!(!rendered.contains('—'));
+    assert!(rendered.find("## Accionables").unwrap() < rendered.find("## Inventario").unwrap());
+    let prefix = "common prefix ".repeat(30);
+    translated.actionable[0].advisory_details[0].description = format!("{prefix}first ending");
+    translated.actionable[0].advisory_details[1].description = format!("{prefix}second ending");
+    let distinct = vulnbell::output::morning_markdown(&translated).unwrap();
+    assert_eq!(distinct.matches("**Problema / impacto:**").count(), 2);
+    assert_eq!(distinct.matches("Resumen revisado en español.").count(), 1);
     assert_eq!(
         report.finding_checks[0]
             .impact
@@ -255,7 +361,7 @@ fn report_explains_the_matched_package_without_recommending_another_packages_fix
         detail: "SYNTHETIC".into(),
         evidence: Vec::new(),
     };
-    let mut mapped = vulnbell::output::morning_report(&snapshot, &store, "manager").unwrap();
+    let mut mapped = prepared_report(&snapshot, &store, "manager").unwrap();
     for repository in [
         "https://github.com/example/project",
         "https://gitlab.com/example/project",
@@ -304,16 +410,22 @@ fn report_explains_the_matched_package_without_recommending_another_packages_fix
     store
         .set_meta("profile_path", &profile_path.to_string_lossy())
         .unwrap();
-    let spanish = vulnbell::output::morning_report(&snapshot, &store, "manager").unwrap();
+    let spanish = prepared_report(&snapshot, &store, "manager").unwrap();
     assert_eq!(spanish.language, vulnbell::profile::Language::Es);
-    let markdown = vulnbell::output::morning_markdown(&spanish);
-    assert!(markdown.contains("### SIG-synthetic-report — SYNTHETIC"));
+    let markdown = vulnbell::output::morning_markdown(&spanish).unwrap();
+    assert!(
+        markdown.contains(
+            "**Problema / impacto:** Traducción pendiente; consultar la fuente original."
+        )
+    );
+    assert!(markdown.contains("### SIG-synthetic-report - SYNTHETIC"));
     assert!(
         vulnbell::output::verification_markdown(&spanish)
+            .unwrap()
             .contains("- **Referencia de GitHub Advisory Database:**")
     );
     assert!(markdown.contains(
-        "**Funcionalidad afectada en uso:** sí — src/stream.rs:42 calls the affected parser."
+        "**Funcionalidad afectada en uso:** sí - src/stream.rs:42 calls the affected parser."
     ));
     assert!(markdown.contains("## Cobertura y entrega"));
     assert!(!markdown.contains("Coverage and delivery") && !markdown.contains("Project impact"));
@@ -328,7 +440,7 @@ fn report_explains_the_matched_package_without_recommending_another_packages_fix
         b"corrupt",
     )
     .unwrap();
-    let damaged = vulnbell::output::morning_report(&snapshot, &store, "manager").unwrap();
+    let damaged = prepared_report(&snapshot, &store, "manager").unwrap();
     assert_eq!(damaged.actionable[0].detail_gaps.len(), 1);
     drop(store);
     std::fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
@@ -418,8 +530,8 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
     ] {
         case.decision = decision;
         snapshot.cases = vec![case.clone()];
-        let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
-        let summary = vulnbell::output::morning_markdown(&report);
+        let report = prepared_report(&snapshot, &store, "cyber").unwrap();
+        let summary = vulnbell::output::morning_markdown(&report).unwrap();
         assert!(summary.contains("| Status | Cases | Meaning |"));
         assert!(summary.contains("they are not security findings"));
         if decision == Decision::Review {
@@ -436,7 +548,7 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
             report.finding_checks[0].local_checks[0].result,
             vulnbell::output::LocalResult::NotRun
         );
-        let markdown = vulnbell::output::verification_markdown(&report);
+        let markdown = vulnbell::output::verification_markdown(&report).unwrap();
         if decision == Decision::Review {
             assert!(markdown.contains("https://github.com/example/project/issues/1"));
             assert!(markdown.contains("https://gitlab.com/example/project/-/merge_requests/2"));
@@ -455,8 +567,8 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
             pending
         })
         .collect();
-    let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
-    let markdown = vulnbell::output::morning_markdown(&report);
+    let report = prepared_report(&snapshot, &store, "cyber").unwrap();
+    let markdown = vulnbell::output::morning_markdown(&report).unwrap();
     for index in 0..12 {
         assert!(markdown.contains(&format!("SIG-pending-{index}")));
     }
@@ -469,6 +581,7 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
         )
         .unwrap();
     let verdict = Verdict {
+        advisory_translation: None,
         schema_version: 1,
         case_id: case.case_id.clone(),
         codebase_revisions: Vec::new(),
@@ -496,11 +609,11 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
     current.evidence.push(reviewed_note);
     current.evidence.push(recorded);
     snapshot.cases = vec![current.clone()];
-    let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    let report = prepared_report(&snapshot, &store, "cyber").unwrap();
     assert!(report.needs_review[0].recorded_verdict.is_some());
     current.facts_sha256 = "different facts".into();
     snapshot.cases = vec![current];
-    let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    let report = prepared_report(&snapshot, &store, "cyber").unwrap();
     assert!(report.needs_review[0].recorded_verdict.is_none());
     store.save_case(&case).unwrap();
     let blocked = vulnbell::sandbox::record_blocker(
@@ -512,7 +625,7 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
     )
     .unwrap();
     snapshot.cases = vec![blocked.clone()];
-    let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    let report = prepared_report(&snapshot, &store, "cyber").unwrap();
     assert_eq!(
         report.finding_checks[0].local_checks[0].result,
         vulnbell::output::LocalResult::Blocked
@@ -522,15 +635,15 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
             .detail
             .contains("proprietary binary")
     );
-    let custom = vulnbell::output::pdf_report_body("# Custom report\n", &report);
+    let custom = vulnbell::output::pdf_report_body("# Custom report\n", &report).unwrap();
     assert!(custom.contains("proprietary binary"));
-    let standard = vulnbell::output::morning_markdown(&report);
-    let pdf = vulnbell::output::pdf_report_body(&standard, &report);
+    let standard = vulnbell::output::morning_markdown(&report).unwrap();
+    let pdf = vulnbell::output::pdf_report_body(&standard, &report).unwrap();
     assert_eq!(pdf.matches("proprietary binary").count(), 1);
-    let custom_copy = vulnbell::output::pdf_report_body(&pdf, &report);
+    let custom_copy = vulnbell::output::pdf_report_body(&pdf, &report).unwrap();
     assert_eq!(custom_copy.matches("proprietary binary").count(), 1);
     let edited = pdf.replace("proprietary binary", "customized explanation");
-    let with_current = vulnbell::output::pdf_report_body(&edited, &report);
+    let with_current = vulnbell::output::pdf_report_body(&edited, &report).unwrap();
     assert!(with_current.contains("customized explanation"));
     assert!(with_current.contains("proprietary binary"));
     assert!(with_current.contains("## Verification recorded by VulnBell"));
@@ -540,7 +653,7 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
         .codebase_revisions
         .push(vulnbell::codebase_revision::capture_path(changed.path()));
     snapshot.cases = vec![stale_blocker];
-    let stale_report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    let stale_report = prepared_report(&snapshot, &store, "cyber").unwrap();
     assert_ne!(
         stale_report.finding_checks[0].local_checks[0].result,
         vulnbell::output::LocalResult::Blocked
@@ -574,21 +687,21 @@ fn open_cases_list_references_and_closed_cases_keep_them_in_json_without_claimin
     )
     .unwrap();
     snapshot.cases = vec![blocked];
-    let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    let report = prepared_report(&snapshot, &store, "cyber").unwrap();
     assert!(
         report.finding_checks[0]
             .local_checks
             .iter()
             .all(|check| check.result == vulnbell::output::LocalResult::Blocked)
     );
-    let markdown = vulnbell::output::verification_markdown(&report);
+    let markdown = vulnbell::output::verification_markdown(&report).unwrap();
     assert_eq!(
         markdown
             .matches("- **Local verification (5 instances):** blocked")
             .count(),
         1
     );
-    let summary = vulnbell::output::morning_markdown(&report);
+    let summary = vulnbell::output::morning_markdown(&report).unwrap();
     assert!(summary.contains("5 components 1.0.0"));
     assert!(summary.contains("Signals without a current assessment"));
     assert!(!summary.contains("artifact-4 1.0.0"));
@@ -659,17 +772,17 @@ fn cards_cite_the_lockfile_line_and_the_inventory_is_summarized_per_lockfile() {
         partial: false,
         alert_status: "local".into(),
     };
-    let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    let report = prepared_report(&snapshot, &store, "cyber").unwrap();
     assert_eq!(report.schema_version, 1);
     assert_eq!(
         report.needs_review[0].provenance,
-        ["pkg:cargo/rustls 0.23.46 — ../service/Cargo.lock:9"]
+        ["pkg:cargo/rustls 0.23.46 - ../service/Cargo.lock:9"]
     );
     assert_eq!(
         report.verification_pending[0].reason,
         vulnbell::output::PendingReason::ImpactNotAssessed
     );
-    let markdown = vulnbell::output::morning_markdown(&report);
+    let markdown = vulnbell::output::morning_markdown(&report).unwrap();
     assert!(markdown.contains("**Incomplete report:** 1 cases without impact assessment"));
     assert!(markdown.contains("| ../service/Cargo.lock | 2 |"));
     assert!(markdown.contains("../service/Cargo.lock:9"));
@@ -680,3 +793,6 @@ fn cards_cite_the_lockfile_line_and_the_inventory_is_summarized_per_lockfile() {
 
 #[path = "report/cases.rs"]
 mod cases;
+
+#[path = "report/paths.rs"]
+mod paths;

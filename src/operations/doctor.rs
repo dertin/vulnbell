@@ -15,6 +15,7 @@ pub struct DoctorReport {
     skills: Vec<crate::skills::SkillStatus>,
     credentials: Credentials,
     tools: Vec<Tool>,
+    project: Option<ProjectTools>,
     pdf_browser: Option<PathBuf>,
     sandbox: crate::model::SandboxAvailability,
     scheduler: Scheduler,
@@ -34,6 +35,16 @@ struct Tool {
     name: &'static str,
     purpose: &'static str,
     executable: Option<PathBuf>,
+    workflows: &'static [&'static str],
+    installation: &'static str,
+    recommended_for_project: Option<bool>,
+}
+
+#[derive(Serialize)]
+struct ProjectTools {
+    inventory: &'static str,
+    contexts: Vec<&'static str>,
+    codebase_checked: bool,
 }
 
 #[derive(Serialize)]
@@ -49,7 +60,8 @@ struct Runners {
     configuration_error: Option<&'static str>,
 }
 
-pub fn doctor() -> Result<DoctorReport> {
+pub fn doctor(project: Option<&Path>) -> Result<DoctorReport> {
+    let project = project.map(project_tools).transpose()?;
     let skill_status = crate::skills::status()?;
     let (runners, configuration_error) = match crate::runners::list() {
         Ok(runners) => (runners, None),
@@ -79,30 +91,152 @@ pub fn doctor() -> Result<DoctorReport> {
             "git",
             "Git codebase revisions and public source trees",
             &["git", "git.exe"][..],
+            &["codebase", "upstream"][..],
+            "https://git-scm.com/install/",
         ),
-        ("gh", "GitHub tracker research", &["gh", "gh.exe"][..]),
+        (
+            "gh",
+            "GitHub tracker research",
+            &["gh", "gh.exe"][..],
+            &["upstream"][..],
+            "https://github.com/cli/cli#installation",
+        ),
         (
             "curl",
             "public upstream research",
             &["curl", "curl.exe"][..],
+            &["upstream"][..],
+            "https://curl.se/download.html",
         ),
-        ("jq", "upstream research workflow", &["jq", "jq.exe"][..]),
+        (
+            "jq",
+            "structured JSON and OpenAPI inspection",
+            &["jq", "jq.exe"][..],
+            &["structured_data", "upstream"][..],
+            "https://jqlang.org/download/",
+        ),
         (
             "python",
             "optional structured-data helper",
             &["python3", "python.exe", "python"][..],
+            &["structured_data"][..],
+            "https://www.python.org/downloads/",
+        ),
+        (
+            "rg",
+            "bounded source-code and text search",
+            &["rg", "rg.exe"][..],
+            &["codebase"][..],
+            "https://github.com/BurntSushi/ripgrep#installation",
         ),
         (
             "cargo-audit",
             "optional Rust lockfile audit",
             &["cargo-audit", "cargo-audit.exe"][..],
+            &["rust"][..],
+            "https://github.com/rustsec/rustsec/tree/main/cargo-audit#installing",
+        ),
+        (
+            "pip-audit",
+            "Python locked dependency audit",
+            &["pip-audit", "pip-audit.exe"][..],
+            &["python"][..],
+            "https://github.com/pypa/pip-audit#installation",
+        ),
+        (
+            "composer",
+            "PHP Composer lockfile audit",
+            &["composer", "composer.exe", "composer.bat"][..],
+            &["php"][..],
+            "https://getcomposer.org/download/",
+        ),
+        (
+            "npm",
+            "JavaScript npm dependency audit",
+            &["npm", "npm.exe", "npm.cmd"][..],
+            &["npm_lock"][..],
+            "https://docs.npmjs.com/downloading-and-installing-node-js-and-npm/",
+        ),
+        (
+            "govulncheck",
+            "Go vulnerability analysis",
+            &["govulncheck", "govulncheck.exe"][..],
+            &["go"][..],
+            "https://go.dev/doc/security/vuln/",
+        ),
+        (
+            "bundle-audit",
+            "Ruby Bundler lockfile audit",
+            &["bundle-audit", "bundle-audit.exe"][..],
+            &["ruby"][..],
+            "https://github.com/rubysec/bundler-audit#installation",
+        ),
+        (
+            "dotnet",
+            ".NET NuGet vulnerability audit",
+            &["dotnet", "dotnet.exe"][..],
+            &["dotnet"][..],
+            "https://dotnet.microsoft.com/download",
+        ),
+        (
+            "dependency-check",
+            "JVM dependency advisory audit",
+            &[
+                "dependency-check",
+                "dependency-check.sh",
+                "dependency-check.bat",
+            ][..],
+            &["jvm"][..],
+            "https://owasp.org/www-project-dependency-check/",
+        ),
+        (
+            "osv-scanner",
+            "cross-ecosystem advisory audit",
+            &["osv-scanner", "osv-scanner.exe"][..],
+            &["dependencies"][..],
+            "https://google.github.io/osv-scanner/installation/",
+        ),
+        (
+            "trivy",
+            "container image and dependency audit",
+            &["trivy", "trivy.exe"][..],
+            &["container"][..],
+            "https://trivy.dev/latest/getting-started/installation/",
+        ),
+        (
+            "yq",
+            "structured YAML and OpenAPI inspection",
+            &["yq", "yq.exe"][..],
+            &["yaml"][..],
+            "https://github.com/mikefarah/yq#install",
+        ),
+        (
+            "xmllint",
+            "structured XML inspection",
+            &["xmllint", "xmllint.exe"][..],
+            &["xml"][..],
+            "https://gitlab.gnome.org/GNOME/libxml2",
+        ),
+        (
+            "openapi-spec-validator",
+            "OpenAPI specification validation",
+            &["openapi-spec-validator", "openapi-spec-validator.exe"][..],
+            &["openapi"][..],
+            "https://github.com/python-openapi/openapi-spec-validator#installation",
         ),
     ]
     .into_iter()
-    .map(|(name, purpose, names)| Tool {
+    .map(|(name, purpose, names, workflows, installation)| Tool {
         name,
         purpose,
         executable: find_tool(names),
+        workflows,
+        installation,
+        recommended_for_project: project.as_ref().map(|project| {
+            workflows
+                .iter()
+                .any(|workflow| project.contexts.contains(workflow))
+        }),
     })
     .collect();
     let data_directory = crate::store::data_root();
@@ -119,6 +253,7 @@ pub fn doctor() -> Result<DoctorReport> {
             nvd: std::env::var_os("NVD_API_KEY").is_some_and(|value| !value.is_empty()),
         },
         tools,
+        project,
         pdf_browser: crate::output::browser_path(None).ok(),
         sandbox: crate::sandbox::availability(),
         scheduler: Scheduler {
@@ -132,6 +267,140 @@ pub fn doctor() -> Result<DoctorReport> {
         },
         connectivity: "not_checked: scan reports per-source network evidence",
     })
+}
+
+fn project_tools(path: &Path) -> Result<ProjectTools> {
+    let profile = crate::profile::load(path)?;
+    let mut file_contexts = Vec::new();
+    let state_path = crate::store::data_root()
+        .join(profile.project_id.to_string())
+        .join("state.sqlite");
+    let (instances, inventory) = if state_path.is_file() {
+        let store = crate::store::Store::open_existing(&profile.project_id.to_string())?;
+        if profile.discovery != crate::profile::DiscoveryMode::Off {
+            let scope = crate::discovery::scope(&profile, path)?;
+            let mut statement = store
+                .connection
+                .prepare("SELECT path FROM discovery_files WHERE scope=?1 AND state='done'")?;
+            let paths = statement.query_map([scope], |row| row.get::<_, String>(0))?;
+            for path in paths {
+                add_file_contexts(&path?, &mut file_contexts);
+            }
+        }
+        if store.meta("last_snapshot")?.is_some() {
+            let snapshot = store.latest()?;
+            let profile_hash = crate::digest(&crate::read_limited(path, 1024 * 1024)?);
+            let status = if snapshot.profile_sha256 == profile_hash {
+                "latest_snapshot"
+            } else {
+                "profile_changed_rescan"
+            };
+            (snapshot.instances, status)
+        } else {
+            (
+                profile
+                    .components
+                    .iter()
+                    .map(crate::model::Instance::declared)
+                    .collect(),
+                "not_scanned",
+            )
+        }
+    } else {
+        (
+            profile
+                .components
+                .iter()
+                .map(crate::model::Instance::declared)
+                .collect(),
+            "not_scanned",
+        )
+    };
+    // Structured CLI output is useful for every monitor; discovered files add format hints.
+    let mut ecosystems = vec!["structured_data"];
+    ecosystems.extend(file_contexts);
+    if !profile.codebases.is_empty() {
+        ecosystems.push("codebase");
+    }
+    for instance in &instances {
+        let reference = instance.reference.as_str();
+        let kind = if reference.starts_with("pkg:pypi/")
+            || reference.starts_with("python-requirement:")
+        {
+            Some("python")
+        } else if reference.starts_with("pkg:cargo/") {
+            Some("rust")
+        } else if reference.starts_with("pkg:composer/") || reference.starts_with("composer-lock:")
+        {
+            Some("php")
+        } else if reference.starts_with("pkg:npm/") {
+            Some("javascript")
+        } else if reference.starts_with("pkg:golang/") {
+            Some("go")
+        } else if reference.starts_with("pkg:gem/") {
+            Some("ruby")
+        } else if reference.starts_with("pkg:nuget/") {
+            Some("dotnet")
+        } else if reference.starts_with("pkg:maven/") {
+            Some("jvm")
+        } else if reference.starts_with("pkg:docker/") || reference.starts_with("pkg:oci/") {
+            Some("container")
+        } else {
+            None
+        };
+        if let Some(kind) = kind
+            && !ecosystems.contains(&kind)
+        {
+            ecosystems.push(kind);
+        }
+        if let Some(path) = &instance.provenance.path {
+            add_file_contexts(path, &mut ecosystems);
+        }
+    }
+    if instances.iter().any(|item| {
+        let reference = item.reference.as_str();
+        item.python_lock.is_some()
+            || reference.starts_with("python-requirement:")
+            || reference.starts_with("composer-lock:")
+            || (reference.starts_with("pkg:")
+                && !["pkg:docker/", "pkg:oci/", "pkg:github/"]
+                    .iter()
+                    .any(|prefix| reference.starts_with(prefix)))
+    }) {
+        ecosystems.push("dependencies");
+    }
+    ecosystems.sort_unstable();
+    Ok(ProjectTools {
+        inventory,
+        contexts: ecosystems,
+        codebase_checked: false,
+    })
+}
+
+fn add_file_contexts(path: &str, contexts: &mut Vec<&'static str>) {
+    let path = path.to_ascii_lowercase();
+    let filename = Path::new(&path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    let openapi = (filename.starts_with("openapi.") || filename.starts_with("swagger."))
+        && (filename.ends_with(".json")
+            || filename.ends_with(".yaml")
+            || filename.ends_with(".yml"));
+    let candidates = [
+        (openapi, "openapi"),
+        (
+            matches!(filename, "package-lock.json" | "npm-shrinkwrap.json"),
+            "npm_lock",
+        ),
+        (path.ends_with(".yaml") || path.ends_with(".yml"), "yaml"),
+        (path.ends_with(".xml"), "xml"),
+    ];
+    for (matches, context) in candidates {
+        if matches && !contexts.contains(&context) {
+            contexts.push(context);
+        }
+    }
 }
 
 fn data_directory_access(path: &Path) -> &'static str {
@@ -270,12 +539,64 @@ pub fn doctor_text(report: &DoctorReport, color: bool) -> String {
             color,
         );
     }
-    for tool in &report.tools {
+    for tool in report
+        .tools
+        .iter()
+        .filter(|tool| matches!(tool.name, "git" | "gh" | "curl" | "jq" | "python"))
+    {
         let message = match &tool.executable {
             Some(path) => format!("{}: {} ({})", tool.name, path.display(), tool.purpose),
-            None => format!("{} not found; needed for {}", tool.name, tool.purpose),
+            None => format!(
+                "{} not found; {}. Install: {}",
+                tool.name, tool.purpose, tool.installation
+            ),
         };
         line(&mut out, tool.executable.is_some(), &message, color);
+    }
+    if let Some(project) = &report.project {
+        out.push_str("\nMonitor-specific recommendations\n");
+        info(
+            &mut out,
+            &format!(
+                "Inventory: {}; detected contexts: {}. Codebase changes and tool compatibility are not checked.",
+                project.inventory,
+                project.contexts.join(", ")
+            ),
+            color,
+        );
+        for tool in report.tools.iter().filter(|tool| {
+            tool.recommended_for_project == Some(true)
+                && !matches!(tool.name, "git" | "gh" | "curl" | "jq" | "python")
+        }) {
+            let message = match &tool.executable {
+                Some(path) => format!(
+                    "{} available at {}; compatibility not checked",
+                    tool.name,
+                    path.display()
+                ),
+                None => format!(
+                    "{} recommended for {}; install: {}",
+                    tool.name, tool.purpose, tool.installation
+                ),
+            };
+            line(&mut out, tool.executable.is_some(), &message, color);
+        }
+    } else {
+        out.push_str("\nAdditional tools by workflow\n");
+        for tool in report
+            .tools
+            .iter()
+            .filter(|tool| !matches!(tool.name, "git" | "gh" | "curl" | "jq" | "python"))
+        {
+            let message = match &tool.executable {
+                Some(path) => format!("{}: {} ({})", tool.name, path.display(), tool.purpose),
+                None => format!(
+                    "{} optional for {}; install: {}",
+                    tool.name, tool.purpose, tool.installation
+                ),
+            };
+            line(&mut out, tool.executable.is_some(), &message, color);
+        }
     }
     out.push_str("\nOptional capabilities\n");
     let pdf = report
@@ -349,6 +670,16 @@ pub fn doctor_text(report: &DoctorReport, color: bool) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn format_hints_use_reviewed_filenames_without_opening_files() {
+        let mut contexts = Vec::new();
+        super::add_file_contexts("api/openapi.yaml", &mut contexts);
+        super::add_file_contexts("api/openapi.yaml", &mut contexts);
+        super::add_file_contexts("api/package-lock.json", &mut contexts);
+        super::add_file_contexts("api/swagger.json.backup", &mut contexts);
+        assert_eq!(contexts, vec!["openapi", "yaml", "npm_lock"]);
+    }
+
     #[test]
     fn status_colors_are_opt_in() {
         let mut plain = String::new();

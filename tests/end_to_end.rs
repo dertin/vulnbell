@@ -107,6 +107,7 @@ fn manual_then_mixed_monitor_is_auditable_and_preserves_history() {
     assert!(first.partial);
     let case = &first.cases[0];
     let forged = Verdict {
+        advisory_translation: None,
         codebase_revisions: Vec::new(),
         schema_version: 1,
         case_id: case.case_id.clone(),

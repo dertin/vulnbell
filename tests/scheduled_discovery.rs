@@ -92,6 +92,10 @@ fn scheduled_discovery_separates_local_extraction_public_mapping_and_reporting()
         1
     );
     let report = fs::read_to_string(result["report"].as_str().unwrap()).unwrap();
+    assert!(report.contains("# [VulnBell](https://github.com/dertin/vulnbell)"));
+    assert!(report.ends_with("*Generado con [VulnBell](https://github.com/dertin/vulnbell).*\n"));
+    assert!(!report.contains(&job));
+    assert!(!report.contains(&store.directory.to_string_lossy().to_string()));
     assert!(!report.contains("Synthetic VulnBell report"));
     assert!(report.contains("Descubrimiento"));
     assert!(report.contains("sin repositorio (sin investigación upstream): 1"));

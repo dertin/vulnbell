@@ -77,6 +77,7 @@ fn new_attestation_requires_a_new_verdict_without_running_a_guest() {
                 &mut store,
                 &case.case_id,
                 Verdict {
+                    advisory_translation: None,
                     schema_version: 1,
                     case_id: case.case_id.clone(),
                     codebase_revisions: Vec::new(),
@@ -202,6 +203,7 @@ fn new_attestation_requires_a_new_verdict_without_running_a_guest() {
                 &mut store,
                 &case.case_id,
                 Verdict {
+                    advisory_translation: None,
                     schema_version: 1,
                     case_id: case.case_id.clone(),
                     codebase_revisions: Vec::new(),

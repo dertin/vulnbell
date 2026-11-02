@@ -68,9 +68,26 @@ pub struct Instance {
     pub cpe_product: Option<String>,
     pub upstream: Option<String>,
     pub identity_evidence: Vec<Evidence>,
+    /// Locally recorded pip lock hashes and dependency annotations, before registry verification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub python_lock: Option<PythonLock>,
     /// Verified registry metadata for this exact resolved version, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release: Option<ReleaseDate>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PythonLock {
+    pub sha256: Vec<String>,
+    pub source_eligible: bool,
+    pub via: Vec<String>,
+    pub via_complete: bool,
+    pub direct_source: Option<SourceLine>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SourceLine {
+    pub path: String,
+    pub line: usize,
+    pub sha256: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ReleaseDate {
@@ -124,6 +141,7 @@ impl Instance {
             cpe_product: None,
             upstream: component.upstream.clone(),
             identity_evidence: Vec::new(),
+            python_lock: None,
             release: None,
         }
     }
@@ -150,6 +168,13 @@ impl Instance {
         );
         let original =
             crate::digest(&serde_json::to_vec(&context).expect("instance context serializes"));
+        let original = match &self.python_lock {
+            Some(lock) => crate::digest(
+                &serde_json::to_vec(&(original, &lock.sha256, lock.source_eligible))
+                    .expect("Python lock context serializes"),
+            ),
+            None => original,
+        };
         match &self.provenance.codebase_context_sha256 {
             Some(git_context) => crate::digest(format!("{original}:{git_context}").as_bytes()),
             None => original,
@@ -312,7 +337,17 @@ pub struct Verdict {
     pub verification: Verification,
     pub decision: Decision,
     pub rationale: String,
+    /// Agent-written summary tied to one original advisory evidence document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advisory_translation: Option<AdvisoryTranslation>,
     pub evidence: Vec<EvidenceReference>,
+}
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AdvisoryTranslation {
+    pub source_sha256: String,
+    pub language: crate::profile::Language,
+    pub summary: String,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

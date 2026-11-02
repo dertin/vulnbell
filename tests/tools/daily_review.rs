@@ -1,5 +1,9 @@
 use super::*;
 
+#[path = "daily_review/batch_checks.rs"]
+mod batch_checks;
+use batch_checks::prepared_report;
+
 #[test]
 fn hits_draft_and_case_batches_cover_one_daily_review() {
     let directory = tempfile::tempdir().unwrap();
@@ -534,6 +538,8 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
             "schema_version": 1,
             "cases": [{
                 "case_id": case_id,
+                "facts_sha256": original.facts_sha256,
+                "question_set_sha256": vulnbell::impact::question_set_sha256(),
                 "notes": ["notes/token.md"],
                 "answers": [{
                     "question": "artifact_deployed",
@@ -548,24 +554,7 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
     let outcomes = cases::apply_impact(&mut store, &impact, &batches);
     assert!(outcomes[0].applied, "{:?}", outcomes[0].error);
 
-    let evidence = store
-        .case(&case_id)
-        .unwrap()
-        .evidence
-        .into_iter()
-        .find(|item| item.source == "local_impact_evidence")
-        .unwrap();
-    let reference = serde_json::json!({"id": evidence.id, "sha256": evidence.sha256});
-    let mut reused: cases::ImpactBatch = serde_json::from_value(serde_json::json!({
-        "schema_version": 1, "cases": [{"case_id": case_id, "answers": [{
-            "question": "affected_feature_used", "answer": "unknown",
-            "rationale": "The registered note covers this fixture.", "evidence": [reference]
-        }]}]
-    }))
-    .unwrap();
-    assert!(cases::apply_impact(&mut store, &reused, &batches)[0].applied);
-    reused.cases[0].answers[0].evidence[0].sha256 = "forged".into();
-    assert!(!cases::apply_impact(&mut store, &reused, &batches)[0].applied);
+    batch_checks::reused_evidence(&mut store, &batches, &case_id, &original.facts_sha256);
 
     write(
         &batches,
@@ -574,6 +563,7 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
             "schema_version": 1,
             "verdicts": [{
                 "case_id": case_id,
+                "facts_sha256": original.facts_sha256,
                 "decision": "review",
                 "applicability": "possible",
                 "verification": "inconclusive",
@@ -584,6 +574,7 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
         .to_string(),
     );
     let verdicts = cases::load_verdicts(&batches.join("verdicts.json")).unwrap();
+    batch_checks::stale_facts(&mut store, &batches, &case_id, &impact, &verdicts);
     let outcomes = cases::apply_verdicts(&mut store, &verdicts, &batches);
     assert!(outcomes[0].applied, "{:?}", outcomes[0].error);
     let case = store.case(&case_id).unwrap();
@@ -709,9 +700,12 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
     );
     let mut challenged_snapshot = store.latest().unwrap();
     challenged_snapshot.cases = store.cases().unwrap();
-    let challenged_report =
-        vulnbell::output::morning_report(&challenged_snapshot, &store, "cyber").unwrap();
-    assert!(vulnbell::output::morning_markdown(&challenged_report).contains("Conclusion disputed"));
+    let challenged_report = prepared_report(&challenged_snapshot, &store, "cyber").unwrap();
+    assert!(
+        vulnbell::output::morning_markdown(&challenged_report)
+            .unwrap()
+            .contains("Conclusion disputed")
+    );
     for decision in [
         vulnbell::model::Decision::Informational,
         vulnbell::model::Decision::Dismissed,
@@ -732,14 +726,18 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
         );
         let mut snapshot = store.latest().unwrap();
         snapshot.cases = store.cases().unwrap();
-        let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+        let report = prepared_report(&snapshot, &store, "cyber").unwrap();
         assert!(
             report
                 .needs_review
                 .iter()
                 .any(|item| item.case_id == case_id)
         );
-        assert!(vulnbell::output::morning_markdown(&report).contains("Conclusion disputed"));
+        assert!(
+            vulnbell::output::morning_markdown(&report)
+                .unwrap()
+                .contains("Conclusion disputed")
+        );
     }
     store.save_case(&challenged).unwrap();
     assert!(
@@ -752,7 +750,7 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
     let mut changed_facts = challenged.clone();
     changed_facts.facts_sha256 = "changed-case-facts".into();
     store.save_case(&changed_facts).unwrap();
-    assert!(cases::apply_verdicts(&mut store, &verdicts, &batches)[0].applied);
+    assert!(!cases::apply_verdicts(&mut store, &verdicts, &batches)[0].applied);
     store.save_case(&challenged).unwrap();
     let mut resolved: cases::VerdictBatch =
         serde_json::from_value(serde_json::to_value(&verdicts).unwrap()).unwrap();
@@ -802,7 +800,7 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
     assert!(cases::current_handoff(&old_case, &store).is_none());
     let mut snapshot = store.latest().unwrap();
     snapshot.cases = store.cases().unwrap();
-    let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    let report = prepared_report(&snapshot, &store, "cyber").unwrap();
     let check = report
         .finding_checks
         .iter()
@@ -816,7 +814,9 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
             .any(|pending| pending.case_id == case_id)
     );
     assert!(
-        vulnbell::output::morning_markdown(&report).contains("Confirm the deployed configuration")
+        vulnbell::output::morning_markdown(&report)
+            .unwrap()
+            .contains("Confirm the deployed configuration")
     );
     let mut changed_verdict = verdicts;
     changed_verdict.verdicts[0].rationale =
@@ -839,7 +839,7 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
     fs::write(&verdict_path, verdict_bytes).unwrap();
     assert!(cases::current_handoff(&changed, &store).is_none());
     snapshot.cases = store.cases().unwrap();
-    let stale_report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    let stale_report = prepared_report(&snapshot, &store, "cyber").unwrap();
     assert!(
         stale_report
             .finding_checks
@@ -868,7 +868,7 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
     assert!(cases::apply_handoff(&mut store, &required, &batches)[0].applied);
     let mut snapshot = store.latest().unwrap();
     snapshot.cases = store.cases().unwrap();
-    let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    let report = prepared_report(&snapshot, &store, "cyber").unwrap();
     let pending = report
         .verification_pending
         .iter()
@@ -902,6 +902,7 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
         &mut store,
         &case_id,
         vulnbell::impact::ImpactSubmission {
+            question_set_sha256: vulnbell::impact::question_set_sha256(),
             schema_version: 1,
             case_id: case_id.clone(),
             facts_sha256: multi.facts_sha256.clone(),
@@ -916,7 +917,7 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
     required.cases[0].sandbox_instance_ids = vec![first_id.clone()];
     assert!(cases::apply_handoff(&mut store, &required, &batches)[0].applied);
     snapshot.cases = store.cases().unwrap();
-    let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    let report = prepared_report(&snapshot, &store, "cyber").unwrap();
     let checks = &report
         .finding_checks
         .iter()
@@ -951,7 +952,7 @@ fn hits_draft_and_case_batches_cover_one_daily_review() {
     store.save_case(&invalid_latest).unwrap();
     assert!(cases::current_handoff(&invalid_latest, &store).is_none());
     snapshot.cases = store.cases().unwrap();
-    let report = vulnbell::output::morning_report(&snapshot, &store, "cyber").unwrap();
+    let report = prepared_report(&snapshot, &store, "cyber").unwrap();
     assert!(
         report
             .verification_pending

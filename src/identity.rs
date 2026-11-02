@@ -22,6 +22,25 @@ struct NpmVersion {
     repository: Option<RepositoryMetadata>,
 }
 #[derive(Deserialize)]
+struct PypiResponse {
+    info: PypiInfo,
+    #[serde(default)]
+    urls: Vec<PypiFile>,
+}
+#[derive(Deserialize)]
+struct PypiInfo {
+    name: String,
+    version: String,
+}
+#[derive(Deserialize)]
+struct PypiFile {
+    digests: PypiDigests,
+}
+#[derive(Deserialize)]
+struct PypiDigests {
+    sha256: String,
+}
+#[derive(Deserialize)]
 #[serde(untagged)]
 enum RepositoryMetadata {
     Url(String),
@@ -76,9 +95,13 @@ pub fn normalized_version(value: &str) -> Result<semver::Version> {
     }
     Ok(semver::Version::parse(&text)?)
 }
-pub fn resolve(instance: &mut Instance, http: &mut Http<'_>) -> Vec<Coverage> {
+pub fn resolve(
+    instance: &mut Instance,
+    http: &mut Http<'_>,
+    verify_pypi_hashes: bool,
+) -> Vec<Coverage> {
     let mut coverage = Vec::new();
-    let result = resolve_inner(instance, http);
+    let result = resolve_inner(instance, http, verify_pypi_hashes);
     match result {
         Ok(()) => coverage.push(Coverage::new(
             "identity",
@@ -149,7 +172,58 @@ pub fn resolve(instance: &mut Instance, http: &mut Http<'_>) -> Vec<Coverage> {
     }
     coverage
 }
-fn resolve_inner(instance: &mut Instance, http: &mut Http<'_>) -> Result<()> {
+fn resolve_inner(
+    instance: &mut Instance,
+    http: &mut Http<'_>,
+    verify_pypi_hashes: bool,
+) -> Result<()> {
+    if instance.reference.starts_with("python-requirement:") && instance.python_lock.is_some() {
+        if !verify_pypi_hashes {
+            bail!("PyPI hash verification is not authorized in this monitor");
+        }
+        let lock = instance
+            .python_lock
+            .as_ref()
+            .context("Python lock metadata missing")?;
+        if !lock.source_eligible {
+            bail!(
+                "Python lock contains source options or ambiguous includes; public identity not verified"
+            );
+        }
+        let name = instance
+            .reference
+            .strip_prefix("python-requirement:")
+            .context("Python package name missing")?;
+        let name = validated_pypi_name(name)?;
+        let version = instance
+            .resolved_version
+            .as_deref()
+            .context("Python lock version missing")?;
+        let response = http.get(&format!(
+            "https://pypi.org/pypi/{name}/{}/json",
+            crate::sources::encode(version)
+        ))?;
+        let metadata: PypiResponse = response.json()?;
+        validate_pypi_info(&metadata.info, &name, Some(version))?;
+        if !metadata.urls.iter().any(|file| {
+            lock.sha256
+                .iter()
+                .any(|hash| hash.eq_ignore_ascii_case(&file.digests.sha256))
+        }) {
+            bail!("PyPI release has no SHA-256 matching the lock; package identity unverified");
+        }
+        let evidence = http.store.record_evidence(
+            &response.body,
+            "registry_hash_match",
+            Some(response.url),
+            EvidenceKind::Identity,
+        )?;
+        let purl = packageurl::PackageUrl::new("pypi", &name)?.to_string();
+        instance.reference = purl.clone();
+        instance.purl = Some(purl);
+        instance.identity_evidence.push(evidence);
+        return Ok(());
+    }
     if instance.has_unverified_local_identity() {
         instance.purl = None;
         instance.upstream = None;
@@ -195,6 +269,21 @@ fn resolve_inner(instance: &mut Instance, http: &mut Http<'_>) -> Result<()> {
                 "https://registry.npmjs.org/{encoded}/{}",
                 crate::sources::encode(requested.unwrap_or("latest"))
             ))?,
+            "pypi" => {
+                if purl.namespace().is_some() {
+                    bail!("PyPI package namespace is unsupported");
+                }
+                let name = validated_pypi_name(&name)?;
+                let path = if dynamic || requested.is_none() {
+                    format!("https://pypi.org/pypi/{name}/json")
+                } else {
+                    format!(
+                        "https://pypi.org/pypi/{name}/{}/json",
+                        crate::sources::encode(requested.unwrap_or_default())
+                    )
+                };
+                http.get(&path)?
+            }
             "composer" => http.get(&format!("https://repo.packagist.org/p2/{name}.json"))?,
             _ => bail!("registry identity/latest resolver unsupported for this ecosystem"),
         };
@@ -243,6 +332,11 @@ fn resolve_inner(instance: &mut Instance, http: &mut Http<'_>) -> Result<()> {
                     repository,
                 )
             }
+            "pypi" => {
+                let metadata: PypiResponse = response.json()?;
+                validate_pypi_info(&metadata.info, &name, requested.filter(|_| !dynamic))?;
+                (requested.map(|_| metadata.info.version), None)
+            }
             "composer" => {
                 let metadata: ComposerMetadata = response.json()?;
                 let versions = metadata
@@ -281,7 +375,13 @@ fn resolve_inner(instance: &mut Instance, http: &mut Http<'_>) -> Result<()> {
         };
         if dynamic
             && version.as_deref().is_none_or(|version| {
-                normalized_version(version).map_or(true, |version| !version.pre.is_empty())
+                if purl.ty() == "pypi" {
+                    version
+                        .parse::<pep508_rs::pep440_rs::Version>()
+                        .map_or(true, |version| !version.is_stable())
+                } else {
+                    normalized_version(version).map_or(true, |version| !version.pre.is_empty())
+                }
             })
         {
             bail!("registry did not resolve a stable version");
@@ -451,4 +551,114 @@ pub(crate) fn normalize_pypi(name: &str) -> String {
         }
     }
     result
+}
+
+fn validated_pypi_name(name: &str) -> Result<String> {
+    let name = normalize_pypi(name);
+    if name.is_empty()
+        || name.len() > 200
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        || !name.as_bytes()[0].is_ascii_alphanumeric()
+        || !name.as_bytes()[name.len() - 1].is_ascii_alphanumeric()
+    {
+        bail!("invalid PyPI package name");
+    }
+    Ok(name)
+}
+
+fn validate_pypi_info(info: &PypiInfo, name: &str, requested: Option<&str>) -> Result<()> {
+    if normalize_pypi(&info.name) != normalize_pypi(name) {
+        bail!("PyPI package identity mismatch");
+    }
+    let version: pep508_rs::pep440_rs::Version = info.version.parse()?;
+    if let Some(requested) = requested {
+        let expected: pep508_rs::pep440_rs::Version = requested.parse()?;
+        if expected != version {
+            bail!("PyPI package version mismatch");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod pypi_tests {
+    use super::resolve;
+    use crate::{
+        model::{Instance, Origin, PythonLock},
+        network::Http,
+        profile::Component,
+        store::Store,
+    };
+
+    #[test]
+    fn pypi_lock_identity_requires_consent_and_a_matching_registry_hash() {
+        let project = uuid::Uuid::new_v4().to_string();
+        let store = Store::open(&project).unwrap();
+        let hash = "a".repeat(64);
+        let url = "https://pypi.org/pypi/foo-bar/1.2/json";
+        let key = crate::digest(format!("GET:{url}:").as_bytes());
+        let response = serde_json::json!({"info":{"name":"Foo_Bar","version":"1.2"},"urls":[{"digests":{"sha256":hash}}]});
+        store
+            .connection
+            .execute(
+                "INSERT INTO cache VALUES (?1,?2,NULL,?3)",
+                rusqlite::params![
+                    key,
+                    serde_json::to_vec(&response).unwrap(),
+                    chrono::Utc::now().timestamp()
+                ],
+            )
+            .unwrap();
+        let mut instance = Instance::declared(&Component {
+            reference: "python-requirement:foo-bar".into(),
+            version: Some("1.2".into()),
+            usage: Default::default(),
+            upstream: None,
+            feeds: vec![],
+        });
+        instance.origin = Origin::Locked;
+        instance.python_lock = Some(PythonLock {
+            sha256: vec!["a".repeat(64)],
+            source_eligible: true,
+            via: vec![],
+            via_complete: false,
+            direct_source: None,
+        });
+        let mut http = Http::new(&store, true);
+        assert_ne!(
+            resolve(&mut instance, &mut http, false)[0].state,
+            crate::model::CoverageState::Checked
+        );
+        assert_eq!(http.cache_hits, 0);
+        assert_eq!(instance.purl, None);
+        let mut wrong_hash = instance.clone();
+        wrong_hash.python_lock.as_mut().unwrap().sha256 = vec!["b".repeat(64)];
+        assert_ne!(
+            resolve(&mut wrong_hash, &mut http, true)[0].state,
+            crate::model::CoverageState::Checked
+        );
+        assert_eq!(wrong_hash.purl, None);
+        let mut private = instance.clone();
+        private.python_lock.as_mut().unwrap().source_eligible = false;
+        let hits = http.cache_hits;
+        assert_ne!(
+            resolve(&mut private, &mut http, true)[0].state,
+            crate::model::CoverageState::Checked
+        );
+        assert_eq!(http.cache_hits, hits);
+        assert_eq!(
+            resolve(&mut instance, &mut http, true)[0].state,
+            crate::model::CoverageState::Checked
+        );
+        assert_eq!(instance.purl.as_deref(), Some("pkg:pypi/foo-bar"));
+        assert!(
+            store
+                .evidence_exists(&instance.identity_evidence[0])
+                .unwrap()
+        );
+        drop(store);
+        std::fs::remove_dir_all(crate::store::data_root().join(project)).unwrap();
+    }
 }

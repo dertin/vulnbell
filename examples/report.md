@@ -1,4 +1,4 @@
-# VulnBell - Sample report
+# [VulnBell](https://github.com/dertin/vulnbell) - Sample report
 
 Cutoff: 2026-10-25 22:52 UTC · Coverage: partial
 
@@ -29,7 +29,7 @@ No codebase or deployment inventory was provided.
 - **Required conditions:** the application uses NestJS SSE and assigns untrusted data to `type` or `id`. Ordinary request input does not reach these fields automatically.
 - **Fix:** 11.1.18 removes CR/LF. Confirm branch compatibility or a supported backport before upgrading a 10.x application.
 - **Project impact:** **needs evidence** · low confidence. The library behavior is confirmed, but deployment, affected-feature use, input reachability, and mitigation are unknown because this monitor has no codebase or deployment evidence.
-- **Action:** if 10.4.8 is deployed, check the five impact questions. Prioritize the update if the affected fields receive untrusted data; otherwise keep it in the normal upgrade plan.
+- **Action:** assess whether the affected SSE fields are used and can receive untrusted data. Prioritize the update when the conditions are met; otherwise keep it in the normal upgrade plan. Deployment remains unknown.
 
 | Project condition | Answer | Evidence |
 |---|---|---|
@@ -68,3 +68,7 @@ The test ran as a non-root user in Microsandbox 0.7.11 with network denied and n
 |---|---|---|
 | Deployment | No codebase, SBOM, or deployment record | Project exposure cannot be claimed |
 | NVD mapping | No validated CPE for this npm instance | NVD is not used for version applicability |
+
+---
+
+*Generated with [VulnBell](https://github.com/dertin/vulnbell).*

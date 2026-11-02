@@ -8,6 +8,7 @@ pub struct AdvisoryDetail {
     pub advisory_id: String,
     pub url: Option<String>,
     pub description: String,
+    pub evidence_sha256: String,
     pub severity: Option<String>,
     pub fixed_versions: Vec<String>,
 }
@@ -219,6 +220,7 @@ pub(super) fn read(
         advisory_id: claim.id.clone(),
         url: claim.evidence.url.clone(),
         description: description.chars().take(12_000).collect(),
+        evidence_sha256: claim.evidence.sha256.clone(),
         severity,
         fixed_versions,
     }))

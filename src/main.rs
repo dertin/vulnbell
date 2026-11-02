@@ -61,9 +61,11 @@ fn report(
     audience: &str,
     pdf: Option<std::path::PathBuf>,
     from_markdown: Option<std::path::PathBuf>,
+    custom_reason: Option<String>,
     pdf_browser: Option<std::path::PathBuf>,
 ) -> Result<()> {
     let (_, store) = store_for(project)?;
+    let _lock = store.lock()?;
     let mut snapshot = store.latest()?;
     snapshot.cases = store.cases()?;
     if audience == "audit" {
@@ -73,7 +75,7 @@ fn report(
         if json {
             emit(&snapshot)?;
         } else {
-            print(&vulnbell::output::markdown(&snapshot))?;
+            print(&vulnbell::output::audit_markdown(&snapshot, &store)?)?;
         }
     } else {
         let mut report = vulnbell::output::morning_report(&snapshot, &store, audience)?;
@@ -82,7 +84,18 @@ fn report(
         if json {
             emit(&report)?;
         } else {
+            vulnbell::output::prepare_report_paths(&mut report, &store)?;
             let custom = from_markdown.is_some();
+            let reason = custom_reason.as_deref().map(str::trim);
+            if custom
+                && !reason.is_some_and(|reason| {
+                    !reason.is_empty()
+                        && reason.len() <= 500
+                        && !reason.chars().any(char::is_control)
+                })
+            {
+                bail!("custom reason must contain 1 to 500 bytes without control characters");
+            }
             let markdown = match from_markdown {
                 Some(path) => String::from_utf8(vulnbell::read_limited(&path, 16 * 1024 * 1024)?)
                     .context("Markdown must be UTF-8")?,
@@ -93,23 +106,29 @@ fn report(
                         snapshot.partial,
                         report.language,
                     ),
-                    vulnbell::output::morning_markdown(&report),
+                    vulnbell::output::morning_markdown(&report)?,
                 ),
+            };
+            let markdown = vulnbell::output::normalize_report_paths(&report, &markdown)?;
+            let markdown = if custom {
+                vulnbell::output::custom_report_branding(&markdown, report.language)?
+            } else {
+                markdown
             };
             if let Some(path) = pdf {
                 let mut input = String::new();
                 if custom {
-                    input.push_str(match report.language {
-                        profile::Language::Es => "> **Contenido personalizado:** el texto fue proporcionado por el usuario y no fue validado por VulnBell.\n\n",
-                        profile::Language::En => "> **Custom content:** the text was supplied by the user and was not validated by VulnBell.\n\n",
-                    });
+                    input.push_str(&vulnbell::output::custom_content_notice(
+                        report.language,
+                        reason.unwrap_or_default(),
+                    ));
                 }
-                input.push_str(&vulnbell::output::pdf_report_body(&markdown, &report));
-                let document = vulnbell::output::pdf_markdown(
+                input.push_str(&vulnbell::output::pdf_report_body(&markdown, &report)?);
+                let document = vulnbell::output::prepared_pdf_markdown(
                     &input,
                     &snapshot.cases,
                     &store,
-                    report.language,
+                    &report,
                 )?;
                 vulnbell::output::write_pdf(&document, &path, pdf_browser.as_deref())?;
             }
@@ -142,8 +161,8 @@ fn run() -> Result<i32> {
                 &serde_json::json!({"schema_version":1,"version":env!("CARGO_PKG_VERSION"),"installed":directories}),
             )?;
         }
-        Commands::Doctor { json } => {
-            let report = vulnbell::operations::doctor()?;
+        Commands::Doctor { json, project } => {
+            let report = vulnbell::operations::doctor(project.as_deref())?;
             if json {
                 emit(&report)?;
             } else {
@@ -173,6 +192,7 @@ fn run() -> Result<i32> {
                 components: Vec::new(),
                 discovery: Default::default(),
                 research: Default::default(),
+                python: Default::default(),
                 schedule: None,
                 alerts: Default::default(),
                 report: Default::default(),
@@ -478,8 +498,17 @@ fn run() -> Result<i32> {
             audience,
             pdf,
             from_markdown,
+            custom_reason,
             pdf_browser,
-        }) => report(&project, json, &audience, pdf, from_markdown, pdf_browser)?,
+        }) => report(
+            &project,
+            json,
+            &audience,
+            pdf,
+            from_markdown,
+            custom_reason,
+            pdf_browser,
+        )?,
         Commands::Run { project, now } => {
             let profile = profile::load(&project)?;
             emit(&vulnbell::scheduler::run(&profile, &project, now)?)?;

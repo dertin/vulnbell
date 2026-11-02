@@ -87,17 +87,30 @@ fn attestation_details(attestation: &crate::sandbox::Attestation, language: Lang
 }
 
 /// Include all recorded verification details without repeating the standard section.
-pub fn report_body(markdown: &str, report: &super::MorningReport) -> String {
+pub fn report_body(markdown: &str, report: &super::MorningReport) -> Result<String> {
+    let markdown = super::normalize_report_paths(report, markdown)?;
+    let body = super::branding::without_footer(&markdown);
+    let markdown = if body.len() == markdown.len() {
+        markdown
+    } else {
+        format!("{body}\n\n")
+    };
     if report.finding_checks.is_empty() {
-        return markdown.to_owned();
+        return Ok(markdown);
     }
-    let compact = super::markdown::verification_section(report, false);
+    let compact = super::normalize_report_paths(
+        report,
+        &super::markdown::verification_section(report, false),
+    )?;
     let checks: Vec<&super::verification::FindingCheck> = report.finding_checks.iter().collect();
-    let full = super::verification::markdown(&checks, true, report.language);
+    let full = super::normalize_report_paths(
+        report,
+        &super::verification::markdown(&checks, true, report.language),
+    )?;
     if markdown.contains(&full) {
-        markdown.to_owned()
+        Ok(markdown)
     } else if !compact.is_empty() && markdown.contains(&compact) {
-        markdown.replacen(&compact, &full, 1)
+        Ok(markdown.replacen(&compact, &full, 1))
     } else {
         let (original, current) = match report.language {
             Language::Es => (
@@ -114,12 +127,12 @@ pub fn report_body(markdown: &str, report: &super::MorningReport) -> String {
         } else {
             full
         };
-        format!("{markdown}\n\n{full}")
+        Ok(format!("{markdown}\n\n{full}"))
     }
 }
 
 /// Extend the report with evidence metadata and locally registered review notes.
-pub fn pdf_markdown(
+fn pdf_markdown(
     markdown: &str,
     cases: &[Case],
     store: &Store,
@@ -127,8 +140,8 @@ pub fn pdf_markdown(
 ) -> Result<String> {
     let mut output = markdown.to_owned();
     output.push_str(match language {
-        Language::Es => "\n\n# Anexo de evidencias\n\nLas notas registradas y las salidas de sandbox en texto se incluyen a continuación. Los documentos originales, archivos binarios y respuestas completas de fuentes externas no se incluyen; sus identificadores, enlaces y hashes permiten localizarlos.\n\n",
-        Language::En => "\n\n# Evidence appendix\n\nRegistered review notes and textual sandbox output are included below. Original documents, binary files, and full external responses are not included; their identifiers, links, and hashes identify them.\n\n",
+        Language::Es => "\n\n# Anexo de evidencias\n\nLas notas registradas y las salidas de sandbox en texto se incluyen a continuación. Las rutas de codebases conocidas se muestran de forma relativa; los hashes corresponden al contenido original registrado. Los documentos originales, archivos binarios y respuestas completas de fuentes externas no se incluyen; sus identificadores, enlaces y hashes permiten localizarlos.\n\n",
+        Language::En => "\n\n# Evidence appendix\n\nRegistered review notes and textual sandbox output are included below. Known codebase paths are shown relative to the codebase; hashes identify the original recorded content. Original documents, binary files, and full external responses are not included; their identifiers, links, and hashes identify them.\n\n",
     });
     let mut ordered: Vec<&Case> = cases.iter().collect();
     ordered.sort_by(|a, b| a.case_id.cmp(&b.case_id));
@@ -157,7 +170,7 @@ pub fn pdf_markdown(
         if let Some(impact) = crate::impact::latest(case, store) {
             for answer in &impact.answers {
                 output.push_str(&format!(
-                    "- {}: {} — {}\n",
+                    "- {}: {} - {}\n",
                     super::text::impact_question(language, answer.question),
                     super::text::impact_answer(language, answer.answer),
                     text(&answer.rationale),
@@ -195,7 +208,7 @@ pub fn pdf_markdown(
         }
         for event in &case.upstream_events {
             output.push_str(&format!(
-                "- {}: {} {} — SHA-256 `{}`\n",
+                "- {}: {} {} - SHA-256 `{}`\n",
                 text(&event.kind),
                 text(&event.title),
                 evidence_link(&event.url),
@@ -274,7 +287,7 @@ pub fn pdf_markdown(
                 (Language::En, false) => "unavailable or invalid integrity",
             };
             output.push_str(&format!(
-                "- {} — {} — SHA-256 `{}` — {} — {}",
+                "- {} - {} - SHA-256 `{}` - {} - {}",
                 text(&evidence.id),
                 text(&evidence.source),
                 text(&evidence.sha256),
@@ -282,7 +295,7 @@ pub fn pdf_markdown(
                 state
             ));
             if let Some(url) = &evidence.url {
-                output.push_str(&format!(" — {}", evidence_link(url)));
+                output.push_str(&format!(" - {}", evidence_link(url)));
             }
             output.push('\n');
             if evidence.kind == crate::model::EvidenceKind::Attestation {
@@ -336,10 +349,40 @@ pub fn pdf_markdown(
             bail!("report and evidence appendix exceed the 16 MiB PDF input limit");
         }
     }
+    let output = super::branding::finish(&output, language);
     if output.len() > MAX_DOCUMENT {
         bail!("report and evidence appendix exceed the 16 MiB PDF input limit");
     }
     Ok(output)
+}
+
+/// Build the appendix and normalize registered codebase paths before PDF export.
+pub fn prepared_pdf_markdown(
+    markdown: &str,
+    cases: &[Case],
+    store: &Store,
+    report: &super::MorningReport,
+) -> Result<String> {
+    let markdown = super::normalize_report_paths(report, markdown)?;
+    let markdown = super::branding::custom(&markdown, report.language)?;
+    let markdown = super::branding::without_footer(&markdown);
+    super::ensure_morning_report_store(report, store)?;
+    let roots: std::collections::HashSet<&str> = report
+        .codebase_path_roots
+        .iter()
+        .map(String::as_str)
+        .collect();
+    if cases.iter().any(|case| {
+        case.project_id != report.project_id
+            || case
+                .codebase_revisions
+                .iter()
+                .any(|revision| !roots.contains(revision.codebase.as_str()))
+    }) {
+        bail!("PDF cases do not match the prepared report context");
+    }
+    let document = pdf_markdown(markdown, cases, store, report.language)?;
+    super::normalize_report_paths(report, &document)
 }
 
 fn safe_html(markdown: &str) -> String {
@@ -348,7 +391,10 @@ fn safe_html(markdown: &str) -> String {
         .insert(Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS);
     let mut links = Vec::new();
     let events = Parser::new_ext(markdown, options).map(|event| match event {
-        Event::Html(value) | Event::InlineHtml(value) => Event::Text(value),
+        Event::Html(value) | Event::InlineHtml(value) | Event::Text(value) => {
+            Event::Text(value.replace('—', "-").into())
+        }
+        Event::Code(value) => Event::Code(value.replace('—', "-").into()),
         Event::Start(Tag::Image { .. }) | Event::End(TagEnd::Image) => Event::Text("".into()),
         Event::Start(tag @ Tag::Link { .. }) => {
             let safe = if let Tag::Link { dest_url, .. } = &tag {
@@ -517,6 +563,14 @@ pub fn write_pdf(markdown: &str, output: &Path, browser: Option<&Path>) -> Resul
 #[cfg(test)]
 mod tests {
     use super::{attestation_details, evidence_link, pdf_markdown, safe_html, write_pdf};
+    #[test]
+    fn visible_dashes_are_normalized_without_rewriting_link_destinations() {
+        let html = safe_html("Texto — ejemplo [fuente](https://example.org/a%E2%80%94b) `x—y`");
+        assert!(html.contains("Texto - ejemplo"));
+        assert!(html.contains("x-y"));
+        assert!(html.contains("https://example.org/a%E2%80%94b"));
+        assert!(!html.contains('—'));
+    }
     #[test]
     fn attestation_summary_includes_oracle_and_positive_control() {
         let mut attestation: crate::sandbox::Attestation = serde_json::from_value(serde_json::json!({

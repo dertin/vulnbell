@@ -20,6 +20,8 @@ pub struct Profile {
     pub discovery: DiscoveryMode,
     #[serde(default)]
     pub research: Research,
+    #[serde(default)]
+    pub python: Python,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule: Option<Schedule>,
     #[serde(default)]
@@ -28,6 +30,13 @@ pub struct Profile {
     pub report: Report,
     #[serde(default, skip_serializing_if = "SandboxLimits::is_default")]
     pub sandbox: SandboxLimits,
+}
+#[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Python {
+    /// Authorize disclosure of eligible lockfile package names to PyPI for hash verification.
+    #[serde(default)]
+    pub verify_pypi_hashes: bool,
 }
 /// Upper bounds a sandbox test may request. Isolation (no network, no host mounts, one CPU,
 /// unprivileged user, official digest-pinned images) is not configurable.

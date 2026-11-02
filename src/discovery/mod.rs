@@ -409,6 +409,18 @@ pub fn mapped_sources(
     sources::mapped(store, &scope(profile, path)?)
 }
 
+pub(crate) fn apply_source_mappings(
+    profile: &Profile,
+    path: &Path,
+    store: &Store,
+    instances: &mut [Instance],
+) -> Result<()> {
+    if profile.discovery != DiscoveryMode::Off {
+        sources::apply(store, &scope(profile, path)?, instances)?;
+    }
+    Ok(())
+}
+
 /// Current, locally validated agent observations; never reuse stale public identities.
 pub(crate) fn current_observation_ids(
     profile: &Profile,
@@ -436,11 +448,21 @@ pub(crate) fn current_observation_ids(
     if !codebase::sync_include_guard(store, &scope)? {
         return Ok(Some(std::collections::HashSet::new()));
     }
+    let mut current = codebase::instances(store, &scope)?;
+    if store.meta("last_snapshot")?.is_some() {
+        let previous = store.latest()?.instances;
+        crate::engine::preserve_observation_ids(&mut current, &mut [], &previous, true);
+        let previous: std::collections::HashMap<_, _> =
+            previous.iter().map(|item| (&item.id, item)).collect();
+        current.retain(|item| {
+            previous.get(&item.id).is_none_or(|old| {
+                old.provenance.sha256 == item.provenance.sha256
+                    && old.provenance.direct == item.provenance.direct
+            })
+        });
+    }
     Ok(Some(
-        codebase::instances(store, &scope)?
-            .into_iter()
-            .map(|instance| instance.id)
-            .collect(),
+        current.into_iter().map(|instance| instance.id).collect(),
     ))
 }
 

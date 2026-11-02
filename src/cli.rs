@@ -35,6 +35,9 @@ pub(super) enum Commands {
     Doctor {
         #[arg(long)]
         json: bool,
+        /// Tailor recommendations to the latest inventory for this monitor.
+        #[arg(long)]
+        project: Option<PathBuf>,
     },
     /// List monitored projects, scans, schedules, skipped runs and reports.
     Status {
@@ -228,8 +231,11 @@ pub(super) enum AssessmentCommands {
         #[arg(long, conflicts_with = "json")]
         pdf: Option<PathBuf>,
         /// Use an edited Markdown report as the PDF's main text.
-        #[arg(long, requires = "pdf")]
+        #[arg(long, requires_all = ["pdf", "custom_reason"])]
         from_markdown: Option<PathBuf>,
+        /// Briefly explain why the Markdown was edited.
+        #[arg(long, requires = "from_markdown")]
+        custom_reason: Option<String>,
         /// Chromium-based browser executable; otherwise search common names in PATH.
         #[arg(long, requires = "pdf")]
         pdf_browser: Option<PathBuf>,

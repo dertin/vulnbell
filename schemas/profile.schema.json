@@ -89,6 +89,17 @@
       ],
       "type": "string"
     },
+    "Python": {
+      "additionalProperties": false,
+      "properties": {
+        "verify_pypi_hashes": {
+          "default": false,
+          "description": "Authorize disclosure of eligible lockfile package names to PyPI for hash verification.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "Report": {
       "additionalProperties": false,
       "properties": {
@@ -251,6 +262,12 @@
     "project_id": {
       "format": "uuid",
       "type": "string"
+    },
+    "python": {
+      "$ref": "#/$defs/Python",
+      "default": {
+        "verify_pypi_hashes": false
+      }
     },
     "report": {
       "$ref": "#/$defs/Report",

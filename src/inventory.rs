@@ -7,9 +7,11 @@ use std::{
 };
 
 mod python_lock;
+mod python_merge;
 mod requirements;
 
 pub(crate) use python_lock::recognizes as python_lock_file;
+pub(crate) use python_merge::merge_verified as merge_python;
 
 mod errors;
 use errors::safe_inventory_error;
@@ -957,6 +959,7 @@ pub fn discover(
                             cpe_product: None,
                             upstream: None,
                             identity_evidence: Vec::new(),
+                            python_lock: None,
                             release: None,
                         });
                     }
@@ -992,5 +995,6 @@ pub fn discover(
             ));
         }
     }
+    requirements::reconcile_via(&mut inventory.instances);
     inventory
 }

@@ -58,6 +58,9 @@ catalog! {
     card_source_facts,
     card_severity,
     card_problem,
+    card_translation,
+    card_original,
+    translation_pending,
     excerpt_more,
     card_fixes,
     no_fix,
@@ -133,7 +136,7 @@ catalog! {
     requires,
     reference_of,
     agent_partial,
-    audit_links,
+    audit_note,
     rule_release_published,
     rule_fix_pr,
     rule_relay_with_ids,
@@ -147,13 +150,13 @@ catalog! {
 const EN: Text = Text {
     pending: "pending",
     investigation_pending: "Investigation pending",
-    header: "# VulnBell — {}\n\nCutoff: {} · Agent review: {}\n\n| Status | Cases | Meaning |\n|---|---:|---|\n| Actionable with impact assessment | {} | Evaluate the recorded action for this project. |\n| In review with impact assessment | {} | Evaluated signal with remaining uncertainty. |\n| Impact assessment pending | {} | No assessment for the current facts; not a confirmed project vulnerability. |\n| Informational | {} | Useful context with no pending security action. |\n| Dismissed | {} | An evidence-backed verdict closed the case within the assessed scope. |\n| Not applicable | {} | Upstream events assessed as not applicable; no case opened. |\n\nCoverage gaps: **{}** kinds of incomplete source or inventory checks ({} scopes); they are not security findings.\n\n",
+    header: "# {} - {}\n\nCutoff: {} · Agent review: {}\n\n| Status | Cases | Meaning |\n|---|---:|---|\n| Actionable with impact assessment | {} | Evaluate the recorded action for this project. |\n| In review with impact assessment | {} | Evaluated signal with remaining uncertainty. |\n| Impact assessment pending | {} | No assessment for the current facts; not a confirmed project vulnerability. |\n| Informational | {} | Useful context with no pending security action. |\n| Dismissed | {} | An evidence-backed verdict closed the case within the assessed scope. |\n| Not applicable | {} | Upstream events assessed as not applicable; no case opened. |\n\nCoverage gaps: **{}** kinds of incomplete source or inventory checks ({} scopes); they are not security findings.\n\n",
     contained_actionable_prefix: "Of the actionable cases",
     contained_review_prefix: "Of the cases in review",
     contained_split: "{}, **{}** may be exposed in the project and **{}** are not exposed according to the recorded impact assessment.\n\n",
     incomplete_banner: "> **Incomplete report:** {} cases without impact assessment, {} needing a review disposition, {} requiring a sandbox check or categorized blocker, and {} with invalid verification evidence. Complete them before delivery.\n\n",
     heading_actionable: "Actionable",
-    heading_review: "In review — hypotheses",
+    heading_review: "In review - hypotheses",
     no_findings: "No findings in this category.\n\n",
     no_exposed_hypotheses: "No hypotheses with project exposure.\n\n",
     review_table_header: "| Case / component | Signal investigated | Why it is still in review | Next step | Evidence |\n|---|---|---|---|---|\n",
@@ -176,6 +179,9 @@ const EN: Text = Text {
     card_source_facts: "- **According to the source:** {}.\n",
     card_severity: "- **Published severity:** {}.\n",
     card_problem: "- **Problem / impact:** {}{}\n",
+    card_translation: "- **Agent translation / summary:** {}\n",
+    card_original: "- **Original source text:** {}{}\n",
+    translation_pending: "Translation not recorded; review the original source.",
     excerpt_more: "… (full detail in the source)",
     card_fixes: "- **Published fixes:** {}.\n",
     no_fix: "no verified fixed version in the data",
@@ -210,7 +216,7 @@ const EN: Text = Text {
     without_repository: "Without repository: {}{}.\n\n",
     and_more_json: " and {} more (see JSON)",
     source_map_table: "Sources of the components with open cases; documented associations that do not, by themselves, certify official identity or applicability. The reason for each unmapped source is in the JSON.\n\n| Component | Repository | Other mapped sources | Unmapped |\n|---|---|---|---|\n",
-    repository_unavailable: "unavailable — {}",
+    repository_unavailable: "unavailable - {}",
     releases_per_component: "Releases: one per component ({})",
     action_actionable: "Engineering + Cyber: confirm deployment and exposure; validate the fixed branch or mitigation with the attached evidence.",
     action_review: "Investigate the code of the exact release and the attack conditions; if warranted, validate in an authorized sandbox with controls.",
@@ -250,8 +256,8 @@ const EN: Text = Text {
     fix: "fix",
     requires: "requires",
     reference_of: "{} reference",
-    agent_partial: "{}\n**Agent — partial run:** {}.\n",
-    audit_links: "{}\n\nAudit: [full data](<{}>) · [research](<{}>).\n",
+    agent_partial: "{}\n**Agent - partial run:** {}.\n",
+    audit_note: "{}\n\nAudit data and research artifacts remain in VulnBell's local data directory.\n",
     rule_release_published: "Release notes reference security fixes; each fix is assessed through its advisory or issue event.",
     rule_fix_pr: "Fix for {}; the security claim is assessed through that issue.",
     rule_relay_with_ids: "Dependency update citing {}{}; the affected packages ({}) are absent from the monitored build or at versions outside the affected ranges.",
@@ -265,13 +271,13 @@ const EN: Text = Text {
 const ES: Text = Text {
     pending: "pendiente",
     investigation_pending: "Investigación pendiente",
-    header: "# VulnBell — {}\n\nCorte: {} · Revisión del agente: {}\n\n| Estado | Casos | Significado |\n|---|---:|---|\n| Accionables con impacto evaluado | {} | Evaluar la acción registrada para este proyecto. |\n| En revisión con impacto evaluado | {} | Señal examinada con incertidumbre pendiente. |\n| Sin evaluación de impacto vigente | {} | Falta evaluar los datos actuales; no confirma una vulnerabilidad del proyecto. |\n| Informativos | {} | Contexto útil sin acción de seguridad pendiente. |\n| Descartados | {} | Un veredicto sustentado por evidencia cerró el caso en el alcance evaluado. |\n| No aplicables | {} | Eventos upstream evaluados como no aplicables; no abren caso. |\n\nBrechas de cobertura: **{}** tipos de comprobación incompleta de fuentes o inventario ({} alcances); no son hallazgos de seguridad.\n\n",
+    header: "# {} - {}\n\nCorte: {} · Revisión del agente: {}\n\n| Estado | Casos | Significado |\n|---|---:|---|\n| Accionables con impacto evaluado | {} | Evaluar la acción registrada para este proyecto. |\n| En revisión con impacto evaluado | {} | Señal examinada con incertidumbre pendiente. |\n| Sin evaluación de impacto vigente | {} | Falta evaluar los datos actuales; no confirma una vulnerabilidad del proyecto. |\n| Informativos | {} | Contexto útil sin acción de seguridad pendiente. |\n| Descartados | {} | Un veredicto sustentado por evidencia cerró el caso en el alcance evaluado. |\n| No aplicables | {} | Eventos upstream evaluados como no aplicables; no abren caso. |\n\nBrechas de cobertura: **{}** tipos de comprobación incompleta de fuentes o inventario ({} alcances); no son hallazgos de seguridad.\n\n",
     contained_actionable_prefix: "De los accionables",
     contained_review_prefix: "De los casos en revisión",
     contained_split: "{}, **{}** tienen exposición posible en el proyecto y **{}** no tienen exposición según el análisis de impacto registrado.\n\n",
     incomplete_banner: "> **Reporte incompleto:** {} casos sin evaluación de impacto, {} sin decisión de seguimiento, {} con prueba de sandbox requerida o bloqueo por registrar y {} con evidencia de verificación inválida. Completar antes de entregar.\n\n",
     heading_actionable: "Accionables",
-    heading_review: "En revisión — hipótesis",
+    heading_review: "En revisión - hipótesis",
     no_findings: "Sin hallazgos en esta categoría.\n\n",
     no_exposed_hypotheses: "Sin hipótesis con exposición en el proyecto.\n\n",
     review_table_header: "| Caso / componente | Señal investigada | Por qué sigue en revisión | Próximo paso | Evidencia |\n|---|---|---|---|---|\n",
@@ -294,6 +300,9 @@ const ES: Text = Text {
     card_source_facts: "- **Según la fuente:** {}.\n",
     card_severity: "- **Severidad publicada:** {}.\n",
     card_problem: "- **Problema / impacto:** {}{}\n",
+    card_translation: "- **Traducción / resumen del agente:** {}\n",
+    card_original: "- **Texto original de la fuente:** {}{}\n",
+    translation_pending: "Traducción pendiente; consultar la fuente original.",
     excerpt_more: "… (detalle completo en la fuente)",
     card_fixes: "- **Correcciones publicadas:** {}.\n",
     no_fix: "sin versión corregida verificada en los datos",
@@ -328,7 +337,7 @@ const ES: Text = Text {
     without_repository: "Sin repositorio: {}{}.\n\n",
     and_more_json: " y {} más (ver JSON)",
     source_map_table: "Fuentes de los componentes con casos abiertos; asociaciones documentadas, no certifican por sí solas identidad oficial ni aplicabilidad. Los motivos de cada fuente sin mapear están en el JSON.\n\n| Componente | Repositorio | Otras fuentes mapeadas | Sin mapear |\n|---|---|---|---|\n",
-    repository_unavailable: "no disponible — {}",
+    repository_unavailable: "no disponible - {}",
     releases_per_component: "Releases: una por componente ({})",
     action_actionable: "Ingeniería + Cyber: confirmar despliegue y exposición; validar rama corregida o mitigación con la evidencia adjunta.",
     action_review: "Investigar el código de la release exacta y las condiciones del ataque; si corresponde, validar en sandbox autorizado con controles.",
@@ -368,8 +377,8 @@ const ES: Text = Text {
     fix: "corrección",
     requires: "requiere",
     reference_of: "Referencia de {}",
-    agent_partial: "{}\n**Agente — ejecución parcial:** {}.\n",
-    audit_links: "{}\n\nAuditoría: [datos completos](<{}>) · [investigación](<{}>).\n",
+    agent_partial: "{}\n**Agente - ejecución parcial:** {}.\n",
+    audit_note: "{}\n\nLos datos de auditoría y la investigación permanecen en el directorio local de VulnBell.\n",
     rule_release_published: "Las notas de la release citan correcciones de seguridad; cada corrección se evalúa en su aviso o issue.",
     rule_fix_pr: "Corrección de {}; el reclamo de seguridad se evalúa en ese issue.",
     rule_relay_with_ids: "Actualización de dependencia que cita {}{}; los paquetes afectados ({}) no están en el build monitoreado o están en versiones fuera de los rangos afectados.",
@@ -723,6 +732,103 @@ pub(crate) fn notification_status(language: Language, status: &str) -> String {
     status.to_owned()
 }
 
+pub(crate) fn coverage_detail(language: Language, detail: &str) -> String {
+    if language == Language::En {
+        return detail.to_owned();
+    }
+    let translated = match detail {
+        "local package source is unverified; identify the public package explicitly before external lookup" => {
+            "El origen del paquete local no está verificado; identificar el paquete público antes de consultarlo externamente."
+        }
+        "local package source is unverified; no external lookup" => {
+            "El origen del paquete local no está verificado; no se realizó una consulta externa."
+        }
+        "registry identity/latest resolver unsupported for this ecosystem" => {
+            "La resolución de identidad o versión más reciente no está soportada para este ecosistema."
+        }
+        "no validated CPE mapping; PURL is not a CPE"
+        | "no validated CPE mapping; provide an exact CPE product with authoritative advisory evidence in source_map; PURL alone is not a CPE" => {
+            "Falta un CPE de producto validado: registrar el CPE exacto en el mapa de fuentes con evidencia de un aviso autorizado. Un PURL no es un CPE."
+        }
+        "requires supported package identity and exact version; upstream-only is not SCA" => {
+            "Se necesita una identidad de paquete soportada y una versión exacta para consultar avisos; una fuente upstream por sí sola no proporciona ese inventario."
+        }
+        "version required; latest was not sent to vulnerability APIs" => {
+            "Se necesita una versión exacta; no se envió «latest» a las API de vulnerabilidades."
+        }
+        "unresolved_version: ask user for version; latest was not assumed" => {
+            "Versión sin resolver: solicitarla al usuario; no se asumió la versión más reciente."
+        }
+        "unsupported ecosystem mapping" => "No hay un mapeo compatible para este ecosistema.",
+        "OSV aggregated GHSA coverage; direct GHSA checks reserved for declared targets" => {
+            "OSV incluye avisos GHSA; las consultas directas a GHSA se reservan para los componentes declarados."
+        }
+        "PyPI hash verification is not authorized in this monitor" => {
+            "La verificación de hashes en PyPI no está autorizada para este monitor."
+        }
+        "Python lock contains source options or ambiguous includes; public identity not verified" => {
+            "El lock de Python contiene opciones de origen o inclusiones ambiguas; no se verificó la identidad pública."
+        }
+        "PyPI release has no SHA-256 matching the lock; package identity unverified" => {
+            "Ningún SHA-256 de la versión publicada en PyPI coincide con el lock; la identidad no está verificada."
+        }
+        "offline: fresh cached response unavailable" => {
+            "Sin conexión: no hay una respuesta reciente en caché."
+        }
+        "upstream tracker review is performed by the configured local agent and imported separately" => {
+            "El agente local configurado revisa las fuentes upstream y registra el resultado por separado."
+        }
+        _ => {
+            if let Some(rest) = detail.strip_prefix("hash-pinned Python lock parsed; registry identity, dependency relationships and installation require separate verification; ") {
+                let (counts, _) = rest.split_once("; public package identities").unwrap_or((rest, ""));
+                let counts = counts.replace(" unpinned", " sin versión fijada").replace(" conditional", " condicionales").replace(" unsupported entries", " entradas no soportadas").replace("first lines:", "primeras líneas:").replace(" and ", " y ");
+                return format!("Lock de Python con hashes inventariado; la identidad, las relaciones y la instalación se verifican por separado. {counts}.");
+            }
+            if let Some(rest) = detail.strip_prefix("requirements declarations are not installed inventory; directness, source and dependency closure are unverified; ") {
+                let (counts, _) = rest.split_once("; public package identities").unwrap_or((rest, ""));
+                let counts = counts.replace(" unpinned", " sin versión fijada").replace(" conditional", " condicionales").replace(" unsupported entries", " entradas no soportadas").replace("first lines:", "primeras líneas:").replace(" and ", " y ");
+                return format!("Las declaraciones de requisitos no prueban la instalación; no se verificaron origen, relación directa ni cierre de dependencias. {counts}. Confirmar identidades públicas y revisar includes, constraints e índices privados.");
+            }
+            if let Some(rest) =
+                detail.strip_prefix("tracker and repository-advisory research deferred for ")
+                && let Some((transitive, rest)) = rest.split_once(" transitive and ")
+                && let Some((unknown, _)) = rest.split_once(" unknown-depth instances;")
+            {
+                return format!(
+                    "Se difirió la investigación de trackers y avisos del repositorio para {transitive} dependencias transitivas y {unknown} de profundidad desconocida. OSV consulta por separado el inventario soportado y puede tener cobertura parcial; revisar referencias concretas con research.follow."
+                );
+            }
+            if let Some(rest) = detail.strip_prefix("published security advisories of ")
+                && let Some((repository, ids)) =
+                    rest.split_once("; package identity or version range not evaluable: ")
+            {
+                return format!(
+                    "Avisos de seguridad publicados de {repository}: no se pudo evaluar la identidad del paquete o el rango de versiones para {ids}."
+                );
+            }
+            if let Some((counts, _)) =
+                detail.split_once("; agent observations are not verified vulnerability claims")
+            {
+                let counts = counts
+                    .replace("directories_pending", "directorios pendientes")
+                    .replace("file_chunks_pending", "fragmentos pendientes")
+                    .replace("files_reviewed", "archivos revisados")
+                    .replace("files_excluded", "archivos excluidos")
+                    .replace("files_unavailable", "archivos no disponibles")
+                    .replace("components_unmapped", "componentes sin mapear")
+                    .replace("sources_unavailable", "fuentes no disponibles")
+                    .replace("deferred_transitive", "transitivas diferidas")
+                    .replace("deferred_unknown_depth", "profundidad desconocida diferida");
+                return format!(
+                    "{counts}; las observaciones del agente no son vulnerabilidades verificadas."
+                );
+            }
+            return detail.to_owned();
+        }
+    };
+    translated.to_owned()
+}
+
 /// Questions the CLI adds to cases are stored in English; known ones are shown in the report
 /// language and any other text is shown as recorded.
 pub(crate) fn open_question(language: Language, question: &str) -> String {
@@ -747,10 +853,10 @@ pub(crate) fn open_question(language: Language, question: &str) -> String {
         }
         _ => {
             return match question
-                .strip_prefix("Advisory evidence changed after the recorded ")
+                .strip_prefix("Advisory or monitored identity evidence changed after the recorded ")
                 .and_then(|rest| rest.split_once(" verdict or impact assessment;"))
             {
-                Some(_) => "La evidencia del aviso cambió después del veredicto o la evaluación de impacto registrados; reevaluar con el razonamiento anterior del historial del caso.".to_owned(),
+                Some(_) => "Cambió la evidencia del aviso o de la identidad monitoreada después del veredicto o la evaluación de impacto; reevaluar con el razonamiento anterior del historial del caso.".to_owned(),
                 None => question.to_owned(),
             };
         }
@@ -799,9 +905,9 @@ mod tests {
         assert!(
             open_question(
                 Language::Es,
-                "Advisory evidence changed after the recorded triage verdict or impact assessment; reassess."
+                "Advisory or monitored identity evidence changed after the recorded Informational verdict or impact assessment; reassess with the previous rationale in case history."
             )
-            .starts_with("La evidencia del aviso cambió")
+            .starts_with("Cambió la evidencia del aviso")
         );
     }
 }

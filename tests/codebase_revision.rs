@@ -256,10 +256,12 @@ fn changed_checkout_blocks_recording_and_keeps_the_scanned_revision_in_reports()
         .unwrap();
     assert!(vulnbell::tools::citations::check(&store, &case.case_id, stale).is_err());
     assert!(vulnbell::research::import(&mut store, batch).is_err());
-    let report = vulnbell::output::morning_report(&first, &store, "cyber").unwrap();
+    let mut report = vulnbell::output::morning_report(&first, &store, "cyber").unwrap();
+    vulnbell::output::prepare_report_paths(&mut report, &store).unwrap();
     assert!(!report.codebase_revisions[0].matches);
-    let markdown = vulnbell::output::morning_markdown(&report);
+    let markdown = vulnbell::output::morning_markdown(&report).unwrap();
     assert!(markdown.contains("## Codebases revisadas"));
+    assert!(!markdown.contains(dir.path().to_str().unwrap()));
     assert!(
         markdown.contains("main") && markdown.contains("other") && markdown.contains(&first_commit)
     );

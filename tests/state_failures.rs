@@ -80,7 +80,8 @@ fn persisted_review_state_requires_current_context_fields() {
     assert!(error.to_string().contains("codebase_revisions"));
 
     let impact = serde_json::json!({
-        "schema_version": 1, "case_id": "case", "facts_sha256": "hash",
+        "schema_version": 1, "question_set_sha256": vulnbell::impact::question_set_sha256(),
+        "case_id": "case", "facts_sha256": "hash",
         "verdict": "needs_evidence", "confidence": "low", "answers": [],
         "instances": [], "assessed_at": "now"
     });
@@ -124,6 +125,33 @@ fn current_database_is_initialized_once_and_reopens_without_rebuilding_tables() 
     );
     drop(store);
     fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+}
+
+#[test]
+fn concurrent_first_opens_publish_only_initialized_state() {
+    for _ in 0..5 {
+        let project = uuid::Uuid::new_v4().to_string();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(12));
+        let threads: Vec<_> = (0..12)
+            .map(|_| {
+                let project = project.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let store = Store::open(&project).unwrap();
+                    store.check_schema().unwrap();
+                    store
+                        .connection
+                        .query_row("SELECT count(*) FROM cases", [], |row| row.get::<_, u64>(0))
+                        .unwrap();
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+    }
 }
 
 #[test]
@@ -251,6 +279,7 @@ fn concurrent_scans_and_future_schema_versions_fail_closed() {
     assert!(started.elapsed() >= std::time::Duration::from_secs(1));
     drop(lock);
     assert!(store.lock_within(0).is_ok());
+    assert!(store.lock_within(u64::MAX).is_err());
     store
         .connection
         .execute_batch("PRAGMA user_version=99")
@@ -268,6 +297,46 @@ fn concurrent_scans_and_future_schema_versions_fail_closed() {
         .unwrap();
     assert_eq!(version, 99);
     drop(connection);
+    fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
+}
+
+#[test]
+fn rejected_concurrent_scan_does_not_change_project_metadata() {
+    let project = uuid::Uuid::new_v4().to_string();
+    let directory = tempfile::tempdir().unwrap();
+    let profile = directory.path().join("vulnbell.yaml");
+    fs::write(
+        &profile,
+        format!("schema: 1\nproject_id: {project}\nname: changed\ncomponents:\n  - ref: pkg:pypi/example\n    version: 1.0.0\n"),
+    )
+    .unwrap();
+    let store = Store::open(&project).unwrap();
+    store.set_meta("project_name", "original").unwrap();
+    let lock = store.lock().unwrap();
+    let output = assert_cmd::cargo::cargo_bin_cmd!("vulnbell")
+        .env("VULNBELL_LOCK_WAIT_SECONDS", "0")
+        .args(["scan", "--project"])
+        .arg(&profile)
+        .arg("--offline")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("project is already running"));
+    assert_eq!(
+        store.meta("project_name").unwrap().as_deref(),
+        Some("original")
+    );
+    assert!(store.meta("profile_path").unwrap().is_none());
+    let report = assert_cmd::cargo::cargo_bin_cmd!("vulnbell")
+        .env("VULNBELL_LOCK_WAIT_SECONDS", "0")
+        .args(["report", "--project"])
+        .arg(&profile)
+        .output()
+        .unwrap();
+    assert!(!report.status.success());
+    assert!(String::from_utf8_lossy(&report.stderr).contains("project is already running"));
+    drop(lock);
+    drop(store);
     fs::remove_dir_all(vulnbell::store::data_root().join(project)).unwrap();
 }
 #[test]

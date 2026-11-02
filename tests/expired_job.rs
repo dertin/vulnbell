@@ -71,7 +71,7 @@ fn an_expired_job_never_scans_or_starts_the_missing_agent() {
     assert!(forced["research_error"].is_string());
     assert!(store.meta("last_agent_failure").unwrap().is_some());
     let report = std::fs::read_to_string(forced["report"].as_str().unwrap()).unwrap();
-    assert!(report.contains("**Agent — partial run:**"));
+    assert!(report.contains("**Agent - partial run:**"));
     assert!(report.contains("## Coverage and delivery"));
     assert!(!report.contains("Cobertura"));
     drop(store);

@@ -82,6 +82,9 @@
     "facts_sha256": {
       "type": "string"
     },
+    "question_set_sha256": {
+      "type": "string"
+    },
     "schema_version": {
       "format": "uint32",
       "minimum": 0,
@@ -90,6 +93,7 @@
   },
   "required": [
     "schema_version",
+    "question_set_sha256",
     "case_id",
     "facts_sha256",
     "answers"
