@@ -317,10 +317,11 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("app.rs"), "fn handler() {}\n").unwrap();
         let data = json!({"callers":[{"filePath":"app.rs","startLine":1,"name":"do not expose"},{"filePath":".env","startLine":1},{"filePath":"../outside.rs","startLine":1}]});
+        let canonical = root.path().canonicalize().unwrap();
         let locations = verified_relations(
             &data,
             "callers",
-            root.path().to_str().unwrap(),
+            canonical.to_str().unwrap(),
             &["app.rs".into()],
         )
         .unwrap();
@@ -332,7 +333,7 @@ mod tests {
             verified_relations(
                 &data,
                 "callees",
-                root.path().to_str().unwrap(),
+                canonical.to_str().unwrap(),
                 &["app.rs".into()]
             )
             .is_err()

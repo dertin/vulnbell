@@ -515,7 +515,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("fixture.bin"), vec![0_u8; 5 * 1024 * 1024]).unwrap();
         fs::write(dir.path().join("requirements.txt"), "example==1\n").unwrap();
-        let root = dir.path().to_str().unwrap();
+        let canonical = dir.path().canonicalize().unwrap();
+        let root = canonical.to_str().unwrap();
         let first = super::source_fingerprint(root).unwrap();
         fs::write(dir.path().join("requirements.txt"), "example==2\n").unwrap();
         assert_ne!(super::source_fingerprint(root).unwrap(), first);

@@ -320,7 +320,14 @@ fn component_retraction_is_bound_to_an_observed_artifact() {
     let instance = &mut snapshot.instances[0];
     instance.origin = vulnbell::model::Origin::ObservedArtifact;
     instance.provenance.sha256 = vulnbell::digest(b"observed artifact");
-    instance.provenance.codebase = Some(codebase.to_str().unwrap().to_owned());
+    instance.provenance.codebase = Some(
+        codebase
+            .canonicalize()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned(),
+    );
     snapshot.id = uuid::Uuid::new_v4().to_string();
     let mut store = Store::open(&project).unwrap();
     store.save_snapshot(&snapshot).unwrap();
