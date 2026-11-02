@@ -528,7 +528,7 @@ fn aggregate_wheel_entry_names_are_bounded() {
     let fixture = Fixture::new();
     let path = fixture.directory.path().join("example.whl");
     let mut writer = zip::ZipWriter::new(fs::File::create(&path).unwrap());
-    let prefix = "x".repeat(super::MAX_PATH_BYTES - 16);
+    let prefix = format!("{}/", "x".repeat(200)).repeat(20);
     let count = super::MAX_TOTAL_NAME_BYTES / prefix.len() + 2;
     for index in 0..count {
         writer
