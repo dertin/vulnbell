@@ -70,8 +70,100 @@ fn windows_short_path(root: &str) -> Option<String> {
     )
 }
 
+fn windows_mixed_patterns(root: &str, short: &str) -> Vec<(regex::Regex, bool)> {
+    let normalize = |path: &str| {
+        if let Some(tail) = path.strip_prefix(r"\\?\UNC\") {
+            format!(r"\\{tail}")
+        } else {
+            path.strip_prefix(r"\\?\").unwrap_or(path).to_owned()
+        }
+    };
+    let root = normalize(root);
+    let short = normalize(short);
+    let unc = root.starts_with(r"\\");
+    let long_parts: Vec<&str> = root.split('\\').collect();
+    let short_parts: Vec<&str> = short.split('\\').collect();
+    if long_parts.len() != short_parts.len() {
+        return Vec::new();
+    }
+    [
+        (r"\", false, false, false),
+        (r"\\", false, false, true),
+        ("/", false, false, false),
+        ("/", true, true, false),
+    ]
+    .into_iter()
+    .filter_map(|(separator, encoded, only_file, markdown)| {
+        let parts: Vec<String> = long_parts
+            .iter()
+            .zip(&short_parts)
+            .map(|(long, short)| {
+                let encode = |part: &str| {
+                    if encoded {
+                        let mut url = url::Url::parse("file:///").expect("static URL");
+                        url.set_path(&format!("/{part}"));
+                        url.path().trim_start_matches('/').to_owned()
+                    } else if markdown {
+                        super::markdown::inline(part)
+                    } else {
+                        part.to_owned()
+                    }
+                };
+                let long = regex::escape(&encode(long));
+                let short = regex::escape(&encode(short));
+                if long == short {
+                    long
+                } else {
+                    format!("(?:{long}|{short})")
+                }
+            })
+            .collect();
+        let normal = parts.join(&regex::escape(separator));
+        let pattern = if encoded {
+            format!("(?i){normal}")
+        } else {
+            let prefix = match (unc, separator) {
+                (true, r"\") => r"\\?\UNC\",
+                (true, r"\\") => r"\\\\?\\UNC\\",
+                (true, _) => "//?/UNC/",
+                (false, r"\") => r"\\?\",
+                (false, r"\\") => r"\\\\?\\",
+                (false, _) => "//?/",
+            };
+            let tail = if unc { &parts[2..] } else { &parts[..] };
+            format!(
+                "(?i)(?:{normal}|{}{})",
+                regex::escape(prefix),
+                tail.join(&regex::escape(separator))
+            )
+        };
+        regex::Regex::new(&pattern)
+            .ok()
+            .map(|pattern| (pattern, only_file))
+    })
+    .collect()
+}
+
 /// Present known codebase paths without changing the stored evidence or operational paths.
 pub(super) fn relative_paths<'a>(text: &str, paths: impl IntoIterator<Item = &'a str>) -> String {
+    relative_paths_with_aliases(text, paths, |root| {
+        #[cfg(windows)]
+        {
+            windows_short_path(root)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = root;
+            None
+        }
+    })
+}
+
+fn relative_paths_with_aliases<'a>(
+    text: &str,
+    paths: impl IntoIterator<Item = &'a str>,
+    short_path: impl Fn(&str) -> Option<String>,
+) -> String {
     let mut roots: Vec<&str> = paths
         .into_iter()
         .map(|path| path.trim_end_matches(['/', '\\']))
@@ -90,6 +182,7 @@ pub(super) fn relative_paths<'a>(text: &str, paths: impl IntoIterator<Item = &'a
         return text.to_owned();
     }
     let multiple = roots.len() > 1;
+    let mut mixed_hits: Vec<(usize, usize, String, bool)> = Vec::new();
     let mut mappings: Vec<(String, String, bool, bool)> = roots
         .into_iter()
         .enumerate()
@@ -104,12 +197,12 @@ pub(super) fn relative_paths<'a>(text: &str, paths: impl IntoIterator<Item = &'a
             };
             let label = super::markdown::inline(&label);
             let mut raw = vec![root.to_owned()];
-            #[cfg(windows)]
-            if let Some(short) = windows_short_path(root) {
+            let short = windows.then(|| short_path(root)).flatten();
+            if let Some(short) = &short {
                 if let Some(tail) = short.strip_prefix(r"\\?\") {
                     raw.push(tail.to_owned());
                 }
-                raw.push(short);
+                raw.push(short.clone());
             }
             #[cfg(target_os = "macos")]
             for directory in ["var", "tmp", "etc"] {
@@ -146,6 +239,13 @@ pub(super) fn relative_paths<'a>(text: &str, paths: impl IntoIterator<Item = &'a
                     variants.push((encoded.to_owned(), label.clone(), true, windows));
                 }
             }
+            if let Some(short) = &short {
+                for (pattern, only_file) in windows_mixed_patterns(root, short) {
+                    for found in pattern.find_iter(text) {
+                        mixed_hits.push((found.start(), found.len(), label.clone(), only_file));
+                    }
+                }
+            }
             variants
         })
         .collect();
@@ -154,7 +254,14 @@ pub(super) fn relative_paths<'a>(text: &str, paths: impl IntoIterator<Item = &'a
             *root = root.to_ascii_lowercase();
         }
     }
+    mappings.sort_unstable();
+    mappings.dedup();
     mappings.sort_by_key(|(root, _, _, _)| std::cmp::Reverse(root.len()));
+    mixed_hits.sort_unstable_by(|a, b| {
+        (a.0, std::cmp::Reverse(a.1), &a.2, a.3).cmp(&(b.0, std::cmp::Reverse(b.1), &b.2, b.3))
+    });
+    mixed_hits.dedup();
+    let mut mixed_index = 0;
 
     let search = file_url_search_text(text);
     let windows_search = mappings
@@ -180,7 +287,21 @@ pub(super) fn relative_paths<'a>(text: &str, paths: impl IntoIterator<Item = &'a
     let mut token_has_url = false;
     while offset < text.len() {
         let rest = &text[offset..];
-        let Some(position) = next_matches.iter().flatten().min().copied() else {
+        while mixed_hits
+            .get(mixed_index)
+            .is_some_and(|hit| hit.0 < offset)
+        {
+            mixed_index += 1;
+        }
+        let position = next_matches
+            .iter()
+            .flatten()
+            .min()
+            .copied()
+            .into_iter()
+            .chain(mixed_hits.get(mixed_index).map(|hit| hit.0))
+            .min();
+        let Some(position) = position else {
             output.push_str(rest);
             break;
         };
@@ -235,42 +356,60 @@ pub(super) fn relative_paths<'a>(text: &str, paths: impl IntoIterator<Item = &'a
                 !ch.is_alphanumeric() && !matches!(ch, '/' | '\\' | '_' | '-' | '.')
             });
         let in_url = token_has_url && !file_url;
-        let found = if boundary_before && !in_url {
-            mappings.iter().find(|(root, _, only_file, windows)| {
-                if *only_file && !file_url {
-                    return false;
-                }
-                let haystack = if *windows {
-                    &windows_search.as_ref().expect("Windows search exists")[offset..]
-                } else {
-                    &search[offset..]
-                };
-                haystack.strip_prefix(root.as_str()).is_some_and(|suffix| {
-                    suffix.chars().next().is_none_or(|ch| {
-                        (ch == '.'
-                            && suffix[1..]
-                                .chars()
-                                .next()
-                                .is_none_or(|next| !next.is_alphanumeric()))
-                            || matches!(
-                                ch,
-                                '/' | '\\' | ':' | ')' | ']' | '}' | ',' | ';' | '`' | '\'' | '"'
-                            )
-                            || ch.is_whitespace()
-                    })
-                })
+        let suffix_valid = |suffix: &str| {
+            suffix.chars().next().is_none_or(|ch| {
+                (ch == '.'
+                    && suffix[1..]
+                        .chars()
+                        .next()
+                        .is_none_or(|next| !next.is_alphanumeric()))
+                    || matches!(
+                        ch,
+                        '/' | '\\' | ':' | ')' | ']' | '}' | ',' | ';' | '`' | '\'' | '"'
+                    )
+                    || ch.is_whitespace()
             })
+        };
+        let found = if boundary_before && !in_url {
+            let literal = mappings
+                .iter()
+                .find(|(root, _, only_file, windows)| {
+                    if *only_file && !file_url {
+                        return false;
+                    }
+                    let haystack = if *windows {
+                        &windows_search.as_ref().expect("Windows search exists")[offset..]
+                    } else {
+                        &search[offset..]
+                    };
+                    haystack
+                        .strip_prefix(root.as_str())
+                        .is_some_and(suffix_valid)
+                })
+                .map(|(root, label, _, _)| (root.len(), label.as_str()));
+            let mixed = mixed_hits[mixed_index..]
+                .iter()
+                .take_while(|hit| hit.0 == offset)
+                .find(|(_, len, _, only_file)| {
+                    (!only_file || file_url) && suffix_valid(&rest[*len..])
+                })
+                .map(|(_, len, label, _)| (*len, label.as_str()));
+            match (literal, mixed) {
+                (Some(literal), Some(mixed)) if mixed.0 > literal.0 => Some(mixed),
+                (Some(literal), _) => Some(literal),
+                (None, mixed) => mixed,
+            }
         } else {
             None
         };
-        if let Some((root, label, _, _)) = found {
-            let suffix = &rest[root.len()..];
+        if let Some((length, label)) = found {
+            let suffix = &rest[length..];
             let child = suffix.starts_with(['/', '\\']);
             if file_url {
                 output.truncate(output.len() - file_prefix.len());
             }
             output.push_str(if child && !multiple { "." } else { label });
-            offset += root.len();
+            offset += length;
             if suffix.starts_with('\\') {
                 let escaped = suffix.starts_with("\\\\");
                 let delimiter = if file_url {
@@ -334,6 +473,99 @@ pub(super) fn relative_paths<'a>(text: &str, paths: impl IntoIterator<Item = &'a
 #[cfg(test)]
 mod tests {
     use super::relative_paths;
+
+    #[test]
+    fn windows_alias_patterns_match_mixed_short_and_long_components() {
+        let patterns = super::windows_mixed_patterns(
+            r"\\?\C:\Users\Runner Administrator\AppData\Local\project",
+            r"\\?\C:\Users\RUNNER~1\APPDAT~1\Local\project",
+        );
+        for path in [
+            r"C:\Users\RUNNER~1\AppData\Local\project\src\app.rs",
+            r"C:\Users\Runner Administrator\APPDAT~1\Local\project\src\app.rs",
+            r"C:\\Users\\RUNNER~1\\AppData\\Local\\project\\src\\app.rs",
+            "C:/Users/RUNNER~1/AppData/Local/project/src/app.rs",
+        ] {
+            assert!(
+                patterns
+                    .iter()
+                    .any(|(pattern, only_file)| !only_file && pattern.is_match(path)),
+                "{path}"
+            );
+        }
+        assert!(patterns.iter().any(|(pattern, only_file)| {
+            *only_file
+                && pattern
+                    .is_match("C:/Users/Runner%20Administrator/APPDAT~1/Local/project/src/app.rs")
+        }));
+    }
+
+    #[test]
+    fn windows_mixed_aliases_are_redacted_in_report_text() {
+        let root = r"\\?\C:\Users\Runner Administrator\_private\project";
+        let short = r"\\?\C:\Users\RUNNER~1\PRIVAT~1\project";
+        let text = concat!(
+            "C:\\Users\\RUNNER~1\\_private\\project\\src\\app.rs:1\n",
+            "\\\\?\\C:\\Users\\RUNNER~1\\_private\\project\\src\\app.rs:1\n",
+            "C:\\\\Users\\\\RUNNER~1\\\\\\_private\\\\project\\\\src\\\\app.rs:1\n",
+            "file:///C:/Users/Runner%20Administrator/PRIVAT~1/project/src/app.rs:1\n",
+            "https://example.org/C:/Users/RUNNER~1/_private/project/src/app.rs\n",
+        );
+        let report = super::relative_paths_with_aliases(text, [root], |_| Some(short.to_owned()));
+        assert_eq!(report.matches("./src/app.rs:1").count(), 4, "{report}");
+        assert!(
+            report.contains("https://example.org/C:/Users/RUNNER~1/_private/project/src/app.rs")
+        );
+    }
+
+    #[test]
+    fn windows_unc_mixed_aliases_are_redacted_in_report_text() {
+        let root = r"\\?\UNC\server\Runner Administrator\_private\project";
+        let short = r"\\?\UNC\server\RUNNER~1\PRIVAT~1\project";
+        let text = r"\\?\UNC\server\RUNNER~1\_private\project\src\app.rs:1";
+        let report = super::relative_paths_with_aliases(text, [root], |_| Some(short.to_owned()));
+        assert_eq!(report, "./src/app.rs:1");
+    }
+
+    #[test]
+    fn many_distinct_windows_aliases_remain_portable() {
+        let long: Vec<String> = (0..13)
+            .map(|index| format!("LongComponent{index:02}"))
+            .collect();
+        let short: Vec<String> = (0..13).map(|index| format!("SHORT{index:02}~1")).collect();
+        let root = format!("C:\\{}", long.join("\\"));
+        let short_root = format!("C:\\{}", short.join("\\"));
+        let mut text = String::new();
+        for bits in 0..8192 {
+            text.push_str("C:");
+            for index in 0..13 {
+                text.push('\\');
+                text.push_str(if bits & (1 << index) == 0 {
+                    &long[index]
+                } else {
+                    &short[index]
+                });
+            }
+            text.push_str("\\src\\app.rs:1\n");
+        }
+        let report = super::relative_paths_with_aliases(&text, [root.as_str()], |_| {
+            Some(short_root.clone())
+        });
+        assert_eq!(report.matches("./src/app.rs:1").count(), 8192);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn repeated_windows_paths_are_normalized_without_duplicate_mappings() {
+        let directory = tempfile::tempdir().unwrap();
+        let canonical = directory.path().canonicalize().unwrap();
+        let root = canonical.to_str().unwrap();
+        let path = directory.path().to_str().unwrap();
+        let text = format!("{path}/src/app.rs:1\n").repeat(10_000);
+        let report = relative_paths(&text, [root]);
+        assert_eq!(report.matches("./src/app.rs:1").count(), 10_000);
+        assert!(!report.contains(path));
+    }
 
     #[test]
     fn relative_paths_keep_line_numbers_and_external_urls() {
