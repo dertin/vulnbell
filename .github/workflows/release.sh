@@ -96,7 +96,7 @@ trigger_github_release() {
 }
 
 if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
-  if gh release view "$tag" -R "$github_repo" >/dev/null 2>&1; then
+  if [ "$(gh release view "$tag" -R "$github_repo" --json isDraft --jq .isDraft 2>/dev/null || true)" = "false" ]; then
     echo "Release ${tag} is already complete on GitHub." >&2
     exit 0
   fi
