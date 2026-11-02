@@ -3,6 +3,8 @@ use crate::{codebase_revision, store::Store};
 use anyhow::{Context, Result, bail};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+mod tracked_paths;
+
 const PREFIX: &str = "code_finding:";
 const LATEST_PREFIX: &str = "code_finding_latest:";
 
@@ -181,9 +183,11 @@ pub fn record(store: &Store, submission: Submission) -> Result<Finding> {
         .get(submission.codebase)
         .context("codebase index outside the monitored scope")?;
     let previous = if let Some(id) = &submission.finding_id {
-        let previous = current(store, &snapshot)?
-            .into_iter()
-            .find(|finding| &finding.id == id)
+        let previous: Finding = store
+            .meta(&format!("{LATEST_PREFIX}{id}"))?
+            .map(|value| serde_json::from_str(&value))
+            .transpose()?
+            .filter(|finding: &Finding| &finding.id == id)
             .context("unknown code finding ID")?;
         let previous_root = previous
             .codebase_revisions
@@ -381,6 +385,7 @@ fn current_filtered(
             }
         })
         .collect();
+    let tracked = tracked_paths::collect(snapshot, &findings);
     for finding in &mut findings {
         let root = snapshot.codebase_revisions.get(finding.finding.codebase);
         let fingerprint_matches = |index: usize| {
@@ -393,7 +398,10 @@ fn current_filtered(
                 })
         };
         let bound = |index: usize, root: &codebase_revision::CodebaseRevision, path: &str| {
-            (root.state == codebase_revision::RepositoryState::Git && tracked(&root.codebase, path))
+            (root.state == codebase_revision::RepositoryState::Git
+                && tracked
+                    .get(&index)
+                    .is_some_and(|paths| paths.contains(path)))
                 || fingerprint_matches(index)
         };
         finding.current = codebase_revision::same_revisions(
@@ -440,6 +448,51 @@ fn current_filtered(
                                 .is_ok_and(|hash| hash == *expected)
                         })
                 });
+    }
+    if findings.iter().any(|finding| finding.current) {
+        let mut relevant = std::collections::HashSet::new();
+        for finding in findings.iter().filter(|finding| finding.current) {
+            relevant.insert(finding.finding.codebase);
+            relevant.extend(
+                finding
+                    .finding
+                    .evidence
+                    .iter()
+                    .map(|citation| citation.codebase),
+            );
+        }
+        let stable: Vec<bool> = snapshot
+            .codebase_revisions
+            .iter()
+            .enumerate()
+            .map(|(index, root)| {
+                if !relevant.contains(&index) {
+                    return false;
+                }
+                let revision_matches = codebase_revision::compare(std::slice::from_ref(root))
+                    .first()
+                    .is_some_and(|comparison| comparison.matches);
+                let fingerprint_matches = actual_fingerprints
+                    .get(index)
+                    .and_then(Option::as_ref)
+                    .is_none_or(|expected| {
+                        crate::runners::codebase::source_fingerprint(&root.codebase)
+                            .is_ok_and(|actual| &actual == expected)
+                    });
+                revision_matches && fingerprint_matches
+            })
+            .collect();
+        for finding in findings.iter_mut().filter(|finding| finding.current) {
+            finding.current = stable
+                .get(finding.finding.codebase)
+                .copied()
+                .unwrap_or(false)
+                && finding
+                    .finding
+                    .evidence
+                    .iter()
+                    .all(|citation| stable.get(citation.codebase).copied().unwrap_or(false));
+        }
     }
     findings.sort_by_key(|entry| {
         let disposition = match entry.finding.disposition {
@@ -672,7 +725,17 @@ mod tests {
         moved.line_sha256 = Some(crate::digest(b"guard fixture line"));
         moved.evidence.clear();
         moved.disposition = Disposition::Resolved;
+        store
+            .set_meta("code_finding_latest:unrelated", "invalid fixture")
+            .unwrap();
         let resolved = record(&store, moved.clone()).unwrap();
+        store
+            .connection
+            .execute(
+                "DELETE FROM meta WHERE key = ?1",
+                ["code_finding_latest:unrelated"],
+            )
+            .unwrap();
         assert_eq!(resolved.id, finding.id);
         assert_eq!(current(&store, &snapshot).unwrap().len(), 1);
         moved.finding_id = Some("CODE-does-not-exist".into());
