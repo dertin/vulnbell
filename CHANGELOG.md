@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Link verified Cargo and npm manifest declarations to their matching lockfile entries in the inventory and reports.
+
 ## 0.1.4 - 2026-11-01
 
 - Improve PDF report typography, tables, finding pagination, notes and page footers.

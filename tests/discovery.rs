@@ -10,6 +10,9 @@ use vulnbell::{
     tools::cases,
 };
 
+#[path = "discovery/manifest_lock.rs"]
+mod manifest_lock;
+
 fn project() -> (tempfile::TempDir, std::path::PathBuf, Profile, Store) {
     let directory = tempfile::tempdir().unwrap();
     fs::create_dir(directory.path().join("workspace")).unwrap();

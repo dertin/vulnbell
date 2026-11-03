@@ -1325,6 +1325,42 @@
       ],
       "type": "string"
     },
+    "ManifestDeclaration": {
+      "properties": {
+        "line": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "observation_evidence": {
+          "items": {
+            "$ref": "#/$defs/EvidenceReference"
+          },
+          "type": "array"
+        },
+        "observation_id": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "relation_evidence": {
+          "$ref": "#/$defs/EvidenceReference"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "line",
+        "sha256",
+        "observation_id",
+        "relation_evidence",
+        "observation_evidence"
+      ],
+      "type": "object"
+    },
     "MappingState": {
       "enum": [
         "mapped",
@@ -1340,6 +1376,13 @@
             "string",
             "null"
           ]
+        },
+        "declarations": {
+          "description": "Manifest declarations linked to this locked package with recorded evidence.",
+          "items": {
+            "$ref": "#/$defs/ManifestDeclaration"
+          },
+          "type": "array"
         },
         "dependency_parents": {
           "items": {
@@ -1416,6 +1459,7 @@
         "instance_id",
         "ref",
         "origin",
+        "declarations",
         "dependency_parents"
       ],
       "type": "object"

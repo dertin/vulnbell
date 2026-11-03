@@ -12,8 +12,18 @@ pub(super) fn inventory_markdown(inventory: &[MonitoredComponent], language: Lan
     let mut text = words.inventory_heading.to_owned();
     let mut lockfiles: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::new();
+    let linked: std::collections::HashSet<&str> = inventory
+        .iter()
+        .flat_map(|component| component.declarations.iter())
+        .map(|declaration| declaration.observation_id.as_str())
+        .collect();
     let mut listed = Vec::new();
     for component in inventory {
+        if component.origin == crate::model::Origin::AgentObserved
+            && linked.contains(component.instance_id.as_str())
+        {
+            continue;
+        }
         let location = match (&component.codebase, &component.path) {
             (Some(codebase), Some(path)) => format!("{}/{path}", codebase.trim_end_matches('/')),
             (None, Some(path)) => path.clone(),
@@ -21,12 +31,24 @@ pub(super) fn inventory_markdown(inventory: &[MonitoredComponent], language: Lan
         };
         if component.origin == crate::model::Origin::Locked {
             *lockfiles.entry(location).or_default() += 1;
+            for declaration in &component.declarations {
+                let location = match &component.codebase {
+                    Some(codebase) => format!(
+                        "{}/{}:{}",
+                        codebase.trim_end_matches('/'),
+                        declaration.source.path,
+                        declaration.source.line
+                    ),
+                    None => format!("{}:{}", declaration.source.path, declaration.source.line),
+                };
+                listed.push((component, location, true));
+            }
         } else {
             let location = match component.line {
                 Some(line) => format!("{location}:{line}"),
                 None => location,
             };
-            listed.push((component, location));
+            listed.push((component, location, false));
         }
     }
     if !lockfiles.is_empty() {
@@ -38,7 +60,7 @@ pub(super) fn inventory_markdown(inventory: &[MonitoredComponent], language: Lan
     }
     if !listed.is_empty() {
         text.push_str(words.inventory_table);
-        for (component, location) in listed {
+        for (component, location, linked) in listed {
             text.push_str(&format!(
                 "| {} | {} | {} | {} |\n",
                 inline(&component.reference),
@@ -49,12 +71,26 @@ pub(super) fn inventory_markdown(inventory: &[MonitoredComponent], language: Lan
                         .unwrap_or(words.unresolved)
                 ),
                 inline(&location),
-                text::origin(language, component.origin)
+                if linked {
+                    match language {
+                        Language::Es => "declaración vinculada al lockfile",
+                        Language::En => "declaration linked to lockfile",
+                    }
+                } else {
+                    text::origin(language, component.origin)
+                }
             ));
         }
         text.push('\n');
     }
-    text.push_str(&fill(words.inventory_total, &[&inventory.len()]));
+    let total = inventory
+        .iter()
+        .filter(|component| {
+            component.origin != crate::model::Origin::AgentObserved
+                || !linked.contains(component.instance_id.as_str())
+        })
+        .count();
+    text.push_str(&fill(words.inventory_total, &[&total]));
     text
 }
 
