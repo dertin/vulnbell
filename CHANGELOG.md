@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.5 - 2026-11-03
 
 - Link verified Cargo and npm manifest declarations to their matching lockfile entries in the inventory and reports.
 
