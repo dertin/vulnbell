@@ -483,6 +483,8 @@ pub struct MonitoredComponent {
     pub codebase: Option<String>,
     pub path: Option<String>,
     pub line: Option<usize>,
+    /// Manifest declarations linked to this locked package with recorded evidence.
+    pub declarations: Vec<crate::model::ManifestDeclaration>,
     pub direct: Option<bool>,
     pub direct_source: Option<crate::model::SourceLine>,
     pub dependency_parents: Vec<String>,
@@ -740,6 +742,8 @@ pub fn morning_report_current(
         })
         .map(|case| verification::finding_check(case, store, language))
         .collect();
+    let declarations =
+        crate::discovery::manifest_lock::declaration_sources(&snapshot.instances, store)?;
     Ok(MorningReport {
         codebase_path_roots: report_codebase_roots(snapshot),
         codebase_paths_ready: false,
@@ -777,6 +781,7 @@ pub fn morning_report_current(
                 codebase: instance.provenance.codebase.clone(),
                 path: instance.provenance.path.clone(),
                 line: instance.provenance.line,
+                declarations: declarations.get(&instance.id).cloned().unwrap_or_default(),
                 direct: instance.provenance.direct,
                 direct_source: instance.python_lock.as_ref().and_then(|lock| lock.direct_source.clone()),
                 dependency_parents: instance.python_lock.as_ref().map(|lock| lock.via.iter().filter(|entry| !entry.starts_with("-r ")).cloned().collect()).unwrap_or_default(),

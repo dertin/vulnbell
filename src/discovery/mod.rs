@@ -10,6 +10,9 @@ use std::{collections::BTreeSet, path::Path};
 pub(crate) mod automation;
 mod codebase;
 mod contracts;
+mod reconcile;
+pub(crate) use reconcile::preserve_observation_ids;
+pub(crate) mod manifest_lock;
 mod sources;
 pub(crate) use codebase::{
     checked_path, has_untrusted_sources, open_file, private_name, requirements_file,
@@ -229,6 +232,8 @@ pub fn augment(
     store: &Store,
     instances: &mut Vec<Instance>,
     inventory_coverage: &mut Vec<Coverage>,
+    previous_instances: &[Instance],
+    previous_cases: &[crate::model::Case],
 ) -> Result<Vec<Coverage>> {
     if profile.discovery == DiscoveryMode::Off {
         return Ok(vec![Coverage::new(
@@ -250,6 +255,15 @@ pub fn augment(
     });
     if ready {
         append_codebase_instances(store, &scope, instances)?;
+        preserve_observation_ids(instances, inventory_coverage, previous_instances, false);
+        if !manifest_lock::merge(instances, store, path, previous_instances, previous_cases)? {
+            inventory_coverage.push(Coverage::new(
+                "inventory",
+                "codebase",
+                CoverageState::Partial,
+                "manifest-to-lock linking skipped because history exceeds 100000 referenced instances",
+            ));
+        }
     }
     sources::apply(store, &scope, instances)?;
     let first_party = sources::first_party(&roots(profile, path)?);
@@ -271,6 +285,7 @@ fn append_codebase_instances(
     scope: &str,
     instances: &mut Vec<Instance>,
 ) -> Result<()> {
+    let covered = manifest_lock::covered_observations(instances, store)?;
     let mut native_keys: std::collections::HashSet<_> = instances
         .iter()
         .map(|instance| {
@@ -283,6 +298,16 @@ fn append_codebase_instances(
         })
         .collect();
     for discovered in codebase::instances(store, scope)? {
+        if covered
+            .get(&discovered.id)
+            .is_some_and(|(observation_sha256, source)| {
+                discovered.provenance.path.as_deref() == Some(source.path.as_str())
+                    && discovered.provenance.sha256 == *observation_sha256
+                    && discovered.provenance.line == Some(source.line)
+            })
+        {
+            continue;
+        }
         let key = (
             discovered.reference.clone(),
             discovered.resolved_version.clone(),
@@ -451,7 +476,7 @@ pub(crate) fn current_observation_ids(
     let mut current = codebase::instances(store, &scope)?;
     if store.meta("last_snapshot")?.is_some() {
         let previous = store.latest()?.instances;
-        crate::engine::preserve_observation_ids(&mut current, &mut [], &previous, true);
+        preserve_observation_ids(&mut current, &mut [], &previous, true);
         let previous: std::collections::HashMap<_, _> =
             previous.iter().map(|item| (&item.id, item)).collect();
         current.retain(|item| {

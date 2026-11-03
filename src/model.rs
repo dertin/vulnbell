@@ -89,6 +89,15 @@ pub struct SourceLine {
     pub line: usize,
     pub sha256: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ManifestDeclaration {
+    #[serde(flatten)]
+    pub source: SourceLine,
+    pub observation_id: String,
+    pub relation_evidence: EvidenceReference,
+    pub observation_evidence: Vec<EvidenceReference>,
+}
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ReleaseDate {
     pub version: String,

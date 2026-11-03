@@ -754,6 +754,9 @@ pub(crate) fn coverage_detail(language: Language, detail: &str) -> String {
         return detail.to_owned();
     }
     let translated = match detail {
+        "manifest-to-lock linking skipped because history exceeds 100000 referenced instances" => {
+            "No se vincularon las declaraciones al lockfile porque el historial supera las 100 000 instancias referenciadas."
+        }
         "local package source is unverified; identify the public package explicitly before external lookup" => {
             "El origen del paquete local no está verificado; identificar el paquete público antes de consultarlo externamente."
         }
